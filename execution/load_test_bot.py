@@ -603,6 +603,22 @@ async def run_checkout_flow(context, customer, target_url):
                             log.info(f"No match found. Selected random state/province: {chosen_val}")
                 break
 
+        # Look for Payment Option (specifically Cash on Delivery or COD)
+        cod_selectors = [
+            "text='Cash on Delivery'", 
+            "text='COD'", 
+            "label:has-text('Cash on Delivery')", 
+            "label:has-text('COD')",
+            ".radio__label:has-text('Cash on Delivery')"
+        ]
+        
+        for cod_sel in cod_selectors:
+            if await page.locator(cod_sel).is_visible():
+                log.info(f"Explicitly selecting Cash on Delivery (COD)...")
+                await page.locator(cod_sel).first.click()
+                await asyncio.sleep(1)
+                break
+
         # Click Continue to shipping / Payment
         log.info("Progressing through checkout steps...")
         # Shopify often has "Continue to shipping" -> "Continue to payment" -> "Complete order"
@@ -655,8 +671,8 @@ async def run_bot(headless=True, visible=False, count=0):
         return
 
     log.info("Starting Load Testing Bot...")
-    if STORE_URL:
-        log.info(f"Target Store: {STORE_URL} (Will select random products)")
+    if STORE_URLS:
+        log.info(f"Targeting Store Rotation: {STORE_URLS}")
     else:
         log.info(f"Target Product: {PRODUCT_URL} (Fixed product)")
 
@@ -706,10 +722,10 @@ async def run_bot(headless=True, visible=False, count=0):
             target_url = PRODUCT_URL
             if STORE_URLS:
                 # Cycle through URLs based on order count
-                current_store = STORE_URLS[order_count % len(STORE_URLS)]
-                log.info(f"Targeting Store: {current_store}")
+                base_url = STORE_URLS[order_count % len(STORE_URLS)]
+                log.info(f"Targeting Store: {base_url}")
                 temp_page = await context.new_page()
-                target_url = await get_random_product_url(temp_page, base_url=current_store)
+                target_url = await get_random_product_url(temp_page, base_url=base_url)
                 await temp_page.close()
 
             success = False
