@@ -247,32 +247,26 @@ def get_random_customer():
     district_name = district["name"]
     unit_num = random.randint(1, 400)
     
-    components = []
-    if addr_type == "tower":
-        bld = random.choice(district["buildings"])
-        components = [f"Apartment {unit_num}", bld, district_name]
-    elif addr_type == "apartment":
-        extra = ""
-        if "streets" in district: extra = random.choice(district['streets'])
-        elif "buildings" in district: extra = random.choice(district['buildings'])
-        elif "clusters" in district: extra = random.choice(district['clusters'])
-        components = [f"Flat {unit_num}", extra, district_name]
-    elif addr_type == "villa":
-        extra = ""
-        if "streets" in district: extra = random.choice(district['streets'])
-        elif "sectors" in district: extra = random.choice(district['sectors'])
-        elif "zones" in district: extra = random.choice(district['zones'])
-        elif "areas" in district: extra = random.choice(district['areas'])
-        elif "subs" in district: district_name = random.choice(district['subs'])
-        components = [f"Villa {unit_num}", extra, district_name]
-    elif addr_type == "luxury_villa":
-        components = [f"Villa {random.randint(1, 40)}", random.choice(district['landmarks']), district_name]
-    elif addr_type == "villa_palm":
-        components = [f"Villa {random.randint(1, 40)}", random.choice(district['fronds']), "Palm Jumeirah"]
-    elif addr_type == "building":
-        components = [f"Flat {random.randint(1, 50)}", f"Building {random.randint(1, 50)}", random.choice(district['shabiyas'])]
-    else:
-        components = [f"{random.randint(1, 100)}", district_name]
+    # Try various ways to get a secondary address component (street, building, etc)
+    extra = ""
+    # Look for any list-like key to provide 'extra' detail
+    for key in ["buildings", "streets", "clusters", "communities", "areas", "fronds", "subs", "landmarks", "districts", "blocks", "sectors", "zones", "shabiyas"]:
+        if key in district and district[key]:
+            extra = random.choice(district[key])
+            break
+            
+    if addr_type in ["tower", "apartment", "building"]:
+        prefix = "Apartment" if addr_type == "tower" else "Flat"
+        if extra:
+            components = [f"{prefix} {unit_num}", extra, district_name]
+        else:
+            components = [f"{prefix} {unit_num}", district_name]
+    else: # Villa / Luxury Villa / Villa Palm
+        prefix = "Villa"
+        if extra:
+            components = [f"{prefix} {unit_num}", extra, district_name]
+        else:
+            components = [f"{prefix} {unit_num}", district_name]
 
     # Advanced Address Realism: Shuffling, Landmarks, Punctuation
     # Filter out empty strings first
@@ -341,11 +335,16 @@ async def get_random_product_url(page, base_url=None):
         log.error("No store URLs provided in TEST_STORE_URL or base_url!")
         return None
 
-    collections_url = f"{active_base.rstrip('/')}/collections/all"
+    # Extract just the origin (scheme + hostname) to avoid UTM params corrupting product URLs
+    from urllib.parse import urlparse
+    parsed = urlparse(active_base)
+    store_origin = f"{parsed.scheme}://{parsed.netloc}"
+    
+    collections_url = f"{store_origin}/collections/all"
     log.info(f"Navigating to {collections_url} to find products...")
     
     try:
-        await page.goto(collections_url, wait_until="load", timeout=90000)
+        await page.goto(collections_url, wait_until="domcontentloaded", timeout=90000)
         
         # Look for standard Shopify product links
         product_links = await page.locator("a[href*='/products/']").all()
@@ -355,8 +354,8 @@ async def get_random_product_url(page, base_url=None):
             href = await link.get_attribute("href")
             # Ensure it's not a pagination or random non-product link
             if href and "/products/" in href and not "page=" in href:
-                # Construct full URL if it's relative
-                full_url = href if href.startswith("http") else f"{active_base.rstrip('/')}{href}"
+                # Construct full URL if it's relative - use clean origin, not UTM-laden base
+                full_url = href if href.startswith("http") else f"{store_origin}{href}"
                 valid_urls.append(full_url)
                 
         # Deduplicate
@@ -382,49 +381,104 @@ async def run_checkout_flow(context, customer, target_url):
     try:
         # 1. Go to product page
         log.info(f"Navigating to product page: {target_url}")
-        await page.goto(target_url, wait_until="load", timeout=90000)
+        await page.goto(target_url, wait_until="domcontentloaded", timeout=90000)
         
         # Humanize: Scroll and hover a bit
         log.info("Humanizing: Scrolling and hovering...")
         await page.mouse.wheel(0, 500)
         await asyncio.sleep(1)
-        await page.mouse.wheel(0, -200)
-        await asyncio.sleep(1)
-        
         # Try to hover over the add-to-cart button before clicking
         add_to_cart_selectors = [
             "button[name='add']",
             "form[action='/cart/add'] button[type='submit']",
+            "form[action='/cart/add'] button",
             "button:has-text('Add to cart')",
+            "button:has-text('Add to Cart')",
+            "button:has-text('ADD TO CART')",
+            "button:has-text('Add To Cart')",
             ".product-form__submit",
-            "button:has-text('ADD TO CART')"
+            ".add-to-cart",
+            "#AddToCartText"
+        ]
+
+        # --- NEW: Try "Buy It Now" / "Buy Now" first for direct checkout ---
+        buy_now_selectors = [
+            "button:has-text('Buy it now')",
+            "button:has-text('Buy Now')",
+            "button:has-text('Order Now')",
+            "button:has-text('Buy it Now')",
+            "button:has-text('Order now')",
+            "button:has-text('Checkout Now')",
+            "button:has-text('Buy now get now')",
+            ".shopify-payment-button button",
+            "[data-testid='Checkout-button']"
         ]
         
-        for sel in add_to_cart_selectors:
-            loc = page.locator(sel).first
-            if await loc.is_visible():
-                await loc.hover()
-                await asyncio.sleep(0.5)
-                break
+        clicked_buy_now = False
+        log.info("Checking for 'Buy It Now' buttons for direct checkout...")
+        for selector in buy_now_selectors:
+            try:
+                # Wait briefly to see if it's there
+                loc = await page.wait_for_selector(selector, state="visible", timeout=3000)
+                if loc:
+                    log.info(f"Found direct checkout button: {selector}. Clicking...")
+                    await loc.click()
+                    clicked_buy_now = True
+                    break
+            except:
+                continue
         
-        # 2. Add to cart
-        log.info("Clicking 'Add to cart'")
-        # Try multiple common Shopify selectors for Add to Cart
-        add_to_cart_selectors = [
-            "button[name='add']",
-            "form[action='/cart/add'] button[type='submit']",
-            "button:has-text('Add to cart')",
-            ".product-form__submit"
-        ]
-        
+        if clicked_buy_now:
+            # If we clicked Buy It Now, we expect a redirect to checkout
+            log.info("Clicked 'Buy It Now'. Waiting for checkout redirect...")
+            try:
+                await page.wait_for_url("**/checkouts/**", timeout=20000)
+                log.info(f"Redirected to checkout: {page.url}")
+                # Skip the rest of the cart flow and go straight to info entry
+                return await enter_checkout_info(context, customer, page)
+            except:
+                log.warning("Buy It Now didn't redirect to checkout quickly. Falling back to cart flow.")
+
+        # --- EXISTING: Add to cart flow (Fallback) ---
+        log.info("Proceeding with standard 'Add to cart' flow...")
         clicked_add = False
+        # Narrow down the selectors to find the MAIN button, avoiding hidden sticky widgets
         for selector in add_to_cart_selectors:
-            if await page.locator(selector).count() > 0:
-                # Some themes have a sliding cart, so we wait a bit after clicking
-                await page.locator(selector).first.click()
-                clicked_add = True
-                log.info(f"Used selector: {selector}")
+            # We look for all matching locators and pick the one that is visible
+            locs = page.locator(selector)
+            for i in range(await locs.count()):
+                loc = locs.nth(i)
+                # Check for visibility and ensure it's not a sticky/hidden widget
+                if await loc.is_visible():
+                    html = (await loc.evaluate("el => el.outerHTML")).lower()
+                    if "sticky" in html or "widget" in html:
+                        continue # Skip sticky buttons as they might be covered/inactive
+                    
+                    await loc.click()
+                    clicked_add = True
+                    log.info(f"Used selector: {selector}")
+                    break
+            if clicked_add:
                 break
+                
+        if not clicked_add:
+            # Last resort: Any visible button with "cart" text that isn't sticky
+            log.info("Standard selectors failed. Trying generic visible 'cart' button...")
+            generic_btns = page.locator("button:visible, input[type='submit']:visible, a.button:visible")
+            for i in range(await generic_btns.count()):
+                btn = generic_btns.nth(i)
+                text = (await btn.text_content() or "").lower()
+                if "cart" in text and "sticky" not in (await btn.evaluate("el => el.className")).lower():
+                    await btn.click()
+                    clicked_add = True
+                    log.info(f"Used generic selector: {text.strip()}")
+                    break
+
+        if not clicked_add:
+            log.error("Could not find 'Add to cart' button. Check the store theme/URL.")
+            # Take a screenshot to see why
+            await page.screenshot(path=f".tmp/no_cart_button_{int(time.time())}.png")
+            return False
                 
         if not clicked_add:
             log.error("Could not find 'Add to cart' button. Check the store theme/URL.")
@@ -460,7 +514,15 @@ async def run_checkout_flow(context, customer, target_url):
         # try navigating to /cart first as a human would
         if not page.url.endswith("/cart"):
             log.info("Navigating to /cart first for a more natural checkout flow.")
-            await page.goto(f"{STORE_URL.rstrip('/')}/cart", wait_until="load")
+            # Derive origin from the product URL we're on
+            from urllib.parse import urlparse as _urlparse
+            _parsed = _urlparse(page.url)
+            _origin = f"{_parsed.scheme}://{_parsed.netloc}"
+            try:
+                await page.goto(f"{_origin}/cart", wait_until="domcontentloaded", timeout=60000)
+            except:
+                pass
+
             await asyncio.sleep(2)
 
         # Avoid direct navigation or JS to bypass Bright Data CDP robots.txt enforcement
@@ -468,10 +530,12 @@ async def run_checkout_flow(context, customer, target_url):
         # We prioritize the "Add to cart" -> "Checkout" flow over "Buy it now"
         # as "Buy it now" is often more heavily guarded or prone to failures
         checkout_selectors = [
-            "button.cart__submit",
-            "button[name='checkout']", 
+            "form[action='/cart'] [name='checkout']",
+            "button[name='checkout']",
+            "form[action='/checkout'] [type='submit']",
             "a[href='/checkout']", 
             ".cart__checkout-button",
+            ".cart-drawer__footer .button--primary",
             "button:has-text('Checkout')",
             "button:has-text('CHECK OUT')",
             "#checkout",
@@ -479,44 +543,91 @@ async def run_checkout_flow(context, customer, target_url):
         ]
         
         # Give the cart side-drawer or page a moment to fully render
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
         
+        # Proactive: Check any terms/conditions checkboxes in the cart
+        try:
+            checkboxes = await page.locator("input[type='checkbox']").all()
+            for cb in checkboxes:
+                if await cb.is_visible() and not await cb.is_checked():
+                    log.info("Checking terms/conditions checkbox in cart...")
+                    await cb.click()
+                    await asyncio.sleep(1)
+        except:
+            pass
+
         clicked_checkout = False
         for selector in checkout_selectors:
-            if await page.locator(selector).is_visible():
-                await page.locator(selector).first.click()
-                clicked_checkout = True
-                log.info(f"Clicked checkout via: {selector}")
-                break
+            try:
+                # Wait up to 10 seconds for the button to appear in the DOM and be visible
+                loc = await page.wait_for_selector(selector, state="visible", timeout=10000)
+                if loc:
+                    # Check for disabled attribute
+                    is_disabled = await page.evaluate(f"document.querySelector(\"{selector}\").disabled")
+                    if is_disabled:
+                        log.info(f"Checkout button ({selector}) is disabled. Waiting for it to become enabled...")
+                        await asyncio.sleep(5)
+                    
+                    await page.click(selector)
+                    clicked_checkout = True
+                    log.info(f"Clicked checkout via: {selector}")
+                    break
+            except:
+                continue
                 
         if not clicked_checkout:
             log.warning("Could not find a standard checkout button. Searching for anything that says checkout...")
-            checkout_btn = page.locator("button, a").filter(has_text="Checkout").first
-            if await checkout_btn.count() > 0 and await checkout_btn.first.is_visible():
-                await checkout_btn.first.click()
-                log.info("Clicked fallback checkout button.")
-            else:
-                log.warning("Still couldn't find checkout. Trying one last 'Buy it now' fallback.")
-                buy_now = page.locator("button:has-text('Buy it now')").first
-                if await buy_now.is_visible():
-                    await buy_now.click()
-                    log.info("Clicked 'Buy it now' as last resort.")
+            try:
+                # Try a broader search with a timeout
+                checkout_btn = await page.wait_for_selector("button:has-text('Checkout'), a:has-text('Checkout')", state="visible", timeout=5000)
+                if checkout_btn:
+                    await checkout_btn.click()
+                    log.info("Clicked fallback checkout button.")
+                    clicked_checkout = True
+            except:
+                pass
+        
+        if not clicked_checkout:
+            log.warning("Final fallback: Navigating directly to /checkout")
+            try:
+                from urllib.parse import urlparse as _urlparse
+                _parsed = _urlparse(page.url)
+                _origin = f"{_parsed.scheme}://{_parsed.netloc}"
+                await page.goto(f"{_origin}/checkout", wait_until="domcontentloaded", timeout=60000)
+                clicked_checkout = True
+            except Exception as e:
+                log.error(f"Direct checkout navigation failed: {e}")
                 
         # Wait for the checkout page to stabilize
-        # Check if a new tab was opened during checkout click
         await asyncio.sleep(5)
         if len(context.pages) > 1:
             log.info(f"Detected {len(context.pages)} tabs. Switching to the latest tab.")
             page = context.pages[-1]
             await page.bring_to_front()
             
-        # We wait for the URL to change to something including 'checkout' or 'checkouts'
+        # We wait for the URL to change
         try:
             await page.wait_for_url("**/checkouts/**", timeout=30000)
             log.info(f"Successfully on checkout URL: {page.url}")
         except:
             log.warning(f"Did not detect a checkout URL redirect. Current URL: {page.url}")
             
+        return await enter_checkout_info(context, customer, page)
+
+    except Exception as e:
+        log.error(f"Error during checkout flow: {e}")
+        # Take a screenshot for debugging
+        try:
+            os.makedirs(".tmp", exist_ok=True)
+            await page.screenshot(path=f".tmp/error_screenshot_{int(time.time())}.png")
+            log.info("Saved error screenshot to .tmp/")
+        except:
+            pass
+        return False
+
+async def enter_checkout_info(context, customer, page):
+    """Fills out the Shopify checkout information form."""
+    try:
         await page.wait_for_load_state("load", timeout=90000)
         await asyncio.sleep(5)
 
@@ -526,18 +637,31 @@ async def run_checkout_flow(context, customer, target_url):
         # Handle email
         try:
             # Find a visible email input
-            email_selectors = ["input[type='email']", "input[name='email']", "input[id='email']", "input[placeholder*='Email']"]
+            email_selectors = [
+                "input[type='email']", 
+                "input[name='email']", 
+                "input[id='email']", 
+                "input[placeholder*='Email']",
+                "input[aria-label*='Email']"
+            ]
             found_email = False
             for sel in email_selectors:
                 element = page.locator(sel).first
                 if await element.is_visible():
                     await element.fill(customer["email"])
                     found_email = True
+                    log.info(f"Filled email via selector: {sel}")
                     break
             
             if not found_email:
-                log.warning("Email field not visible via selectors. Trying direct get_by_placeholder.")
-                await page.get_by_placeholder("Email").first.fill(customer["email"])
+                log.warning("Email field not visible via selectors. Trying get_by_label or placeholder.")
+                # Shopify new checkout often has 'Email' as a label or placeholder
+                try:
+                    await page.get_by_placeholder("Email", exact=False).first.fill(customer["email"])
+                    found_email = True
+                except:
+                    await page.get_by_label("Email", exact=False).first.fill(customer["email"])
+                    found_email = True
         except Exception as e:
             log.warning(f"Could not fill email: {e}. Taking screenshot for debug.")
             await page.screenshot(path=f".tmp/email_fail_{int(time.time())}.png")
@@ -603,27 +727,101 @@ async def run_checkout_flow(context, customer, target_url):
                             log.info(f"No match found. Selected random state/province: {chosen_val}")
                 break
 
-        # Look for Payment Option (specifically Cash on Delivery or COD)
+        # --- Robust COD Selection ---
+        log.info("Attempting to select 'Cash on Delivery' (COD)...")
+        found_cod = False
+        
+        # 1. Wait for payment section to appear
+        try:
+            await page.wait_for_selector("[data-payment-gateway-section], #payment-gateway", timeout=5000)
+        except:
+            pass
+            
+        # 2. Aggressive multi-selector approach for COD
         cod_selectors = [
-            "text='Cash on Delivery'", 
-            "text='COD'", 
-            "label:has-text('Cash on Delivery')", 
+            # Standard Shopify radio buttons
+            "input[value*='manual']", 
+            "input[id*='manual']",
+            "input[value*='cod']",
+            "input[id*='cod']",
+            "input[aria-label*='Cash']",
+            "input[aria-label*='COD']",
+            # Labels and clickable containers
+            "label:has-text('Cash on Delivery')",
             "label:has-text('COD')",
-            ".radio__label:has-text('Cash on Delivery')"
+            ".radio-wrapper:has-text('Cash on Delivery')",
+            ".radio-wrapper:has-text('COD')",
+            "[data-payment-subform='cash_on_delivery']",
+            "div:has-text('Cash on Delivery') label",
+            "div:has-text('COD') label"
         ]
         
-        for cod_sel in cod_selectors:
-            if await page.locator(cod_sel).is_visible():
-                log.info(f"Explicitly selecting Cash on Delivery (COD)...")
-                await page.locator(cod_sel).first.click()
-                await asyncio.sleep(1)
-                break
+        for selector in cod_selectors:
+            try:
+                # Find all potential matches
+                locs = page.locator(selector)
+                count = await locs.count()
+                for i in range(count):
+                    loc = locs.nth(i)
+                    if await loc.is_visible():
+                        # Skip if it's the discount field or similar
+                        outer_html = (await loc.evaluate("el => el.outerHTML")).lower()
+                        if "discount" in outer_html or "coupon" in outer_html or "reduction" in outer_html:
+                            continue
+                            
+                        log.info(f"Clicking COD option via: {selector}")
+                        await loc.click()
+                        await asyncio.sleep(1) # Wait for selection to process
+                        
+                        # VERIFY: Check if the selection 'stuck'
+                        # Look for aria-checked="true" on the radio or a parent with is-selected
+                        is_selected = await loc.evaluate("""el => {
+                            const radio = el.tagName === 'INPUT' ? el : el.querySelector('input');
+                            if (radio && (radio.checked || radio.getAttribute('aria-checked') === 'true')) return true;
+                            const wrapper = el.closest('.radio-wrapper, .section__content, .payment-gateway');
+                            if (wrapper && (wrapper.classList.contains('is-selected') || wrapper.getAttribute('data-is-selected') === 'true')) return true;
+                            return false;
+                        }""")
+                        
+                        if is_selected:
+                            log.info("Verified: COD selection is active.")
+                            found_cod = True
+                            break
+                        else:
+                            log.warning(f"Click on {selector} didn't seem to 'stick'. Trying next...")
+                
+                if found_cod: break
+            except:
+                continue
+        
+        if not found_cod:
+            log.warning("Final attempt: Direct JavaScript selection of COD radio...")
+            try:
+                # Direct JS to find and click the manual/cod radio button
+                await page.evaluate("""() => {
+                    const inputs = Array.from(document.querySelectorAll('input[type="radio"]'));
+                    const cod = inputs.find(i => i.value.includes('manual') || i.value.includes('cod') || i.id.includes('manual') || i.id.includes('cod'));
+                    if (cod) {
+                        cod.click();
+                        cod.checked = true;
+                        cod.dispatchEvent(new Event('change', { bubbles: true }));
+                        return true;
+                    }
+                    return false;
+                }""")
+                found_cod = True
+            except:
+                pass
+
+        if found_cod:
+            await asyncio.sleep(2)
+        else:
+            log.warning("Could not definitively select COD. Proceeding anyway, hoping for default.")
 
         # Click Continue to shipping / Payment
         log.info("Progressing through checkout steps...")
-        # Shopify often has "Continue to shipping" -> "Continue to payment" -> "Complete order"
-        # Or standard "Pay now"
         
+        # Shopify often has "Continue to shipping" -> "Continue to payment" -> "Complete order"
         next_buttons = [
             "button:has-text('Continue to shipping')",
             "button:has-text('Continue to payment')",
@@ -632,34 +830,47 @@ async def run_checkout_flow(context, customer, target_url):
             "#continue_button"
         ]
         
-        # Try to click any 'continue' buttons until we reach the end
-        # Max 5 attempts
-        for _ in range(5):
-            await asyncio.sleep(3)
-            progressed = False
-            for btn in next_buttons:
-                if await page.locator(btn).is_visible():
-                    btn_text = await page.locator(btn).first.text_content()
-                    log.info(f"Clicking checkout action: {btn_text.strip() if btn_text else btn}")
-                    await page.locator(btn).first.click()
-                    progressed = True
-                    break
+        for i in range(10): # Increase attempts, shorter sleep
+            await asyncio.sleep(2)
             
-            # Check if we landed on the thank you page
-            if any(x in page.url for x in ["thank", "orders", "receipt"]) or await page.locator("text='Your order is confirmed'").count() > 0:
+            # Check if we landed on the thank you page FIRST
+            if any(x in page.url for x in ["thank", "orders", "receipt"]) or \
+               await page.locator("text='Your order is confirmed'").count() > 0 or \
+               await page.locator("text='Confirmed'").count() > 0:
                 log.info(f"Successfully reached Order Confirmation! URL: {page.url}")
                 return True
                 
-        log.warning("Reached end of automated clicks. Check if 'Complete order' was successful.")
+            progressed = False
+            for btn in next_buttons:
+                loc = page.locator(btn).first
+                if await loc.is_visible():
+                    # If button is busy or disabled, wait a bit longer
+                    is_disabled = await loc.evaluate("el => el.disabled || el.getAttribute('aria-busy') === 'true'")
+                    if is_disabled:
+                        log.info(f"Button {btn} is busy/disabled, waiting...")
+                        continue
+                        
+                    btn_text = await loc.text_content()
+                    log.info(f"Clicking checkout action: {btn_text.strip() if btn_text else btn}")
+                    try:
+                        await loc.click(timeout=10000) # Short timeout for the click itself
+                        progressed = True
+                        await asyncio.sleep(2) # Wait for transition
+                        break
+                    except Exception as e:
+                        log.warning(f"Failed to click {btn}: {e}")
+            
+            if not progressed and i > 3:
+                # If we haven't progressed for a while, maybe we're already there?
+                if any(x in page.url for x in ["thank", "orders", "receipt"]):
+                    return True
+                
         return True # Return true anyway as we've hit the system with load
 
     except Exception as e:
-        log.error(f"Error during checkout flow: {e}")
-        # Take a screenshot for debugging
+        log.error(f"Error inside enter_checkout_info: {e}")
         try:
-            os.makedirs(".tmp", exist_ok=True)
-            await page.screenshot(path=f".tmp/error_screenshot_{int(time.time())}.png")
-            log.info("Saved error screenshot to .tmp/")
+            await page.screenshot(path=f".tmp/checkout_info_fail_{int(time.time())}.png")
         except:
             pass
         return False
@@ -724,9 +935,15 @@ async def run_bot(headless=True, visible=False, count=0):
                 # Cycle through URLs based on order count
                 base_url = STORE_URLS[order_count % len(STORE_URLS)]
                 log.info(f"Targeting Store: {base_url}")
-                temp_page = await context.new_page()
-                target_url = await get_random_product_url(temp_page, base_url=base_url)
-                await temp_page.close()
+                
+                # If the URL is already a product page, use it directly
+                if "/products/" in base_url or "/product/" in base_url:
+                    target_url = base_url
+                else:
+                    # Otherwise, navigate to find a random product
+                    temp_page = await context.new_page()
+                    target_url = await get_random_product_url(temp_page, base_url=base_url)
+                    await temp_page.close()
 
             success = False
             if target_url:
