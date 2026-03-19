@@ -1,0 +1,991 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FastAPI",
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "/github|110602490/c32df03a-37f1-446d-b050-856cf2e46301"
+    }
+  ],
+  "paths": {
+    "/edit": {
+      "post": {
+        "summary": "Edit Image",
+        "description": "Gemini 3.1 Flash Image is a text-to-image model that generates images from text descriptions.",
+        "operationId": "edit_image_edit_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NanoBanana2ImageToImageInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NanoBanana2ImageToImageOutput"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/balancer/config": {
+      "post": {
+        "summary": "Get Balancer Config",
+        "description": "Get current Redis balancer path configs.",
+        "operationId": "get_balancer_config_balancer_config_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Balancer Config Balancer Config Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/balancer/state": {
+      "post": {
+        "summary": "Get Balancer State",
+        "description": "Get cluster state (penalties, circuit breakers, utilization).",
+        "operationId": "get_balancer_state_balancer_state_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Balancer State Balancer State Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/test-client-selection": {
+      "post": {
+        "summary": "Test Client Selection",
+        "description": "Test endpoint to observe the client selection algorithm distribution.",
+        "operationId": "test_client_selection_test_client_selection_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestClientSelectionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestClientSelectionOutput"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "post": {
+        "summary": "Text To Image",
+        "description": "Gemini 3.1 Flash Image is a text-to-image model that generates images from text descriptions.",
+        "operationId": "text_to_image__post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NanoBanana2TextToImageInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NanoBanana2TextToImageOutput"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/balancer/update-config": {
+      "post": {
+        "summary": "Update Balancer Config",
+        "description": "Update a path's config (cost, rps_limit, enabled, priority_enabled).",
+        "operationId": "update_balancer_config_balancer_update_config_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePathConfigInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Update Balancer Config Balancer Update Config Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError",
+        "x-fal-order-properties": [
+          "detail"
+        ]
+      },
+      "ImageFile": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "The URL where the file can be downloaded from."
+          },
+          "content_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type",
+            "description": "The mime type of the file.",
+            "examples": [
+              "image/png"
+            ]
+          },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Name",
+            "description": "The name of the file. It will be auto-generated if not provided.",
+            "examples": [
+              "z9RV14K95DvU.png"
+            ]
+          },
+          "file_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Size",
+            "description": "The size of the file in bytes.",
+            "examples": [
+              4404019
+            ]
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width",
+            "description": "The width of the image"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height",
+            "description": "The height of the image"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "ImageFile",
+        "x-fal-order-properties": [
+          "url",
+          "content_type",
+          "file_name",
+          "file_size",
+          "width",
+          "height"
+        ]
+      },
+      "NanoBanana2ImageToImageInput": {
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "maxLength": 50000,
+            "minLength": 3,
+            "title": "Prompt",
+            "description": "The prompt for image editing.",
+            "examples": [
+              "make a photo of the man driving the car down the california coastline"
+            ]
+          },
+          "num_images": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "Number of Images",
+            "description": "The number of images to generate.",
+            "default": 1
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed",
+            "description": "The seed for the random number generator."
+          },
+          "aspect_ratio": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "21:9",
+                  "16:9",
+                  "3:2",
+                  "4:3",
+                  "5:4",
+                  "1:1",
+                  "4:5",
+                  "3:4",
+                  "2:3",
+                  "9:16"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aspect Ratio",
+            "description": "The aspect ratio of the generated image.",
+            "default": "auto",
+            "ui": {
+              "important": true
+            }
+          },
+          "output_format": {
+            "type": "string",
+            "enum": [
+              "jpeg",
+              "png",
+              "webp"
+            ],
+            "title": "Output Format",
+            "description": "The format of the generated image.",
+            "default": "png"
+          },
+          "safety_tolerance": {
+            "type": "string",
+            "enum": [
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6"
+            ],
+            "title": "Safety Tolerance",
+            "description": "The safety tolerance level for content moderation. 1 is the most strict (blocks most content), 6 is the least strict.",
+            "default": "4",
+            "ui": {
+              "frozen": true
+            }
+          },
+          "sync_mode": {
+            "type": "boolean",
+            "title": "Sync Mode",
+            "description": "If `True`, the media will be returned as a data URI and the output data won't be available in the request history.",
+            "default": false
+          },
+          "image_urls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Image URLs",
+            "description": "The URLs of the images to use for image-to-image generation or image editing.",
+            "examples": [
+              [
+                "https://storage.googleapis.com/falserverless/example_inputs/nano-banana-edit-input.png",
+                "https://storage.googleapis.com/falserverless/example_inputs/nano-banana-edit-input-2.png"
+              ]
+            ]
+          },
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "0.5K",
+              "1K",
+              "2K",
+              "4K"
+            ],
+            "title": "Resolution",
+            "description": "The resolution of the image to generate.",
+            "default": "1K",
+            "ui": {
+              "important": true
+            }
+          },
+          "limit_generations": {
+            "type": "boolean",
+            "title": "Limit Generations",
+            "description": "Experimental parameter to limit the number of generations from each round of prompting to 1. Set to `True` to to disregard any instructions in the prompt regarding the number of images to generate and ignore any intermediate images generated by the model. This may affect generation quality.",
+            "default": true,
+            "ui": {
+              "important": true
+            }
+          },
+          "enable_web_search": {
+            "type": "boolean",
+            "title": "Enable Web Search",
+            "description": "Enable web search for the image generation task. This will allow the model to use the latest information from the web to generate the image.",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "prompt",
+          "image_urls"
+        ],
+        "title": "NanoBanana2ImageToImageInput",
+        "x-fal-order-properties": [
+          "prompt",
+          "num_images",
+          "seed",
+          "aspect_ratio",
+          "output_format",
+          "safety_tolerance",
+          "sync_mode",
+          "image_urls",
+          "resolution",
+          "limit_generations",
+          "enable_web_search"
+        ]
+      },
+      "NanoBanana2ImageToImageOutput": {
+        "properties": {
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/ImageFile"
+            },
+            "type": "array",
+            "title": "Images",
+            "description": "The edited images.",
+            "examples": [
+              [
+                {
+                  "content_type": "image/png",
+                  "file_name": "nano-banana-2-edit-output.png",
+                  "url": "https://storage.googleapis.com/falserverless/example_outputs/nano-banana-2-edit-output.png"
+                }
+              ]
+            ]
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "The description of the generated images."
+          }
+        },
+        "type": "object",
+        "required": [
+          "images",
+          "description"
+        ],
+        "title": "NanoBanana2ImageToImageOutput",
+        "x-fal-order-properties": [
+          "images",
+          "description"
+        ]
+      },
+      "NanoBanana2TextToImageInput": {
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "maxLength": 50000,
+            "minLength": 3,
+            "title": "Prompt",
+            "description": "The text prompt to generate an image from.",
+            "examples": [
+              "An action shot of a black lab swimming in an inground suburban swimming pool. The camera is placed meticulously on the water line, dividing the image in half, revealing both the dogs head above water holding a tennis ball in it's mouth, and it's paws paddling underwater."
+            ]
+          },
+          "num_images": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "Number of Images",
+            "description": "The number of images to generate.",
+            "default": 1
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed",
+            "description": "The seed for the random number generator."
+          },
+          "aspect_ratio": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "21:9",
+                  "16:9",
+                  "3:2",
+                  "4:3",
+                  "5:4",
+                  "1:1",
+                  "4:5",
+                  "3:4",
+                  "2:3",
+                  "9:16"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aspect Ratio",
+            "description": "The aspect ratio of the generated image. Use \"auto\" to let the model decide based on the prompt.",
+            "default": "auto",
+            "ui": {
+              "important": true
+            }
+          },
+          "output_format": {
+            "type": "string",
+            "enum": [
+              "jpeg",
+              "png",
+              "webp"
+            ],
+            "title": "Output Format",
+            "description": "The format of the generated image.",
+            "default": "png"
+          },
+          "safety_tolerance": {
+            "type": "string",
+            "enum": [
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6"
+            ],
+            "title": "Safety Tolerance",
+            "description": "The safety tolerance level for content moderation. 1 is the most strict (blocks most content), 6 is the least strict.",
+            "default": "4",
+            "ui": {
+              "frozen": true
+            }
+          },
+          "sync_mode": {
+            "type": "boolean",
+            "title": "Sync Mode",
+            "description": "If `True`, the media will be returned as a data URI and the output data won't be available in the request history.",
+            "default": false
+          },
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "0.5K",
+              "1K",
+              "2K",
+              "4K"
+            ],
+            "title": "Resolution",
+            "description": "The resolution of the image to generate.",
+            "default": "1K",
+            "ui": {
+              "important": true
+            }
+          },
+          "limit_generations": {
+            "type": "boolean",
+            "title": "Limit Generations",
+            "description": "Experimental parameter to limit the number of generations from each round of prompting to 1. Set to `True` to to disregard any instructions in the prompt regarding the number of images to generate and ignore any intermediate images generated by the model. This may affect generation quality.",
+            "default": true,
+            "ui": {
+              "important": true
+            }
+          },
+          "enable_web_search": {
+            "type": "boolean",
+            "title": "Enable Web Search",
+            "description": "Enable web search for the image generation task. This will allow the model to use the latest information from the web to generate the image.",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "prompt"
+        ],
+        "title": "NanoBanana2TextToImageInput",
+        "x-fal-order-properties": [
+          "prompt",
+          "num_images",
+          "seed",
+          "aspect_ratio",
+          "output_format",
+          "safety_tolerance",
+          "sync_mode",
+          "resolution",
+          "limit_generations",
+          "enable_web_search"
+        ]
+      },
+      "NanoBanana2TextToImageOutput": {
+        "properties": {
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/ImageFile"
+            },
+            "type": "array",
+            "title": "Images",
+            "description": "The generated images.",
+            "examples": [
+              [
+                {
+                  "content_type": "image/png",
+                  "file_name": "nano-banana-2-t2i-output.png",
+                  "url": "https://storage.googleapis.com/falserverless/example_outputs/nano-banana-2-t2i-output.png"
+                }
+              ]
+            ]
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "The description of the generated images."
+          }
+        },
+        "type": "object",
+        "required": [
+          "images",
+          "description"
+        ],
+        "title": "NanoBanana2TextToImageOutput",
+        "x-fal-order-properties": [
+          "images",
+          "description"
+        ]
+      },
+      "TestClientSelectionInput": {
+        "properties": {
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User ID",
+            "description": "Optional user ID to simulate. Affects routing for favored users."
+          },
+          "is_retry": {
+            "type": "boolean",
+            "title": "Is Retry",
+            "description": "Whether to simulate a retry (passes a fake exception list to get_client_for_request).",
+            "default": false
+          },
+          "num_trials": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Number of Trials",
+            "description": "Number of times to call the client selection algorithm.",
+            "default": 100
+          },
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "1K",
+              "2K",
+              "4K"
+            ],
+            "title": "Resolution",
+            "description": "Resolution to simulate (e.g. '1K', '2K', '4K').",
+            "default": "1K"
+          },
+          "enable_web_search": {
+            "type": "boolean",
+            "title": "Enable Web Search",
+            "description": "Whether to simulate a request that requires web search.",
+            "default": false
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed",
+            "description": "Seed value to simulate (non-None excludes Poe/OpenRouter)."
+          },
+          "safety_tolerance": {
+            "type": "string",
+            "enum": [
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6"
+            ],
+            "title": "Safety Tolerance",
+            "description": "Safety tolerance to simulate (1-6). Values <= 3 exclude Poe/OpenRouter.",
+            "default": "4"
+          }
+        },
+        "type": "object",
+        "title": "TestClientSelectionInput",
+        "description": "Input for client selection algorithm testing.",
+        "x-fal-order-properties": [
+          "user_id",
+          "is_retry",
+          "num_trials",
+          "resolution",
+          "enable_web_search",
+          "seed",
+          "safety_tolerance"
+        ]
+      },
+      "TestClientSelectionOutput": {
+        "properties": {
+          "total_trials": {
+            "type": "integer",
+            "title": "Total Trials"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts",
+            "description": "Map of client description to selection count."
+          },
+          "percentages": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Percentages",
+            "description": "Map of client description to selection percentage."
+          },
+          "balancer_state": {
+            "type": "string",
+            "title": "Balancer State",
+            "description": "Current balancer state summary."
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_trials",
+          "counts",
+          "percentages",
+          "balancer_state"
+        ],
+        "title": "TestClientSelectionOutput",
+        "description": "Output showing client selection distribution.",
+        "x-fal-order-properties": [
+          "total_trials",
+          "counts",
+          "percentages",
+          "balancer_state"
+        ]
+      },
+      "UpdatePathConfigInput": {
+        "properties": {
+          "path_id": {
+            "type": "string",
+            "title": "Path Id",
+            "description": "Path ID to update."
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost",
+            "description": "New cost value."
+          },
+          "rps_limit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rps Limit",
+            "description": "New RPS limit."
+          },
+          "concurrency_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Concurrency Limit",
+            "description": "New concurrency limit. Use -1 to reset to unlimited."
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled",
+            "description": "Enable/disable the path."
+          },
+          "priority_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority Enabled",
+            "description": "Enable/disable priority routing."
+          },
+          "breaker_threshold": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": -1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breaker Threshold",
+            "description": "Per-path circuit breaker threshold (0.0-1.0). Use -1 to reset to global default."
+          }
+        },
+        "type": "object",
+        "required": [
+          "path_id"
+        ],
+        "title": "UpdatePathConfigInput",
+        "description": "Input for updating a Redis balancer path configuration.",
+        "x-fal-order-properties": [
+          "path_id",
+          "cost",
+          "rps_limit",
+          "concurrency_limit",
+          "enabled",
+          "priority_enabled",
+          "breaker_threshold"
+        ]
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "x-fal-order-properties": [
+          "loc",
+          "msg",
+          "type"
+        ]
+      }
+    }
+  },
+  "x-fal-order-paths": [
+    "/edit",
+    "/balancer/config",
+    "/balancer/state",
+    "/test-client-selection",
+    "/",
+    "/balancer/update-config",
+    "/health"
+  ]
+}

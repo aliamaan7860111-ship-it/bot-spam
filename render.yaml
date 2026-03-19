@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: order-bridge
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python execution/order_bridge.py
+    plan: free
+    envVars:
+      - key: NOTION_API_KEY
+        sync: false
+      - key: NOTION_DATABASE_ID
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_SOURCING_GROUP_ID
+        sync: false
+      - key: TELEGRAM_FULFILLMENT_GROUP_ID
+        sync: false
+      - key: POLL_INTERVAL_SECONDS
+        value: "5"
+      - key: ORDER_CUTOFF_DATE
+        value: "2026-02-23T17:23:00+05:00"
+      - key: PYTHON_VERSION
+        value: "3.11.0"

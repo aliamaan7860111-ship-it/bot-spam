@@ -1,0 +1,220 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-ring: var(--ring);
+
+  --animate-tilt: tilt 10s infinite linear;
+  --animate-sweep: sweep 1.2s ease-in-out infinite;
+
+  @keyframes sweep {
+    0% {
+      transform: translateX(-100%);
+    }
+
+    100% {
+      transform: translateX(100%);
+    }
+  }
+
+  @keyframes tilt {
+
+    0%,
+    50%,
+    100% {
+      transform: rotate(0deg);
+    }
+
+    25% {
+      transform: rotate(0.5deg);
+    }
+
+    75% {
+      transform: rotate(-0.5deg);
+    }
+  }
+
+  @keyframes shimmer {
+    0% {
+      background-position: 200% center;
+    }
+
+    100% {
+      background-position: -200% center;
+    }
+  }
+
+  @keyframes infinite-scroll {
+    0% {
+      transform: translateX(0);
+    }
+
+    100% {
+      transform: translateX(calc(-33.333%));
+    }
+  }
+}
+
+@layer utilities {
+  .text-shimmer {
+    background: linear-gradient(110deg,
+        rgba(255, 255, 255, 0.7) 0%,
+        rgba(255, 255, 255, 0.7) 40%,
+        rgba(255, 255, 255, 1) 50%,
+        rgba(255, 255, 255, 0.7) 60%,
+        rgba(255, 255, 255, 0.7) 100%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: shimmer 4s linear infinite;
+  }
+
+  .transform-style-3d {
+    transform-style: preserve-3d;
+  }
+}
+
+@layer base {
+  :root {
+    --background: #ffffff;
+    --foreground: #000000;
+  }
+
+  .dark {
+    /* Extreme dark for that obsidian feel */
+    --background: #000000;
+    --foreground: #ffffff;
+
+    /* Slightly elevated cards */
+    --card: #0a0a0a;
+    --card-foreground: #ffffff;
+
+    /* Subtle borders */
+    --border: #1f1f1f;
+    --input: #1a1a1a;
+
+    --primary: #ffffff;
+    --primary-foreground: #000000;
+
+    --muted: #141414;
+    --muted-foreground: #a1a1aa;
+
+    --accent: #1f1f1f;
+    --accent-foreground: #ffffff;
+
+    --ring: #333333;
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+    box-sizing: border-box;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+    /* Ambient premium ceiling glow */
+    background-image: radial-gradient(circle at 50% 0%, #1a1a1a 0%, transparent 50%);
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+  }
+}
+
+/* Premium Component Utilities */
+.glass-nav {
+  background-color: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.glass-panel {
+  background-color: rgba(15, 15, 15, 0.4);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+    0 8px 40px rgba(0, 0, 0, 0.6);
+}
+
+.text-gradient {
+  background: linear-gradient(180deg, #ffffff 0%, #a1a1aa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Custom Scrollbars and Theme Overrides for Dropdowns */
+.react-tel-input .country-list {
+  background-color: #111 !important;
+  color: white !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 0.75rem !important;
+  margin-top: 8px !important;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.8) !important;
+}
+
+.react-tel-input .country-list .country.highlight,
+.react-tel-input .country-list .country:hover {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+.react-tel-input .country-list .search {
+  background-color: #111 !important;
+  padding: 10px !important;
+}
+
+.react-tel-input .country-list .search-box {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  color: white !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 0.5rem !important;
+  width: 100% !important;
+  margin: 0 !important;
+}
+
+/* Custom Scrollbars for all dropdown menus */
+.react-tel-input .country-list::-webkit-scrollbar,
+div[class*="menu-list"]::-webkit-scrollbar,
+.react-select__menu-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.react-tel-input .country-list::-webkit-scrollbar-track,
+div[class*="menu-list"]::-webkit-scrollbar-track,
+.react-select__menu-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.react-tel-input .country-list::-webkit-scrollbar-thumb,
+div[class*="menu-list"]::-webkit-scrollbar-thumb,
+.react-select__menu-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+
+.react-tel-input .country-list::-webkit-scrollbar-thumb:hover,
+div[class*="menu-list"]::-webkit-scrollbar-thumb:hover,
+.react-select__menu-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.react-tel-input .selected-flag:hover,
+.react-tel-input .selected-flag:focus {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+}
