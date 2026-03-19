@@ -12,6 +12,7 @@ from playwright.async_api import async_playwright
 load_dotenv()
 
 # Setup logging
+os.makedirs(".tmp", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
