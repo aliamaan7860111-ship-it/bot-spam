@@ -213,6 +213,50 @@ async def notion_poller_loop(bot: Bot):
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
+async def poll_whatsapp_once() -> int:
+    """
+    Poll Notion for NEW orders, trigger WhatChimp flow.
+    """
+    orders = notion.query_new_orders()
+    if not orders:
+        return 0
+
+    # Filter for Pretty by Shahid (PT...)
+    new_orders = [o for o in orders if str(o.get("order_id", "")).startswith("PT") and not o.get("whatsapp_sent")]
+    
+    if not new_orders:
+        return 0
+
+    log.info(f"Found {len(new_orders)} new order(s) for WhatsApp confirmation")
+    
+    processed = 0
+    for order in new_orders:
+        phone = order.get("phone", "")
+        if not phone:
+            continue
+            
+        success = wc.trigger_bot_flow(phone)
+        if success:
+            notion.mark_whatsapp_sent(order["page_id"])
+            log.info(f"  ✓ WhatsApp Flow triggered for {order.get('order_id')}")
+            processed += 1
+        
+        await asyncio.sleep(1) # Breath between triggers
+        
+    return processed
+
+
+async def whatsapp_poller_loop():
+    """Continuously poll Notion for new orders to send WhatsApp."""
+    log.info(f"🔄 WhatsApp poller started")
+    while True:
+        try:
+            await poll_whatsapp_once()
+        except Exception as e:
+            log.error(f"WhatsApp poller error: {e}")
+        await asyncio.sleep(POLL_INTERVAL_SECONDS * 2) # Check slightly less often
+
+
 # ---------------------------------------------------------------------------
 # Health Check Server (for Render / cloud hosting)
 # ---------------------------------------------------------------------------
@@ -244,8 +288,41 @@ async def start_health_server():
                 return
                 
             method = first_line[0].upper()
+            path = first_line[1] if len(first_line) > 1 else "/"
             
-            body = "OK | Order Bridge is Running | Tracking verified via Notion"
+            # --- Webhook Handling ---
+            if "/whatchimp_webhook" in path:
+                # Basic parsing of query params from path
+                # Example: /whatchimp_webhook?order_id=PT1001&action=confirm
+                params = {}
+                if "?" in path:
+                    query = path.split("?", 1)[1]
+                    for pair in query.split("&"):
+                        if "=" in pair:
+                            k, v = pair.split("=", 1)
+                            params[k] = v
+                
+                order_id = params.get("order_id")
+                action = params.get("action")
+                
+                if order_id and action == "confirm":
+                    log.info(f"🔔 Webhook received: Confirming order {order_id}")
+                    order = notion.find_order_by_id(order_id)
+                    if order:
+                        # Move to CONFIRMED | PROCESSING to trigger the rest of the automation
+                        success = notion.update_order_status(order["page_id"], "CONFIRMED | PROCESSING")
+                        if success:
+                            log.info(f"  ✓ Notion updated to CONFIRMED | PROCESSING for {order_id}")
+                            body = f"OK | Order {order_id} confirmed in Notion"
+                        else:
+                            body = f"ERROR | Failed to update Notion for {order_id}"
+                    else:
+                        body = f"ERROR | Order {order_id} not found"
+                else:
+                    body = "INVALID_PARAMS"
+            else:
+                body = "OK | Order Bridge is Running | Tracking verified via Notion"
+            
             status_line = "HTTP/1.1 200 OK\r\n"
             headers = (
                 f"Content-Type: text/plain\r\n"
@@ -336,10 +413,11 @@ async def run_bridge():
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
 
-    # Run the Notion poller as a concurrent task
+    # Run the Notion pollers as concurrent tasks
     poller_task = asyncio.create_task(notion_poller_loop(bot))
+    whatsapp_task = asyncio.create_task(whatsapp_poller_loop())
 
-    # Start health check server (keeps Render free tier alive)
+    # Start health check server (keeps Render free tier alive + handles webhooks)
     health_task = asyncio.create_task(start_health_server())
 
     try:
@@ -349,6 +427,7 @@ async def run_bridge():
         log.info("Shutting down...")
     finally:
         poller_task.cancel()
+        whatsapp_task.cancel()
         await app.updater.stop()
         await app.stop()
         await app.shutdown()

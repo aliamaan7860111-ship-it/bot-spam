@@ -66,6 +66,7 @@ FIELD_EMAIL = "EMAIL"
 FIELD_PLATFORM_SOURCE = "PLATFORM SOURCE"
 FIELD_SOURCING_NOTIFIED = "SOURCING NOTIFIED"
 FIELD_FULFILLMENT_NOTIFIED = "FULFILLMENT NOTIFIED"
+FIELD_WHATSAPP_SENT = "WHATSAPP SENT" # User needs to add this checkbox to Notion
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +192,7 @@ def parse_order(page: dict) -> dict:
         "platform_source": _get_select(props, FIELD_PLATFORM_SOURCE) or _get_rich_text(props, FIELD_PLATFORM_SOURCE),
         "sourcing_notified": _get_checkbox(props, FIELD_SOURCING_NOTIFIED),
         "fulfillment_notified": _get_checkbox(props, FIELD_FULFILLMENT_NOTIFIED),
+        "whatsapp_sent": _get_checkbox(props, FIELD_WHATSAPP_SENT),
     }
 
 
@@ -520,10 +522,55 @@ def test_connection() -> bool:
             props = db.get("properties", {})
             log.info(f"  Found {len(props)} properties: {', '.join(props.keys())}")
             return True
-
-    except httpx.HTTPStatusError as e:
-        log.error(f"Notion connection failed: {e.response.status_code} — {e.response.text}")
-        return False
     except Exception as e:
         log.error(f"Notion connection failed: {e}")
         return False
+
+
+def query_new_orders() -> list[dict]:
+    """
+    Find all orders where ORDER STATUS = 'NEW' (or empty)
+    and WHATSAPP SENT is false.
+    """
+    payload = {
+        "filter": {
+            "and": [
+                {
+                    "or": [
+                        {"property": FIELD_ORDER_STATUS, "select": {"equals": "NEW"}},
+                        {"property": FIELD_ORDER_STATUS, "select": {"is_empty": True}}
+                    ]
+                },
+                {
+                    "property": FIELD_WHATSAPP_SENT,
+                    "checkbox": {"equals": False}
+                },
+                {
+                    "timestamp": "created_time",
+                    "created_time": {"on_or_after": ORDER_CUTOFF_DATE},
+                },
+            ]
+        },
+    }
+    
+    orders = []
+    try:
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(
+                f"{NOTION_API_BASE}/databases/{NOTION_DATABASE_ID}/query",
+                headers=_headers(),
+                json=payload,
+            )
+            resp.raise_for_status()
+            for page in resp.json().get("results", []):
+                orders.append(parse_order(page))
+        return orders
+    except Exception as e:
+        log.error(f"Notion query for NEW orders failed: {e}")
+        return orders
+
+def mark_whatsapp_sent(page_id: str) -> bool:
+    """Check the WHATSAPP SENT box in Notion."""
+    return _update_page(page_id, {
+        FIELD_WHATSAPP_SENT: {"checkbox": True},
+    })
