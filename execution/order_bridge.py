@@ -235,10 +235,15 @@ async def poll_whatsapp_once() -> int:
         if not phone:
             continue
             
-        success = wc.trigger_bot_flow(phone)
+        success = wc.send_template_message(
+            phone_number=phone,
+            customer_name=order.get("customer_name", "Customer"),
+            order_id=order.get("order_id", ""),
+            total=str(order.get("total_aed") or "0")
+        )
         if success:
-            notion.mark_whatsapp_sent(order["page_id"])
-            log.info(f"  ✓ WhatsApp Flow triggered for {order.get('order_id')}")
+            notion.mark_order_confirmation_sent(order["page_id"])
+            log.info(f"  ✓ WhatsApp Template sent and status updated for {order.get('order_id')}")
             processed += 1
         
         await asyncio.sleep(1) # Breath between triggers

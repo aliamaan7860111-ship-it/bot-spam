@@ -66,7 +66,8 @@ FIELD_EMAIL = "EMAIL"
 FIELD_PLATFORM_SOURCE = "PLATFORM SOURCE"
 FIELD_SOURCING_NOTIFIED = "SOURCING NOTIFIED"
 FIELD_FULFILLMENT_NOTIFIED = "FULFILLMENT NOTIFIED"
-FIELD_WHATSAPP_SENT = "WHATSAPP SENT" # User needs to add this checkbox to Notion
+FIELD_WHATSAPP_SENT = "Conformation Sent" # User's exact spelling
+STATUS_CONFIRMATION_SENT = "Conformation Sent" # User's exact spelling
 
 
 # ---------------------------------------------------------------------------
@@ -403,9 +404,16 @@ def set_sourcing_cost(page_id: str, cost: float) -> bool:
 
 
 def mark_order_processed(page_id: str) -> bool:
-    """Update status to Processed."""
+    """Update status to CONFIRMED | PROCESSING."""
     return _update_page(page_id, {
-        FIELD_ORDER_STATUS: {"select": {"name": "Processed"}},
+        FIELD_ORDER_STATUS: {"select": {"name": "CONFIRMED | PROCESSING"}},
+    })
+
+def mark_order_confirmation_sent(page_id: str) -> bool:
+    """Update checkbox AND status to Conformation Sent."""
+    return _update_page(page_id, {
+        FIELD_WHATSAPP_SENT: {"checkbox": True},
+        FIELD_ORDER_STATUS: {"select": {"name": STATUS_CONFIRMATION_SENT}},
     })
 
 

@@ -35,40 +35,47 @@ def clean_phone_number(phone: str) -> str:
         
     return cleaned
 
-def trigger_bot_flow(phone_number: str) -> bool:
+def send_template_message(phone_number: str, customer_name: str, order_id: str, total: str) -> bool:
     """
-    Kicks off a specific Bot Flow in WhatChimp.
-    Uses WHATCHIMP_BOT_FLOW_ID from .env.
+    Sends a WhatsApp Template message using the 'prettybyshd_order_confirmation' template.
+    Template ID: 339784
+    Variables: {{1}}=Name, {{2}}=Order ID, {{3}}=Total
     """
-    if not WHATCHIMP_API_TOKEN or not WHATCHIMP_PHONE_NUMBER_ID or not WHATCHIMP_BOT_FLOW_ID:
-        log.error("Missing WhatChimp credentials (token, phone_id, or flow_id) in .env")
+    if not WHATCHIMP_API_TOKEN or not WHATCHIMP_PHONE_NUMBER_ID:
+        log.error("Missing WhatChimp credentials in .env")
         return False
 
     cleaned_phone = clean_phone_number(phone_number)
     
+    # Payload for the 'send/template' endpoint
+    # Note: We use template_id 339784 for 'prettybyshd_order_confirmation'
     payload = {
         "apiToken": WHATCHIMP_API_TOKEN,
         "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
-        "bot_flow_unique_id": WHATCHIMP_BOT_FLOW_ID,
-        "phone_number": cleaned_phone
+        "template_id": "339784",
+        "phone_number": cleaned_phone,
+        # Variables: Name, Order ID, Total
+        "template_variable_values": f'["{customer_name}", "{order_id}", "{total}"]',
+        # Default button values for the interactive buttons in the template
+        "template_quick_reply_button_values": '["YES_START_CHAT_WITH_HUMAN","tVFNJmtQvGkg6Cs"]'
     }
 
     try:
-        log.info(f"Triggering WhatChimp Flow {WHATCHIMP_BOT_FLOW_ID} for {cleaned_phone}...")
+        log.info(f"Sending Template 339784 to {cleaned_phone} (Variables: {customer_name}, {order_id}, {total})...")
         with httpx.Client(timeout=15) as client:
-            resp = client.post(f"{API_BASE}/trigger-bot", data=payload)
+            resp = client.post(f"{API_BASE}/send/template", data=payload)
             resp.raise_for_status()
             data = resp.json()
             
             if str(data.get("status")) == "1":
-                log.info(f"✓ WhatChimp Flow triggered for {cleaned_phone}.")
+                log.info(f"✓ WhatChimp Template sent to {cleaned_phone}.")
                 return True
             else:
-                log.error(f"WhatChimp Flow Error: {data.get('message', data)}")
+                log.error(f"WhatChimp Template Error: {data.get('message', data)}")
                 return False
                 
     except Exception as e:
-        log.error(f"WhatChimp Flow request failed: {e}")
+        log.error(f"WhatChimp Template request failed: {e}")
         return False
 
 def assign_label(phone_number: str, label_ids: str) -> bool:
