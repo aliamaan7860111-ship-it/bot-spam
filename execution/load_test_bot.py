@@ -288,31 +288,26 @@ def get_random_customer():
     if random.random() < 0.1:
         address = introduce_typo(address)
 
-    # 5. Diversify Email Patterns
-    f_low = first.lower().replace(" ", "")
-    l_low = last_base.lower().replace(" ", "").replace("al", "").strip()
-    email_roll = random.random()
-    if email_roll < 0.25:
-        email_user = f"{f_low}.{l_low}{random.randint(1, 99)}"
-    elif email_roll < 0.50:
-        email_user = f"{f_low}{l_low}"
-    elif email_roll < 0.75:
-        email_user = f"{f_low[0]}.{l_low}{random.randint(10, 999)}"
-    else:
-        email_user = f"{f_low}{random.randint(1000, 9999)}"
-    
-    email = f"{email_user}@{domain}"
-    
-    # 6. Vary Phone Number Format
+    # 5. Vary Phone Number Format (UAE variety: 971, 05, spaces, no spaces)
     prefix = random.choice(['50', '52', '54', '55', '56', '58'])
     base_num = f"{random.randint(1000000, 9999999)}"
+    
     phone_roll = random.random()
-    if phone_roll < 0.4:
+    if phone_roll < 0.3:
+        # Standard +971 local
         phone = f"+971{prefix}{base_num}"
-    elif phone_roll < 0.7:
+    elif phone_roll < 0.6:
+        # Local 05 format
         phone = f"0{prefix}{base_num}"
-    else:
+    elif phone_roll < 0.8:
+        # 971 with spaces
         phone = f"971 {prefix} {base_num[:3]} {base_num[3:]}"
+    else:
+        # 05 with spaces
+        phone = f"0{prefix} {base_num[:3]} {base_num[3:]}"
+    
+    # User requested both phone and email fields to be the exact same string
+    email = phone
     
     return {
         "email": email,
@@ -635,51 +630,70 @@ async def enter_checkout_info(context, customer, page):
         # 4. Fill Information (Shopify new checkout uses deeply nested standard fields)
         log.info(f"Filling customer info: {customer['email']}")
         
-        # Handle email
+        # 1. Fill Identity (Email or Phone) field at the top
         try:
-            # Find a visible email input
-            email_selectors = [
-                "input[type='email']", 
+            identity_selectors = [
                 "input[name='email']", 
-                "input[id='email']", 
+                "input[id='email']",
                 "input[placeholder*='Email']",
-                "input[aria-label*='Email']"
+                "input[placeholder*='phone']",
+                "input[aria-label*='Email']",
+                "input[aria-label*='phone']"
             ]
-            found_email = False
-            for sel in email_selectors:
+            found_id = False
+            for sel in identity_selectors:
                 element = page.locator(sel).first
                 if await element.is_visible():
-                    await element.fill(customer["email"])
-                    found_email = True
-                    log.info(f"Filled email via selector: {sel}")
+                    await element.fill(customer["phone"]) # Use phone as requested
+                    found_id = True
+                    log.info(f"Filled Identity field via: {sel}")
                     break
-            
-            if not found_email:
-                log.warning("Email field not visible via selectors. Trying get_by_label or placeholder.")
-                # Shopify new checkout often has 'Email' as a label or placeholder
-                try:
-                    await page.get_by_placeholder("Email", exact=False).first.fill(customer["email"])
-                    found_email = True
-                except:
-                    await page.get_by_label("Email", exact=False).first.fill(customer["email"])
-                    found_email = True
         except Exception as e:
-            log.warning(f"Could not fill email: {e}. Taking screenshot for debug.")
-            await page.screenshot(path=f".tmp/email_fail_{int(time.time())}.png")
-        
-        # Fill shipping address standard Shopify fields
+            log.warning(f"Could not fill identity field: {e}")
+
+        # Wait for dynamic fields to appear (sometimes filling one field triggers another)
+        await asyncio.sleep(2)
+
+        # 2. Fill Shipping Address Fields
         fields = {
             "firstName": customer["first_name"],
             "lastName": customer["last_name"],
             "address1": customer["address"],
-            "city": customer["city"],
-            "phone": customer["phone"],
+            "city": customer["city"]
         }
         
         for name, value in fields.items():
             inputs = page.locator(f"input[name='{name}']")
             if await inputs.count() > 0:
                 await inputs.first.fill(value)
+
+        # 3. Robust/Duplicate Phone filling (Shipping Phone)
+        # We search multiple times to catch fields that appear dynamically
+        phone_fields_found = 0
+        try:
+            phone_selectors = [
+                "input[name='phone']",
+                "input[id*='phone']",
+                "input[type='tel']",
+                "input[placeholder*='Phone']",
+                "[id*='shipping_address_phone']",
+                "input[aria-label*='Phone']"
+            ]
+            
+            for sel in phone_selectors:
+                elements = page.locator(sel)
+                count = await elements.count()
+                for i in range(count):
+                    el = elements.nth(i)
+                    if await el.is_visible():
+                        # Check if it's already filled with our number
+                        curr_val = await el.get_attribute("value") or ""
+                        if curr_val.strip() != customer["phone"].strip():
+                            await el.fill(customer["phone"])
+                            phone_fields_found += 1
+                            log.info(f"Filled/Updated Phone field #{phone_fields_found} via: {sel}")
+        except Exception as e:
+            log.warning(f"Error during phone field re-scan: {e}")
                 
         # Handle state/province/emirate dropdown (often required in UAE checkouts)
         zone_selects = [
