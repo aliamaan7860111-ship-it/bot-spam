@@ -44,6 +44,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Local imports
 import notion_client as notion
 import telegram_client as tg
+import whatchimp_client as wc
 
 from telegram import Bot
 from telegram.ext import Application
@@ -157,6 +158,29 @@ async def poll_notion_once(bot: Bot) -> int:
 
         if success:
             log.info(f"  ✓ Order {order_id} sent, status → SOURCING")
+            
+            # --- WhatChimp Integration ---
+            # Only send WhatsApp confirmation for Pretty by Shahid (PT...)
+            if isinstance(order_id, str) and order_id.startswith("PT"):
+                phone = order.get("phone", "")
+                if phone:
+                    customer_name = order.get("customer_name", "").strip() or "Customer"
+                    total = order.get("total_aed", "")
+                    
+                    msg = (
+                        f"Hey {customer_name}! 🛍️\n\n"
+                        f"Thank you for shopping with Pretty by Shahid.\n"
+                        f"Your order ({order_id}) has been confirmed and is currently processing. "
+                        f"Total Amount: {total} AED.\n\n"
+                        f"We'll notify you once it's shipped!"
+                    )
+                    wc_success = wc.send_whatsapp_message(phone, msg)
+                    if wc_success:
+                        log.info(f"  ✓ WhatsApp confirmation sent to {phone} for {order_id}")
+                    else:
+                        log.error(f"  ✗ Failed to send WhatsApp confirmation for {order_id}")
+            # -----------------------------
+
             processed += 1
         else:
             # Revert Notion status and tracking so it retries on next cycle
