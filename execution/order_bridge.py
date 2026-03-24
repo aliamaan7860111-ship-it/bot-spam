@@ -80,7 +80,7 @@ def setup_logging() -> logging.Logger:
     logger.addHandler(fh)
 
     # Also configure sub-loggers
-    for name in ["order_bridge.notion", "order_bridge.telegram"]:
+    for name in ["order_bridge.notion", "order_bridge.telegram", "whatchimp_client"]:
         sub = logging.getLogger(name)
         sub.setLevel(logging.DEBUG)
 
