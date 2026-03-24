@@ -80,6 +80,32 @@ def create_or_update_subscriber(phone_number: str, name: str) -> bool:
         log.error(f"Subscriber sync failed: {e}")
         return False
 
+def assign_order_id_to_subscriber(phone_number: str, order_id: str) -> bool:
+    """
+    Assigns the order_id as a custom field to the subscriber in WhatChimp.
+    This allows the downstream flow (Confirm 123) to use {{order_id}} in its webhook.
+    """
+    cleaned_phone = clean_phone_number(phone_number)
+
+    payload = {
+        "apiToken": WHATCHIMP_API_TOKEN,
+        "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
+        "phone_number": cleaned_phone,
+        "custom_fields": {
+            "order_id": order_id
+        }
+    }
+
+    try:
+        log.info(f"Assigning order_id '{order_id}' to {cleaned_phone} in WhatChimp...")
+        with httpx.Client(timeout=15) as client:
+            resp = client.post(f"{API_BASE}/subscriber/chat/assign-custom-fields", json=payload)
+            resp.raise_for_status()
+            return str(resp.json().get("status")) == "1"
+    except Exception as e:
+        log.error(f"Assign custom field failed: {e}")
+        return False
+
 def send_template_message(phone_number: str, customer_name: str, order_id: str, total: str) -> bool:
     """
     Sends the WhatsApp confirmation template via the direct API (reliable delivery)
@@ -93,10 +119,13 @@ def send_template_message(phone_number: str, customer_name: str, order_id: str, 
 
     # 1. Sync the name first so placeholders work
     create_or_update_subscriber(phone_number, customer_name)
+    
+    # 2. Assign order_id as a custom field so {{order_id}} works in the flow
+    assign_order_id_to_subscriber(phone_number, order_id)
 
     cleaned_phone = clean_phone_number(phone_number)
     
-    # 2. Prepare payload with manual button routing
+    # 3. Prepare payload with manual button routing
     # Button order in prettybyshd_order_confirmation: [Reschedule, Process Order]
     button_values = '["YES_START_CHAT_WITH_BOT","Nop_RZOKKksN72n"]'
     
