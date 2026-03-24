@@ -272,7 +272,7 @@ async def start_health_server():
     ping this to keep the free tier service alive.
     Handles GET and HEAD requests.
     """
-    port = int(os.getenv("PORT", "10000"))
+    port = int(os.getenv("PORT", "8080"))
     max_retries = 5
     retry_delay = 5
 
