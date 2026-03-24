@@ -35,33 +35,78 @@ def clean_phone_number(phone: str) -> str:
         
     return cleaned
 
+def create_or_update_subscriber(phone_number: str, name: str) -> bool:
+    """
+    Ensures a subscriber exists in WhatChimp with the correct name.
+    This fixes issues where placeholders like #User-Name# are sent blank.
+    """
+    if not WHATCHIMP_API_TOKEN or not WHATCHIMP_PHONE_NUMBER_ID:
+        return False
+
+    cleaned_phone = clean_phone_number(phone_number)
+    
+    # WhatChimp "Create" API typically handles upserts
+    # Note: Using phoneNumberID (camelCase) as per documentation for create
+    payload = {
+        "apiToken": WHATCHIMP_API_TOKEN,
+        "phoneNumberID": WHATCHIMP_PHONE_NUMBER_ID,
+        "name": name,
+        "phoneNumber": cleaned_phone
+    }
+
+    try:
+        log.info(f"Syncing subscriber {cleaned_phone} (Name: {name})...")
+        with httpx.Client(timeout=15) as client:
+            resp = client.post(f"{API_BASE}/subscriber/create", data=payload)
+            # We don't raise_for_status() here because if they already exist, 
+            # we might get a 400/already exists which is fine.
+            data = resp.json()
+            
+            if str(data.get("status")) == "1":
+                log.info(f"✓ Subscriber synced.")
+                return True
+            else:
+                # If create fails, try Update specifically
+                update_payload = {
+                    "apiToken": WHATCHIMP_API_TOKEN,
+                    "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
+                    "phone_number": cleaned_phone,
+                    "first_name": name
+                }
+                resp_upd = client.post(f"{API_BASE}/subscriber/update", data=update_payload)
+                return str(resp_upd.json().get("status")) == "1"
+                
+    except Exception as e:
+        log.error(f"Subscriber sync failed: {e}")
+        return False
+
 def send_template_message(phone_number: str, customer_name: str, order_id: str, total: str) -> bool:
     """
     Sends a WhatsApp Template message using the 'prettybyshd_order_confirmation' template.
     Template ID: 339784
-    Variables: {{1}}=Name, {{2}}=Order ID, {{3}}=Total
+    Personalization: We sync the name first so #User-Name# works.
     """
     if not WHATCHIMP_API_TOKEN or not WHATCHIMP_PHONE_NUMBER_ID:
         log.error("Missing WhatChimp credentials in .env")
         return False
 
+    # 1. Sync the name first so placeholders work
+    create_or_update_subscriber(phone_number, customer_name)
+
     cleaned_phone = clean_phone_number(phone_number)
     
-    # Payload for the 'send/template' endpoint
-    # Note: We use template_id 339784 for 'prettybyshd_order_confirmation'
+    # 2. Trigger Template
     payload = {
         "apiToken": WHATCHIMP_API_TOKEN,
         "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
         "template_id": "339784",
         "phone_number": cleaned_phone,
-        # Variables: Name, Order ID, Total
-        "template_variable_values": f'["{customer_name}", "{order_id}", "{total}"]',
-        # Default button values for the interactive buttons in the template
+        # Default button values for confirmation
         "template_quick_reply_button_values": '["YES_START_CHAT_WITH_HUMAN","tVFNJmtQvGkg6Cs"]'
     }
 
     try:
-        log.info(f"Sending Template 339784 to {cleaned_phone} (Variables: {customer_name}, {order_id}, {total})...")
+        log.info(f"Sending Template 339784 to {cleaned_phone}...")
         with httpx.Client(timeout=15) as client:
             resp = client.post(f"{API_BASE}/send/template", data=payload)
             resp.raise_for_status()
