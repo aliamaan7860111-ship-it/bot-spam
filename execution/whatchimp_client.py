@@ -86,8 +86,16 @@ def assign_order_id_to_subscriber(phone_number: str, order_id: str) -> bool:
     This allows the downstream flow (Confirm 123) to use {{order_id}} in its webhook.
     """
     cleaned_phone = clean_phone_number(phone_number)
+    # Format A: Form-encoded with stringified JSON (Based on research)
+    payload_form = {
+        "apiToken": WHATCHIMP_API_TOKEN,
+        "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
+        "phone_number": cleaned_phone,
+        "custom_fields": json.dumps({"order_id": order_id})
+    }
 
-    payload = {
+    # Format B: Regular JSON object (fallback)
+    payload_json = {
         "apiToken": WHATCHIMP_API_TOKEN,
         "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
         "phone_number": cleaned_phone,
@@ -98,21 +106,33 @@ def assign_order_id_to_subscriber(phone_number: str, order_id: str) -> bool:
 
     try:
         log.info(f"Assigning order_id '{order_id}' to {cleaned_phone} in WhatChimp...")
-        headers = {"Content-Type": "application/json"}
+        
+        # Try Format A first (Form-encoded with stringified JSON)
         resp = requests.post(
             f"{API_BASE}/subscriber/chat/assign-custom-fields", 
-            data=json.dumps(payload), 
-            headers=headers,
+            data=payload_form,
             timeout=15
         )
-        resp.raise_for_status()
+        result = resp.json()
+        
+        if str(result.get("status")) == "1":
+            log.info(f"  ✓ order_id assigned (Method A).")
+            return True
+        
+        # Try Format B (Pure JSON) if Method A failed
+        log.warning(f"  ! Method A failed ({result.get('message')}), trying Method B...")
+        resp = requests.post(
+            f"{API_BASE}/subscriber/chat/assign-custom-fields", 
+            json=payload_json,
+            timeout=15
+        )
         result = resp.json()
         if str(result.get("status")) == "1":
-            log.info(f"  ✓ order_id assigned successfully.")
+            log.info(f"  ✓ order_id assigned (Method B).")
             return True
-        else:
-            log.error(f"  ✗ Failed to assign order_id: {result.get('message', result)}")
-            return False
+
+        log.error(f"  ✗ All assign methods failed: {result.get('message', result)}")
+        return False
     except Exception as e:
         log.error(f"Assign custom field failed: {e}")
         return False
