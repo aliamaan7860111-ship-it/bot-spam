@@ -161,13 +161,13 @@ def send_template_message(phone_number: str, customer_name: str, order_id: str, 
     payload = {
         "apiToken": WHATCHIMP_API_TOKEN,
         "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
-        "template_id": "339784",
+        "template_id": "340352",
         "phone_number": cleaned_phone,
         "template_quick_reply_button_values": button_values
     }
 
     try:
-        log.info(f"Sending Template 339784 with manual button routing to {cleaned_phone}...")
+        log.info(f"Sending Template 340352 with manual button routing to {cleaned_phone}...")
         resp = requests.post(f"{API_BASE}/send/template", data=payload, timeout=15)
         resp.raise_for_status()
         data = resp.json()
