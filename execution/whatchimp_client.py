@@ -82,12 +82,13 @@ def create_or_update_subscriber(phone_number: str, name: str) -> bool:
 
 def send_template_message(phone_number: str, customer_name: str, order_id: str, total: str) -> bool:
     """
-    Sends a WhatsApp Template message using the 'prettybyshd_order_confirmation' template.
-    Template ID: 339784
-    Personalization: We sync the name first so #User-Name# works.
+    Sends the WhatsApp confirmation template via the direct API (reliable delivery)
+    while manually mapping the buttons to their respective flows:
+      - Button 1 (Reschedule)    → 'YES_START_CHAT_WITH_BOT' (Chat with human)
+      - Button 2 (Process Order) → 'Nop_RZOKKksN72n' (Flow: Confirm 123)
     """
     if not WHATCHIMP_API_TOKEN or not WHATCHIMP_PHONE_NUMBER_ID:
-        log.error("Missing WhatChimp credentials in .env")
+        log.error("Missing WhatChimp credentials (token or phone_id) in .env")
         return False
 
     # 1. Sync the name first so placeholders work
@@ -95,30 +96,32 @@ def send_template_message(phone_number: str, customer_name: str, order_id: str, 
 
     cleaned_phone = clean_phone_number(phone_number)
     
-    # 2. Trigger Template
+    # 2. Prepare payload with manual button routing
+    # Button order in prettybyshd_order_confirmation: [Reschedule, Process Order]
+    button_values = '["YES_START_CHAT_WITH_BOT","Nop_RZOKKksN72n"]'
+    
     payload = {
         "apiToken": WHATCHIMP_API_TOKEN,
         "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
         "template_id": "339784",
         "phone_number": cleaned_phone,
-        # Default button values for confirmation
-        "template_quick_reply_button_values": '["YES_START_CHAT_WITH_HUMAN","tVFNJmtQvGkg6Cs"]'
+        "template_quick_reply_button_values": button_values
     }
 
     try:
-        log.info(f"Sending Template 339784 to {cleaned_phone}...")
+        log.info(f"Sending Template 339784 with manual button routing to {cleaned_phone}...")
         with httpx.Client(timeout=15) as client:
             resp = client.post(f"{API_BASE}/send/template", data=payload)
             resp.raise_for_status()
             data = resp.json()
-            
+
             if str(data.get("status")) == "1":
-                log.info(f"✓ WhatChimp Template sent to {cleaned_phone}.")
+                log.info(f"✓ WhatChimp Template delivered with button routing.")
                 return True
             else:
                 log.error(f"WhatChimp Template Error: {data.get('message', data)}")
                 return False
-                
+
     except Exception as e:
         log.error(f"WhatChimp Template request failed: {e}")
         return False
