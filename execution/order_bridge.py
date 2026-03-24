@@ -318,23 +318,30 @@ async def start_health_server():
                         success = notion.update_order_status(order["page_id"], "CONFIRMED | PROCESSING")
                         if success:
                             log.info(f"  ✓ Notion updated to CONFIRMED | PROCESSING for {order_id}")
-                            body = f"OK | Order {order_id} confirmed in Notion"
+                            body = '{"status": 1, "message": "Success"}'
                         else:
-                            body = f"ERROR | Failed to update Notion for {order_id}"
+                            body = '{"status": 0, "message": "Update failed"}'
                     else:
-                        body = f"ERROR | Order {order_id} not found"
+                        body = '{"status": 0, "message": "Order not found"}'
                 else:
-                    body = "INVALID_PARAMS"
+                    body = '{"status": 0, "message": "Invalid params"}'
+                
+                status_line = "HTTP/1.1 200 OK\r\n"
+                headers = (
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    f"Connection: close\r\n"
+                    f"\r\n"
+                )
             else:
-                body = "OK | Order Bridge is Running | Tracking verified via Notion"
-            
-            status_line = "HTTP/1.1 200 OK\r\n"
-            headers = (
-                f"Content-Type: text/plain\r\n"
-                f"Content-Length: {len(body)}\r\n"
-                f"Connection: close\r\n"
-                f"\r\n"
-            )
+                body = "OK | Order Bridge is Running"
+                status_line = "HTTP/1.1 200 OK\r\n"
+                headers = (
+                    f"Content-Type: text/plain\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    f"Connection: close\r\n"
+                    f"\r\n"
+                )
             
             response = status_line + headers
             # HEAD requests should only return status line and headers

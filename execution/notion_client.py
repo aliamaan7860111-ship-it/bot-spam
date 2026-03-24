@@ -418,9 +418,10 @@ def mark_order_confirmation_sent(page_id: str) -> bool:
 
 
 def mark_order_new(page_id: str) -> bool:
-    """Reset order status back to NEW."""
+    """Reset order status back to NEW and UNCHECK confirmation sent."""
     return _update_page(page_id, {
         FIELD_ORDER_STATUS: {"select": {"name": "NEW"}},
+        FIELD_WHATSAPP_SENT: {"checkbox": False},
     })
 
 
