@@ -161,7 +161,7 @@ def send_template_message(phone_number: str, customer_name: str, order_id: str, 
     payload = {
         "apiToken": WHATCHIMP_API_TOKEN,
         "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
-        "template_id": "340352",
+        "template_id": "340363",
         "phone_number": cleaned_phone,
         "template_quick_reply_button_values": button_values
     }
