@@ -231,63 +231,7 @@ async def notion_poller_loop(bot: Bot):
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
-async def poll_whatsapp_once() -> int:
-    """
-    Poll Notion for NEW orders, trigger WhatChimp flow.
-    """
-    orders = notion.query_new_orders()
-    if not orders:
-        return 0
-
-    # Filter for all supported brands
-    new_orders = []
-    for o in orders:
-        order_id = str(o.get("order_id", ""))
-        # Extract prefix (assuming 2 characters for AM, PT, VX, LU and Di)
-        # Note: Di is also two chars. We'll check the first 2 chars.
-        prefix = order_id[:2]
-        
-        if prefix in BRAND_MAP and not o.get("whatsapp_sent"):
-            o["brand_name"] = BRAND_MAP[prefix]
-            new_orders.append(o)
-    
-    if not new_orders:
-        return 0
-
-    log.info(f"Found {len(new_orders)} new order(s) for WhatsApp confirmation across {len(BRAND_MAP)} brands")
-    
-    processed = 0
-    for order in new_orders:
-        phone = order.get("phone", "")
-        if not phone:
-            continue
-            
-        success = wc.send_template_message(
-            phone_number=phone,
-            customer_name=order.get("customer_name", "Customer"),
-            order_id=order.get("order_id", ""),
-            total=str(order.get("total_aed") or "0"),
-            brand_name=order.get("brand_name", "PrettyByShd")
-        )
-        if success:
-            notion.mark_whatsapp_sent(order["page_id"])
-            log.info(f"  ✓ WhatsApp ({order.get('brand_name')}) sent and status updated for {order.get('order_id')}")
-            processed += 1
-        
-        await asyncio.sleep(1) # Breath between triggers
-        
-    return processed
-
-
-async def whatsapp_poller_loop():
-    """Continuously poll Notion for new orders to send WhatsApp."""
-    log.info(f"🔄 WhatsApp poller started")
-    while True:
-        try:
-            await poll_whatsapp_once()
-        except Exception as e:
-            log.error(f"WhatsApp poller error: {e}")
-        await asyncio.sleep(POLL_INTERVAL_SECONDS * 2) # Check slightly less often
+# (WhatsApp logic moved to dedicated whatsapp_confirmation_bot.py)
 
 
 # ---------------------------------------------------------------------------
@@ -445,11 +389,10 @@ async def run_bridge():
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
 
-    # Run the Notion pollers as concurrent tasks
+    # Run the Notion poller as a concurrent task
     poller_task = asyncio.create_task(notion_poller_loop(bot))
-    whatsapp_task = asyncio.create_task(whatsapp_poller_loop())
 
-    # Start health check server (keeps Render free tier alive + handles webhooks)
+    # Start health check server (keeps Render free tier alive)
     health_task = asyncio.create_task(start_health_server())
 
     try:
@@ -459,7 +402,6 @@ async def run_bridge():
         log.info("Shutting down...")
     finally:
         poller_task.cancel()
-        whatsapp_task.cancel()
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
