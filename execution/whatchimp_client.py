@@ -74,8 +74,8 @@ def send_template_message(phone_number: str, customer_name: str, order_id: str, 
         "templateVariable-id-3": order_id,
         "templateVariable-name-1": customer_name, # Standard pattern for first variable
         
-        # Button values as a JSON string
-        "template_quick_reply_button_values": json.dumps(["YES_START_CHAT_WITH_HUMAN", "Nop_RZOKKksN72n"])
+        # Button values as a JSON string (no spaces after comma for WhatChimp API compatibility)
+        "template_quick_reply_button_values": json.dumps(["YES_START_CHAT_WITH_HUMAN", "Nop_RZOKKksN72n"], separators=(',', ':'))
     }
 
     try:
