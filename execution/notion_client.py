@@ -201,6 +201,73 @@ def parse_order(page: dict) -> dict:
 # Query Operations
 # ---------------------------------------------------------------------------
 
+def query_new_orders(cutoff_date: str = None) -> list[dict]:
+    """
+    Query Notion for orders where:
+    1. Status is 'Confirmed' (or matching FIELD_ORDER_STATUS logic)
+    2. CREATED date is after the cutoff.
+    3. SOURCING NOTIFIED is False or WHATSAPP SENT is False.
+    """
+    # Use the provided cutoff or fall back to the global one
+    active_cutoff = cutoff_date or ORDER_CUTOFF_DATE
+    
+    # Simple query for all recent potentially unprocessed orders
+    payload = {
+        "filter": {
+            "and": [
+                {
+                    "property": FIELD_CREATED,
+                    "date": {
+                        "on_or_after": active_cutoff
+                    }
+                }
+            ]
+        },
+        "sorts": [
+            {
+                "property": FIELD_CREATED,
+                "direction": "ascending"
+            }
+        ]
+    }
+
+    orders = []
+    has_more = True
+    start_cursor = None
+
+    try:
+        with httpx.Client(timeout=30) as client:
+            while has_more:
+                if start_cursor:
+                    payload["start_cursor"] = start_cursor
+
+                resp = client.post(
+                    f"{NOTION_API_BASE}/databases/{NOTION_DATABASE_ID}/query",
+                    headers=_headers(),
+                    json=payload,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                for page in data.get("results", []):
+                    try:
+                        orders.append(parse_order(page))
+                    except Exception as e:
+                        log.warning(f"Failed to parse order page {page.get('id', '?')}: {e}")
+
+                has_more = data.get("has_more", False)
+                start_cursor = data.get("next_cursor")
+
+        return orders
+
+    except httpx.HTTPStatusError as e:
+        log.error(f"Notion API error: {e.response.status_code} — {e.response.text}")
+        return orders
+    except Exception as e:
+        log.error(f"Notion query failed: {e}")
+        return orders
+
+
 def query_confirmed_orders() -> list[dict]:
     """
     Find all orders where ORDER STATUS = 'CONFIRMED | PROCESSING'

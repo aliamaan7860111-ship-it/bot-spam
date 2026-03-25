@@ -23,6 +23,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "execution"))
 # Load .env
 load_dotenv(PROJECT_ROOT / ".env")
 
+# Only process orders created after this date (from .env)
+# Using specific key for WhatsApp
+ORDER_CUTOFF_DATE_STR = os.getenv("WHATSAPP_ORDER_CUTOFF_DATE", os.getenv("ORDER_CUTOFF_DATE", "2026-03-24T18:58:00+05:00"))
+ORDER_CUTOFF_DATE = datetime.fromisoformat(ORDER_CUTOFF_DATE_STR)
+
 # Local imports
 import notion_client as notion
 import whatchimp_client as wc
@@ -42,8 +47,8 @@ async def poll_whatsapp_once() -> int:
     """
     Poll Notion for NEW orders, trigger WhatChimp template delivery.
     """
-    # query_new_orders is the function that checks 'WHATSAPP SENT' status
-    orders = notion.query_new_orders()
+    # Pass the specific WhatsApp cutoff string
+    orders = notion.query_new_orders(ORDER_CUTOFF_DATE_STR)
     if not orders:
         return 0
 

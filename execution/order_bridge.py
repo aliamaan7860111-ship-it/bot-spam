@@ -218,7 +218,7 @@ async def poll_notion_once(bot: Bot) -> int:
 
 async def notion_poller_loop(bot: Bot):
     """Continuously poll Notion every POLL_INTERVAL_SECONDS."""
-    log.info(f"🔄 Notion poller started (checking every {POLL_INTERVAL_SECONDS}s)")
+    log.info(f"🔄 Notion poller started (Cutoff: {ORDER_CUTOFF_DATE_STR})")
 
     while True:
         try:
@@ -237,6 +237,11 @@ async def notion_poller_loop(bot: Bot):
 # ---------------------------------------------------------------------------
 # Health Check Server (for Render / cloud hosting)
 # ---------------------------------------------------------------------------
+
+# Only process orders created after this date (from .env)
+# Using specific key for Telegram
+ORDER_CUTOFF_DATE_STR = os.getenv("TELEGRAM_ORDER_CUTOFF_DATE", os.getenv("ORDER_CUTOFF_DATE", "2026-02-23T17:23:00+05:00"))
+ORDER_CUTOFF_DATE = datetime.fromisoformat(ORDER_CUTOFF_DATE_STR)
 
 async def start_health_server():
     """
