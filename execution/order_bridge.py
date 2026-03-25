@@ -50,6 +50,24 @@ from telegram import Bot
 from telegram.ext import Application
 
 # ---------------------------------------------------------------------------
+# Multi-Brand Configuration
+# ---------------------------------------------------------------------------
+BRAND_MAP = {
+    "PT": "PrettyByShd",
+    "AM": "Amara's Room",
+    "VX": "Virex UAE",
+    "Di": "Dialo UAE",
+    "LU": "Lune Collection"
+}
+
+def get_brand_from_order_id(order_id: str) -> str:
+    """Extracts the brand name from the order ID prefix."""
+    if not isinstance(order_id, str):
+        return "PrettyByShd"
+    prefix = order_id[:2]
+    return BRAND_MAP.get(prefix, "PrettyByShd")
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 
@@ -221,13 +239,22 @@ async def poll_whatsapp_once() -> int:
     if not orders:
         return 0
 
-    # Filter for Pretty by Shahid (PT...)
-    new_orders = [o for o in orders if str(o.get("order_id", "")).startswith("PT") and not o.get("whatsapp_sent")]
+    # Filter for all supported brands
+    new_orders = []
+    for o in orders:
+        order_id = str(o.get("order_id", ""))
+        # Extract prefix (assuming 2 characters for AM, PT, VX, LU and Di)
+        # Note: Di is also two chars. We'll check the first 2 chars.
+        prefix = order_id[:2]
+        
+        if prefix in BRAND_MAP and not o.get("whatsapp_sent"):
+            o["brand_name"] = BRAND_MAP[prefix]
+            new_orders.append(o)
     
     if not new_orders:
         return 0
 
-    log.info(f"Found {len(new_orders)} new order(s) for WhatsApp confirmation")
+    log.info(f"Found {len(new_orders)} new order(s) for WhatsApp confirmation across {len(BRAND_MAP)} brands")
     
     processed = 0
     for order in new_orders:
@@ -239,11 +266,12 @@ async def poll_whatsapp_once() -> int:
             phone_number=phone,
             customer_name=order.get("customer_name", "Customer"),
             order_id=order.get("order_id", ""),
-            total=str(order.get("total_aed") or "0")
+            total=str(order.get("total_aed") or "0"),
+            brand_name=order.get("brand_name", "PrettyByShd")
         )
         if success:
             notion.mark_whatsapp_sent(order["page_id"])
-            log.info(f"  ✓ WhatsApp Template sent and status updated for {order.get('order_id')}")
+            log.info(f"  ✓ WhatsApp ({order.get('brand_name')}) sent and status updated for {order.get('order_id')}")
             processed += 1
         
         await asyncio.sleep(1) # Breath between triggers
