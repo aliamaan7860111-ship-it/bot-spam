@@ -579,7 +579,8 @@ def query_new_orders() -> list[dict]:
         return orders
 
 def mark_whatsapp_sent(page_id: str) -> bool:
-    """Check the WHATSAPP SENT box in Notion."""
+    """Check the WHATSAPP SENT box and update ORDER STATUS in Notion."""
     return _update_page(page_id, {
         FIELD_WHATSAPP_SENT: {"checkbox": True},
+        FIELD_ORDER_STATUS: {"select": {"name": STATUS_CONFIRMATION_SENT}}
     })
