@@ -311,18 +311,10 @@ async def start_health_server():
                 action = params.get("action")
                 
                 if order_id and action == "confirm":
-                    log.info(f"🔔 Webhook received: Confirming order {order_id}")
-                    order = notion.find_order_by_id(order_id)
-                    if order:
-                        # Move to CONFIRMED | PROCESSING to trigger the rest of the automation
-                        success = notion.update_order_status(order["page_id"], "CONFIRMED | PROCESSING")
-                        if success:
-                            log.info(f"  ✓ Notion updated to CONFIRMED | PROCESSING for {order_id}")
-                            body = '{"status": 1, "message": "Success"}'
-                        else:
-                            body = '{"status": 0, "message": "Update failed"}'
-                    else:
-                        body = '{"status": 0, "message": "Order not found"}'
+                    log.info(f"🔔 Webhook received: Button clicked for order {order_id}")
+                    # Notion update removed as per latest requirements.
+                    # We just acknowledge the webhook.
+                    body = '{"status": 1, "message": "Acknowledge"}'
                 else:
                     body = '{"status": 0, "message": "Invalid params"}'
                 
