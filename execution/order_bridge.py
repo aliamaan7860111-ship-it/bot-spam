@@ -242,7 +242,7 @@ async def poll_whatsapp_once() -> int:
             total=str(order.get("total_aed") or "0")
         )
         if success:
-            notion.mark_order_confirmation_sent(order["page_id"])
+            notion.mark_whatsapp_sent(order["page_id"])
             log.info(f"  ✓ WhatsApp Template sent and status updated for {order.get('order_id')}")
             processed += 1
         
