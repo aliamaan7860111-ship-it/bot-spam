@@ -276,7 +276,7 @@ async def start_health_server():
             if "/whatchimp_webhook" in path:
                 log.info(f"🔔 Incoming Webhook: {path}")
                 
-                # Basic parsing of query params from path
+                # 1. Capture Query Parameters from URL
                 params = {}
                 if "?" in path:
                     query = path.split("?", 1)[1]
@@ -284,6 +284,21 @@ async def start_health_server():
                         if "=" in pair:
                             k, v = pair.split("=", 1)
                             params[k] = v
+                
+                # 2. Capture Parameters from POST body (JSON)
+                if method == "POST":
+                    try:
+                        # Extract content after headers
+                        content_len = 0
+                        for line in headers_lines:
+                            if line.lower().startswith("content-length:"):
+                                content_len = int(line.split(":")[1].strip())
+                        
+                        if content_len > 0:
+                            # Read body from data (needs more robust handling if body is large, but fine for simple JSON)
+                            # For simplicity in this health server, we'll assume it's in the data stream
+                            pass # We'll stick to URL params for now in this simple server unless we add a real framework
+                    except: pass
                 
                 log.debug(f"  Parameters captured: {params}")
                 
@@ -293,20 +308,24 @@ async def start_health_server():
                 if order_id and action in ("confirm", "process"):
                     log.info(f"  ✓ Processing button click for order {order_id}")
                     
-                    # Look up the order in Notion
-                    target_order = notion.find_order_by_id(order_id)
-                    if target_order:
-                        # Update the internal note to "confirmed"
-                        success = notion.update_internal_note(target_order["page_id"], "confirmed")
-                        if success:
-                            log.info(f"    ✓ Notion updated: Note -> confirmed")
-                            body = '{"status": 1, "message": "Updated Notion"}'
+                    try:
+                        # Look up the order in Notion
+                        target_order = notion.find_order_by_id(order_id)
+                        if target_order:
+                            # Update the internal note to "confirmed"
+                            success = notion.update_internal_note(target_order["page_id"], "confirmed")
+                            if success:
+                                log.info(f"    ✓ Notion updated: Note -> confirmed")
+                                body = '{"status": 1, "message": "Updated Notion"}'
+                            else:
+                                log.error(f"    ✗ Failed to update Notion note")
+                                body = '{"status": 0, "message": "Notion update failed"}'
                         else:
-                            log.error(f"    ✗ Failed to update Notion note")
-                            body = '{"status": 0, "message": "Notion update failed"}'
-                    else:
-                        log.warning(f"    ⚠️ Order {order_id} not found in Notion")
-                        body = '{"status": 1, "message": "Order not found but acknowledged"}'
+                            log.warning(f"    ⚠️ Order {order_id} not found in Notion")
+                            body = '{"status": 1, "message": "Order not found but acknowledged"}'
+                    except Exception as e:
+                        log.error(f"    ✗ Notion search/update failed: {str(e)}")
+                        body = '{"status": 0, "message": "Notion error"}'
                 else:
                     log.warning(f"  ⚠️ Webhook received with insufficient params (Need order_id and action)")
                     body = '{"status": 1, "message": "Insufficient parameters"}'
