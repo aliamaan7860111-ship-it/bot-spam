@@ -54,7 +54,7 @@ def create_or_update_subscriber(phone_number: str, name: str, order_id: str = ""
         assign_url = f"{API_BASE}/subscriber/chat/assign-custom-fields"
         custom_fields = {
             "order_id": order_id,
-            "brand": brand
+            "brand_name": brand
         }
         assign_payload = {
             "apiToken": WHATCHIMP_API_TOKEN,
