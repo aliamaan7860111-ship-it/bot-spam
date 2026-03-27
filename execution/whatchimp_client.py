@@ -124,6 +124,29 @@ def send_template_message(phone_number: str, customer_name: str, order_id: str, 
         log.error(f"Request failed: {e}")
         return False
 
+def get_subscriber_custom_fields(phone_number: str) -> dict:
+    """
+    Retrieves all custom fields for a subscriber from WhatChimp.
+    Useful when the webhook only receives the phone number but not the order ID.
+    """
+    cleaned_phone = clean_phone_number(phone_number)
+    url = f"https://app.whatchimp.com/api/v1/whatsapp/subscriber/chat/get-details"
+    payload = {
+        "apiToken": WHATCHIMP_API_TOKEN,
+        "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
+        "phone_number": cleaned_phone
+    }
+    
+    try:
+        resp = requests.post(url, data=payload, timeout=10)
+        data = resp.json()
+        if str(data.get("status")) == "1" and data.get("data"):
+            # The custom fields are often in data['custom_fields']
+            return data["data"].get("custom_fields", {})
+        return {}
+    except:
+        return {}
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print("WhatChimp DEFINITIVE Client Ready.")
