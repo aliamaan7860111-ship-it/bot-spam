@@ -295,10 +295,24 @@ async def start_health_server():
                                 content_len = int(line.split(":")[1].strip())
                         
                         if content_len > 0:
-                            # Read body from data (needs more robust handling if body is large, but fine for simple JSON)
-                            # For simplicity in this health server, we'll assume it's in the data stream
-                            pass # We'll stick to URL params for now in this simple server unless we add a real framework
-                    except: pass
+                            # Read exactly content_len bytes from the reader
+                            body_bytes = await reader.readexactly(content_len)
+                            body_text = body_bytes.decode()
+                            log.debug(f"  POST Body: {body_text}")
+                            
+                            # Parse JSON if applicable
+                            try:
+                                post_data = json.loads(body_text)
+                                if isinstance(post_data, dict):
+                                    params.update(post_data)
+                            except json.JSONDecodeError:
+                                # Might be form-data? WhatChimp SKILL says it uses form-data too
+                                for pair in body_text.split("&"):
+                                    if "=" in pair:
+                                        k, v = pair.split("=", 1)
+                                        params[k] = v
+                    except Exception as e:
+                        log.debug(f"  Error reading POST body: {e}")
                 
                 log.debug(f"  Parameters captured: {params}")
                 
