@@ -363,10 +363,10 @@ async def start_health_server():
                         # Look up the order in Notion
                         target_order = notion.find_order_by_id(order_id)
                         if target_order:
-                            # Update the internal note to "confirmed"
-                            success = notion.update_internal_note(target_order["page_id"], "confirmed")
+                            # Update the internal note to "Bot log: Confirmed"
+                            success = notion.update_internal_note(target_order["page_id"], "Bot log: Confirmed")
                             if success:
-                                log.info(f"    ✓ Notion updated: Note -> confirmed")
+                                log.info(f"    ✓ Notion updated: Note -> Bot log: Confirmed")
                                 body = '{"status": 1, "message": "Updated Notion"}'
                             else:
                                 log.error(f"    ✗ Failed to update Notion note")
