@@ -32,29 +32,48 @@ def clean_phone_number(phone: str) -> str:
 
 def create_or_update_subscriber(phone_number: str, name: str, order_id: str = "", brand: str = "") -> bool:
     """
-    Ensures a subscriber exists in WhatChimp and has the correct metadata.
-    This metadata is used by the Flow Builder via variables like {{id}} and {{brand}}.
+    Ensures a subscriber exists in WhatChimp and correctly assigns custom fields.
+    This follows the 'assign-custom-fields' blueprint from the WhatChimp SKILL.md.
     """
     cleaned_phone = clean_phone_number(phone_number)
-    url = f"{API_BASE}/subscriber/create"
-    payload = {
+    
+    # 1. Ensure subscriber exists (uses camelCase)
+    create_url = f"{API_BASE}/subscriber/create"
+    create_payload = {
         "apiToken": WHATCHIMP_API_TOKEN,
         "phoneNumberID": WHATCHIMP_PHONE_NUMBER_ID,
         "name": name,
-        "phoneNumber": cleaned_phone,
-        # Synchronize these fields to the subscriber profile for Flow variables
-        "id": order_id,
-        "brand": brand
+        "phoneNumber": cleaned_phone
     }
+    
     try:
-        resp = requests.post(url, data=payload, timeout=15)
-        res_data = resp.json()
-        if str(res_data.get("status")) == "1":
+        # We don't strictly check status here because 'already exists' returns status 0
+        requests.post(create_url, data=create_payload, timeout=10)
+        
+        # 2. Assign Custom Fields (uses snake_case and JSON string for custom_fields)
+        assign_url = f"{API_BASE}/subscriber/chat/assign-custom-fields"
+        custom_fields = {
+            "order_id": order_id,
+            "brand": brand
+        }
+        assign_payload = {
+            "apiToken": WHATCHIMP_API_TOKEN,
+            "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
+            "phone_number": cleaned_phone,
+            "custom_fields": json.dumps(custom_fields)
+        }
+        
+        resp = requests.post(assign_url, data=assign_payload, timeout=10)
+        data = resp.json()
+        if str(data.get("status")) == "1":
+            log.info(f"  ✓ Subscriber metadata synced: {custom_fields}")
             return True
         else:
-            log.warning(f"  ⚠️ Subscriber update note: {res_data.get('message')}")
-            return True # Still proceed
-    except: return False
+            log.warning(f"  ⚠️ Custom field sync warning: {data.get('message')}")
+            return False
+    except Exception as e:
+        log.error(f"  ✗ Subscriber sync failed: {str(e)}")
+        return False
 
 def send_template_message(phone_number: str, customer_name: str, order_id: str, total: str, brand_name: str = "PrettyByShd") -> bool:
     """
@@ -67,7 +86,7 @@ def send_template_message(phone_number: str, customer_name: str, order_id: str, 
 
     cleaned_phone = clean_phone_number(phone_number)
     
-    # Update subscriber profile first so {{id}} is available in the flow
+    # Update subscriber profile first so #order_id# is available in the flow
     create_or_update_subscriber(phone_number, customer_name, order_id, brand_name)
     
     # URL exactly as per official documentation
