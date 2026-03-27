@@ -284,6 +284,9 @@ async def start_health_server():
                             k, v = pair.split("=", 1)
                             params[k] = v
                 
+                order_id = params.get("order_id")
+                action = params.get("action")
+                
                 if order_id and action in ("confirm", "process"):
                     log.info(f"🔔 Webhook received: Button clicked for order {order_id}")
                     
