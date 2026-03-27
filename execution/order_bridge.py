@@ -339,8 +339,24 @@ async def start_health_server():
                 
                 order_id = params.get("order_id")
                 action = params.get("action")
+                chat_id = params.get("chat_id") # Phone number from WhatChimp POST body
                 
-                if order_id and action in ("confirm", "process"):
+                # --- Fallback: If order_id is missing but we have chat_id, look it up in WhatChimp ---
+                if not order_id and chat_id:
+                    log.info(f"  🔍 Order ID missing in webhook. Attempting fallback lookup for {chat_id}...")
+                    try:
+                        custom_fields = wh.get_subscriber_custom_fields(chat_id)
+                        order_id = custom_fields.get("order_id")
+                        if order_id:
+                            log.info(f"    ✓ Found Order ID in WhatChimp profile: {order_id}")
+                        else:
+                            log.warning(f"    ✗ No order_id found in WhatChimp profile for {chat_id}")
+                    except Exception as e:
+                        log.error(f"    ✗ WhatChimp fallback lookup failed: {e}")
+
+                if order_id and (action in ("confirm", "process") or not action):
+                    # Default action to 'process' if missing but we found an order_id
+                    current_action = action or "process"
                     log.info(f"  ✓ Processing button click for order {order_id}")
                     
                     try:
