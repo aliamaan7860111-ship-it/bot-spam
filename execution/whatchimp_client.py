@@ -127,24 +127,36 @@ def send_template_message(phone_number: str, customer_name: str, order_id: str, 
 def get_subscriber_custom_fields(phone_number: str) -> dict:
     """
     Retrieves all custom fields for a subscriber from WhatChimp.
-    Useful when the webhook only receives the phone number but not the order ID.
+    Uses the confirmed endpoint: /subscriber/get
+    Response custom_fields format: "brand_name:PrettyByShd,order_id:PT1793"
     """
     cleaned_phone = clean_phone_number(phone_number)
-    url = f"https://app.whatchimp.com/api/v1/whatsapp/subscriber/chat/get-details"
+    url = f"https://app.whatchimp.com/api/v1/whatsapp/subscriber/get"
     payload = {
         "apiToken": WHATCHIMP_API_TOKEN,
         "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
-        "phone_number": cleaned_phone
+        "phone_number": cleaned_phone,
+        "phoneNumberID": WHATCHIMP_PHONE_NUMBER_ID,
+        "phoneNumber": cleaned_phone
     }
     
     try:
         resp = requests.post(url, data=payload, timeout=10)
         data = resp.json()
-        if str(data.get("status")) == "1" and data.get("data"):
-            # The custom fields are often in data['custom_fields']
-            return data["data"].get("custom_fields", {})
+        if str(data.get("status")) == "1" and data.get("message"):
+            subscribers = data["message"]
+            if isinstance(subscribers, list) and len(subscribers) > 0:
+                custom_fields_str = subscribers[0].get("custom_fields", "")
+                # Parse "key1:value1,key2:value2" format
+                result = {}
+                for item in custom_fields_str.split(","):
+                    if ":" in item:
+                        k, v = item.split(":", 1)
+                        result[k.strip()] = v.strip()
+                return result
         return {}
-    except:
+    except Exception as e:
+        log.warning(f"  WhatChimp subscriber lookup error: {e}")
         return {}
 
 if __name__ == "__main__":
