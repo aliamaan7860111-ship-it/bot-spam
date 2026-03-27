@@ -290,7 +290,14 @@ async def start_health_server():
                     try:
                         # Extract content after headers
                         content_len = 0
-                        for line in headers_lines:
+                        # Find the first blank line which separates headers from body
+                        header_end_idx = 0
+                        try:
+                            header_end_idx = lines.index("")
+                        except ValueError:
+                            header_end_idx = len(lines)
+                            
+                        for line in lines[1:header_end_idx]:
                             if line.lower().startswith("content-length:"):
                                 content_len = int(line.split(":")[1].strip())
                         
