@@ -345,7 +345,7 @@ async def start_health_server():
                 if not order_id and chat_id:
                     log.info(f"  🔍 Order ID missing in webhook. Attempting fallback lookup for {chat_id}...")
                     try:
-                        custom_fields = wh.get_subscriber_custom_fields(chat_id)
+                        custom_fields = wc.get_subscriber_custom_fields(chat_id)
                         order_id = custom_fields.get("order_id")
                         if order_id:
                             log.info(f"    ✓ Found Order ID in WhatChimp profile: {order_id}")
