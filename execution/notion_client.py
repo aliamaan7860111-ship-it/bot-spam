@@ -478,9 +478,9 @@ def update_internal_note(page_id: str, note: str) -> bool:
 
 
 def mark_order_processed(page_id: str) -> bool:
-    """Update status to CONFIRMED | PROCESSING."""
+    """Update status to Processed."""
     return _update_page(page_id, {
-        FIELD_ORDER_STATUS: {"select": {"name": "CONFIRMED | PROCESSING"}},
+        FIELD_ORDER_STATUS: {"select": {"name": "Processed"}},
     })
 
 def mark_order_confirmation_sent(page_id: str) -> bool:
