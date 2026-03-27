@@ -470,6 +470,13 @@ def set_sourcing_cost(page_id: str, cost: float) -> bool:
     })
 
 
+def update_internal_note(page_id: str, note: str) -> bool:
+    """Update the INTERNAL NOTE text field."""
+    return _update_page(page_id, {
+        FIELD_INTERNAL_NOTE: {"rich_text": [{"text": {"content": note}}]},
+    })
+
+
 def mark_order_processed(page_id: str) -> bool:
     """Update status to CONFIRMED | PROCESSING."""
     return _update_page(page_id, {

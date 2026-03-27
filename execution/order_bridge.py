@@ -284,14 +284,23 @@ async def start_health_server():
                             k, v = pair.split("=", 1)
                             params[k] = v
                 
-                order_id = params.get("order_id")
-                action = params.get("action")
-                
-                if order_id and action == "confirm":
+                if order_id and action in ("confirm", "process"):
                     log.info(f"🔔 Webhook received: Button clicked for order {order_id}")
-                    # Notion update removed as per latest requirements.
-                    # We just acknowledge the webhook.
-                    body = '{"status": 1, "message": "Acknowledge"}'
+                    
+                    # Look up the order in Notion
+                    target_order = notion.find_order_by_id(order_id)
+                    if target_order:
+                        # Update the internal note to "confirmed"
+                        success = notion.update_internal_note(target_order["page_id"], "confirmed")
+                        if success:
+                            log.info(f"  ✓ Notion updated for {order_id}: Note -> confirmed")
+                            body = '{"status": 1, "message": "Updated Notion"}'
+                        else:
+                            log.error(f"  ✗ Failed to update Notion note for {order_id}")
+                            body = '{"status": 0, "message": "Notion update failed"}'
+                    else:
+                        log.warning(f"  ⚠️ Webhook ignored: Order {order_id} not found in Notion")
+                        body = '{"status": 1, "message": "Order not found but acknowledged"}'
                 else:
                     body = '{"status": 0, "message": "Invalid params"}'
                 
