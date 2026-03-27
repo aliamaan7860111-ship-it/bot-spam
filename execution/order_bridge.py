@@ -302,9 +302,23 @@ async def start_health_server():
                                 content_len = int(line.split(":")[1].strip())
                         
                         if content_len > 0:
-                            # Read exactly content_len bytes from the reader
-                            body_bytes = await reader.readexactly(content_len)
-                            body_text = body_bytes.decode()
+                            # The body might already be in 'request_text' after the headers
+                            # (separated by double \r\n)
+                            body_parts = request_text.split('\r\n\r\n', 1)
+                            if len(body_parts) > 1:
+                                body_text = body_parts[1]
+                            else:
+                                body_text = ""
+                                
+                            # If we haven't read enough yet, read the rest
+                            if len(body_text.encode()) < content_len:
+                                remaining = content_len - len(body_text.encode())
+                                try:
+                                    extra_bytes = await asyncio.wait_for(reader.readexactly(remaining), timeout=2.0)
+                                    body_text += extra_bytes.decode()
+                                except:
+                                    pass
+                                    
                             log.debug(f"  POST Body: {body_text}")
                             
                             # Parse JSON if applicable
