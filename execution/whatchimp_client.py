@@ -30,9 +30,10 @@ def clean_phone_number(phone: str) -> str:
         cleaned = "971" + cleaned[1:]
     return cleaned
 
-def create_or_update_subscriber(phone_number: str, name: str) -> bool:
+def create_or_update_subscriber(phone_number: str, name: str, order_id: str = "", brand: str = "") -> bool:
     """
-    Ensures a subscriber exists in WhatChimp.
+    Ensures a subscriber exists in WhatChimp and has the correct metadata.
+    This metadata is used by the Flow Builder via variables like {{id}} and {{brand}}.
     """
     cleaned_phone = clean_phone_number(phone_number)
     url = f"{API_BASE}/subscriber/create"
@@ -40,24 +41,34 @@ def create_or_update_subscriber(phone_number: str, name: str) -> bool:
         "apiToken": WHATCHIMP_API_TOKEN,
         "phoneNumberID": WHATCHIMP_PHONE_NUMBER_ID,
         "name": name,
-        "phoneNumber": cleaned_phone
+        "phoneNumber": cleaned_phone,
+        # Synchronize these fields to the subscriber profile for Flow variables
+        "id": order_id,
+        "brand": brand
     }
     try:
         resp = requests.post(url, data=payload, timeout=15)
-        return str(resp.json().get("status")) == "1"
+        res_data = resp.json()
+        if str(res_data.get("status")) == "1":
+            return True
+        else:
+            log.warning(f"  ⚠️ Subscriber update note: {res_data.get('message')}")
+            return True # Still proceed
     except: return False
 
 def send_template_message(phone_number: str, customer_name: str, order_id: str, total: str, brand_name: str = "PrettyByShd") -> bool:
     """
     Sends the WhatsApp confirmation using the DEFINITIVE 'templateVariable' format.
-    This mirrors the exact curl command that yielded success in your manual test.
+    Also ensures the subscriber has the latest Order ID and Brand for Flow variables.
     """
     if not WHATCHIMP_API_TOKEN or not WHATCHIMP_PHONE_NUMBER_ID:
         log.error("Missing WhatChimp credentials (token or phone_id) in .env")
         return False
 
     cleaned_phone = clean_phone_number(phone_number)
-    create_or_update_subscriber(phone_number, customer_name)
+    
+    # Update subscriber profile first so {{id}} is available in the flow
+    create_or_update_subscriber(phone_number, customer_name, order_id, brand_name)
     
     # URL exactly as per official documentation
     url = f"{API_BASE}/send/template"
