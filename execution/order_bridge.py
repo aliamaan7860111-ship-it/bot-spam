@@ -274,8 +274,9 @@ async def start_health_server():
             
             # --- Webhook Handling ---
             if "/whatchimp_webhook" in path:
+                log.info(f"🔔 Incoming Webhook: {path}")
+                
                 # Basic parsing of query params from path
-                # Example: /whatchimp_webhook?order_id=PT1001&action=confirm
                 params = {}
                 if "?" in path:
                     query = path.split("?", 1)[1]
@@ -284,11 +285,13 @@ async def start_health_server():
                             k, v = pair.split("=", 1)
                             params[k] = v
                 
+                log.debug(f"  Parameters captured: {params}")
+                
                 order_id = params.get("order_id")
                 action = params.get("action")
                 
                 if order_id and action in ("confirm", "process"):
-                    log.info(f"🔔 Webhook received: Button clicked for order {order_id}")
+                    log.info(f"  ✓ Processing button click for order {order_id}")
                     
                     # Look up the order in Notion
                     target_order = notion.find_order_by_id(order_id)
@@ -296,16 +299,17 @@ async def start_health_server():
                         # Update the internal note to "confirmed"
                         success = notion.update_internal_note(target_order["page_id"], "confirmed")
                         if success:
-                            log.info(f"  ✓ Notion updated for {order_id}: Note -> confirmed")
+                            log.info(f"    ✓ Notion updated: Note -> confirmed")
                             body = '{"status": 1, "message": "Updated Notion"}'
                         else:
-                            log.error(f"  ✗ Failed to update Notion note for {order_id}")
+                            log.error(f"    ✗ Failed to update Notion note")
                             body = '{"status": 0, "message": "Notion update failed"}'
                     else:
-                        log.warning(f"  ⚠️ Webhook ignored: Order {order_id} not found in Notion")
+                        log.warning(f"    ⚠️ Order {order_id} not found in Notion")
                         body = '{"status": 1, "message": "Order not found but acknowledged"}'
                 else:
-                    body = '{"status": 0, "message": "Invalid params"}'
+                    log.warning(f"  ⚠️ Webhook received with insufficient params (Need order_id and action)")
+                    body = '{"status": 1, "message": "Insufficient parameters"}'
                 
                 status_line = "HTTP/1.1 200 OK\r\n"
                 headers = (
