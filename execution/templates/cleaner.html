@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Cleaner</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0f;
+            color: #e4e4e7;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 600px;
+            padding: 20px;
+        }
+
+        .card {
+            background: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 16px;
+            padding: 40px;
+        }
+
+        .logo {
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: #71717a;
+            margin-bottom: 8px;
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #fafafa;
+        }
+
+        .subtitle {
+            font-size: 14px;
+            color: #71717a;
+            margin-bottom: 32px;
+            line-height: 1.5;
+        }
+
+        /* PIN Screen */
+        .pin-form { text-align: center; }
+
+        .pin-input {
+            width: 200px;
+            padding: 14px 20px;
+            font-size: 24px;
+            letter-spacing: 8px;
+            text-align: center;
+            background: #09090b;
+            border: 1px solid #27272a;
+            border-radius: 12px;
+            color: #fafafa;
+            outline: none;
+            margin-bottom: 16px;
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .pin-input:focus { border-color: #a78bfa; }
+
+        .error-msg {
+            color: #f87171;
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px 28px;
+            font-size: 14px;
+            font-weight: 600;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-primary {
+            background: #7c3aed;
+            color: #fff;
+        }
+
+        .btn-primary:hover { background: #6d28d9; }
+
+        .btn-primary:disabled {
+            background: #3f3f46;
+            color: #71717a;
+            cursor: not-allowed;
+        }
+
+        .btn-download {
+            background: #059669;
+            color: #fff;
+            width: 100%;
+            padding: 16px;
+            font-size: 16px;
+            margin-top: 20px;
+        }
+
+        .btn-download:hover { background: #047857; }
+
+        /* Drop Zone */
+        .drop-zone {
+            border: 2px dashed #27272a;
+            border-radius: 12px;
+            padding: 48px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 24px;
+        }
+
+        .drop-zone:hover, .drop-zone.drag-over {
+            border-color: #7c3aed;
+            background: rgba(124, 58, 237, 0.05);
+        }
+
+        .drop-zone-icon {
+            font-size: 40px;
+            margin-bottom: 12px;
+        }
+
+        .drop-zone-text {
+            font-size: 15px;
+            color: #a1a1aa;
+        }
+
+        .drop-zone-text strong { color: #7c3aed; }
+
+        .drop-zone-hint {
+            font-size: 12px;
+            color: #52525b;
+            margin-top: 8px;
+        }
+
+        /* File List */
+        .file-list {
+            margin-bottom: 24px;
+        }
+
+        .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            background: #09090b;
+            border-radius: 8px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+
+        .file-item-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+            margin-right: 12px;
+        }
+
+        .file-item-size { color: #71717a; white-space: nowrap; }
+
+        .file-item-remove {
+            color: #71717a;
+            cursor: pointer;
+            margin-left: 12px;
+            font-size: 16px;
+        }
+
+        .file-item-remove:hover { color: #f87171; }
+
+        /* Options Row */
+        .options-row {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .option-label {
+            font-size: 13px;
+            color: #a1a1aa;
+            font-weight: 500;
+        }
+
+        .copies-select {
+            padding: 10px 16px;
+            font-size: 14px;
+            background: #09090b;
+            border: 1px solid #27272a;
+            border-radius: 8px;
+            color: #fafafa;
+            outline: none;
+        }
+
+        .copies-select:focus { border-color: #a78bfa; }
+
+        .file-count {
+            font-size: 13px;
+            color: #71717a;
+            margin-left: auto;
+        }
+
+        /* Progress */
+        .progress-section { text-align: center; }
+
+        .progress-bar-track {
+            width: 100%;
+            height: 8px;
+            background: #27272a;
+            border-radius: 99px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #7c3aed, #a78bfa);
+            border-radius: 99px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        .progress-text {
+            font-size: 14px;
+            color: #a1a1aa;
+        }
+
+        .progress-count {
+            font-size: 32px;
+            font-weight: 700;
+            color: #fafafa;
+            margin-top: 8px;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #3f3f46;
+            border-top-color: #7c3aed;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Done */
+        .done-section { text-align: center; }
+
+        .done-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        .done-stats {
+            font-size: 14px;
+            color: #a1a1aa;
+            margin-top: 8px;
+        }
+
+        .new-batch {
+            display: inline-block;
+            margin-top: 16px;
+            font-size: 13px;
+            color: #7c3aed;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-weight: 500;
+        }
+
+        .new-batch:hover { text-decoration: underline; }
+
+        /* Hidden */
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="logo">Media Cleaner</div>
+
+            {% if page == "login" %}
+            <!-- ==================== PIN SCREEN ==================== -->
+            <h1>Enter PIN</h1>
+            <p class="subtitle">Access is restricted to the team.</p>
+            <form class="pin-form" method="POST" action="/login">
+                {% if error %}
+                <p class="error-msg">{{ error }}</p>
+                {% endif %}
+                <input type="password" name="pin" class="pin-input"
+                       maxlength="10" autofocus placeholder="----">
+                <button type="submit" class="btn btn-primary">Unlock</button>
+            </form>
+
+            {% elif page == "upload" %}
+            <!-- ==================== UPLOAD SCREEN ==================== -->
+            <h1>Clean Creatives</h1>
+            <p class="subtitle">
+                Strip metadata + defeat fingerprinting. Upload images or videos,
+                get unique variants back.
+                {% if not has_ffmpeg %}
+                <br><span style="color: #f59e0b;">FFmpeg not found — video processing disabled.</span>
+                {% endif %}
+            </p>
+
+            <!-- Upload Zone -->
+            <div id="uploadSection">
+                <div class="drop-zone" id="dropZone">
+                    <div class="drop-zone-icon">+</div>
+                    <div class="drop-zone-text">
+                        <strong>Click to browse</strong> or drag files here
+                    </div>
+                    <div class="drop-zone-hint">
+                        JPG, PNG, WebP, MP4, MOV &bull; Up to 1 GB
+                    </div>
+                </div>
+                <input type="file" id="fileInput" multiple accept=".jpg,.jpeg,.png,.webp,.mp4,.mov" class="hidden">
+
+                <div class="file-list" id="fileList"></div>
+
+                <div class="options-row" id="optionsRow" style="display:none;">
+                    <span class="option-label">Copies per file:</span>
+                    <select class="copies-select" id="copiesSelect">
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3" selected>3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                    </select>
+                    <span class="file-count" id="fileCount"></span>
+                </div>
+
+                <button class="btn btn-primary" id="startBtn"
+                        style="width:100%; display:none;" onclick="startProcessing()">
+                    Clean Files
+                </button>
+            </div>
+
+            <!-- Progress -->
+            <div class="progress-section hidden" id="progressSection">
+                <p class="progress-text"><span class="spinner"></span> Processing...</p>
+                <div class="progress-bar-track">
+                    <div class="progress-bar-fill" id="progressBar"></div>
+                </div>
+                <div class="progress-count" id="progressCount">0 / 0</div>
+            </div>
+
+            <!-- Done -->
+            <div class="done-section hidden" id="doneSection">
+                <div class="done-icon">&#10003;</div>
+                <h1>Done</h1>
+                <p class="done-stats" id="doneStats"></p>
+                <a class="btn btn-download" id="downloadBtn" href="#">
+                    Download ZIP
+                </a>
+                <button class="new-batch" onclick="resetUI()">Clean another batch</button>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if page == "upload" %}
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const optionsRow = document.getElementById('optionsRow');
+        const startBtn = document.getElementById('startBtn');
+        const fileCount = document.getElementById('fileCount');
+
+        let selectedFiles = [];
+
+        // Drop zone events
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('drag-over');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('drag-over');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            addFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', () => {
+            addFiles(fileInput.files);
+            fileInput.value = '';
+        });
+
+        function addFiles(fileListObj) {
+            const validExts = ['.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov'];
+            for (const f of fileListObj) {
+                const ext = '.' + f.name.split('.').pop().toLowerCase();
+                if (validExts.includes(ext)) {
+                    selectedFiles.push(f);
+                }
+            }
+            renderFileList();
+        }
+
+        function removeFile(idx) {
+            selectedFiles.splice(idx, 1);
+            renderFileList();
+        }
+
+        function renderFileList() {
+            if (selectedFiles.length === 0) {
+                fileList.innerHTML = '';
+                optionsRow.style.display = 'none';
+                startBtn.style.display = 'none';
+                return;
+            }
+
+            optionsRow.style.display = 'flex';
+            startBtn.style.display = 'block';
+
+            const imgs = selectedFiles.filter(f =>
+                ['.jpg','.jpeg','.png','.webp'].includes('.' + f.name.split('.').pop().toLowerCase())
+            ).length;
+            const vids = selectedFiles.length - imgs;
+            fileCount.textContent = `${imgs} image${imgs!==1?'s':''}, ${vids} video${vids!==1?'s':''}`;
+
+            fileList.innerHTML = selectedFiles.map((f, i) => `
+                <div class="file-item">
+                    <span class="file-item-name">${f.name}</span>
+                    <span class="file-item-size">${formatSize(f.size)}</span>
+                    <span class="file-item-remove" onclick="removeFile(${i})">&times;</span>
+                </div>
+            `).join('');
+        }
+
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        // Processing
+        let currentJobId = null;
+
+        function startProcessing() {
+            if (selectedFiles.length === 0) return;
+
+            const formData = new FormData();
+            selectedFiles.forEach(f => formData.append('files', f));
+            formData.append('copies', document.getElementById('copiesSelect').value);
+
+            // Show progress
+            document.getElementById('uploadSection').classList.add('hidden');
+            document.getElementById('progressSection').classList.remove('hidden');
+
+            fetch('/upload', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        alert(data.error);
+                        resetUI();
+                        return;
+                    }
+                    currentJobId = data.job_id;
+                    document.getElementById('progressCount').textContent = `0 / ${data.total}`;
+                    pollStatus();
+                })
+                .catch(err => {
+                    alert('Upload failed: ' + err.message);
+                    resetUI();
+                });
+        }
+
+        function pollStatus() {
+            if (!currentJobId) return;
+
+            fetch(`/status/${currentJobId}`)
+                .then(r => r.json())
+                .then(data => {
+                    const pct = Math.round((data.done / data.total) * 100);
+                    document.getElementById('progressBar').style.width = pct + '%';
+                    document.getElementById('progressCount').textContent =
+                        `${data.done} / ${data.total}`;
+
+                    if (data.status === 'done') {
+                        showDone(data);
+                    } else {
+                        setTimeout(pollStatus, 2000);
+                    }
+                })
+                .catch(() => setTimeout(pollStatus, 3000));
+        }
+
+        function showDone(data) {
+            document.getElementById('progressSection').classList.add('hidden');
+            document.getElementById('doneSection').classList.remove('hidden');
+
+            const ok = data.done - data.errors;
+            document.getElementById('doneStats').textContent =
+                `${ok} file${ok!==1?'s':''} cleaned successfully` +
+                (data.errors > 0 ? `, ${data.errors} failed` : '');
+
+            document.getElementById('downloadBtn').href = `/download/${currentJobId}`;
+        }
+
+        function resetUI() {
+            // Cleanup old job
+            if (currentJobId) {
+                fetch(`/cleanup/${currentJobId}`, { method: 'POST' }).catch(() => {});
+            }
+            currentJobId = null;
+            selectedFiles = [];
+
+            document.getElementById('uploadSection').classList.remove('hidden');
+            document.getElementById('progressSection').classList.add('hidden');
+            document.getElementById('doneSection').classList.add('hidden');
+            document.getElementById('progressBar').style.width = '0%';
+
+            renderFileList();
+        }
+    </script>
+    {% endif %}
+</body>
+</html>

@@ -1,0 +1,15 @@
+[Unit]
+Description=Media Cleaner Web UI
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/automation
+ExecStart=/usr/bin/python3 execution/clean_media_web.py
+Restart=always
+RestartSec=5
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target

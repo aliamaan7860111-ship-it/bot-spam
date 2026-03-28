@@ -63,14 +63,18 @@ Before writing a script, check `execution/` per your directive. Only create new 
 
 ## 4. Always Git Push After Edits
 
-Since the system runs on Render and is connected via GitHub, **every time you modify a script in `execution/`**, you MUST automatically commit and push the changes:
+The system runs on a GCP Ubuntu VM via systemd. **Every time you modify a script in `execution/`**, you MUST automatically commit and push the changes:
 
 ```bash
 git add execution/notion_client.py execution/telegram_client.py execution/order_bridge.py
 git commit -m "Brief description of changes"
 git push -u origin main
 ```
-This ensures Render automatically receives the update and redeploys. Do not wait for the user to ask you to push the code.
+Then SSH into the GCP VM and pull + restart the service:
+```bash
+sudo systemctl restart order-bridge
+```
+Do not wait for the user to ask you to push the code.
 
 ## 5. Update directives as you learn
 

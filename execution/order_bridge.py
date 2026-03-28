@@ -213,7 +213,7 @@ async def notion_poller_loop(bot: Bot):
 
 
 # ---------------------------------------------------------------------------
-# Health Check Server (for Render / cloud hosting)
+# Health Check Server (for cloud hosting / uptime monitoring)
 # ---------------------------------------------------------------------------
 
 # Only process orders created after this date (from .env)
@@ -223,8 +223,8 @@ ORDER_CUTOFF_DATE = datetime.fromisoformat(ORDER_CUTOFF_DATE_STR)
 
 async def start_health_server():
     """
-    Tiny HTTP server for health checks. Render and UptimeRobot
-    ping this to keep the free tier service alive.
+    Tiny HTTP server for health checks. UptimeRobot
+    pings this to verify the service is alive.
     Handles GET and HEAD requests.
     """
     port = int(os.getenv("PORT", "8080"))
@@ -461,7 +461,7 @@ async def run_bridge():
     # Run the Notion poller as a concurrent task
     poller_task = asyncio.create_task(notion_poller_loop(bot))
 
-    # Start health check server (keeps Render free tier alive)
+    # Start health check server (for uptime monitoring)
     health_task = asyncio.create_task(start_health_server())
 
     try:
