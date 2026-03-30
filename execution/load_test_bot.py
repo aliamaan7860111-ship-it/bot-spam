@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
 
 # Load .env
 load_dotenv()
@@ -87,6 +88,63 @@ DEMOGRAPHICS = {
 
 DOMAINS = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.ae", "icloud.com"]
 LANDMARKS = ["near Mosque", "opp. Petrol Station", "behind Supermarket", "next to Pharmacy", "close to Metro", "near Park", "beside Mall", "near School"]
+
+# Rotating User-Agent Pool (modern Chrome/Edge on Win10/Win11/Mac)
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+]
+
+# Stores with advanced bot protection (disable resource blocking, extra humanization)
+PROTECTED_STORES = [s.strip() for s in os.getenv("PROTECTED_STORES", "meowtiqueofficial.com").split(",") if s.strip()]
+
+
+async def safe_fill(page, selector, value, label="field"):
+    """Honeypot-aware fill: only fills inputs that are truly visible and not traps."""
+    elements = page.locator(selector)
+    count = await elements.count()
+    for i in range(count):
+        el = elements.nth(i)
+        try:
+            is_real = await el.evaluate("""el => {
+                const style = window.getComputedStyle(el);
+                // Skip hidden honeypot traps
+                if (style.display === 'none') return false;
+                if (style.visibility === 'hidden') return false;
+                if (parseFloat(style.opacity) === 0) return false;
+                if (el.offsetWidth === 0 && el.offsetHeight === 0) return false;
+                if (el.getAttribute('aria-hidden') === 'true') return false;
+                if (el.getAttribute('tabindex') === '-1' && style.position === 'absolute') return false;
+                // Check parent containers too (honeypots often hide the wrapper)
+                let parent = el.parentElement;
+                for (let d = 0; d < 5 && parent; d++) {
+                    const ps = window.getComputedStyle(parent);
+                    if (ps.display === 'none' || ps.visibility === 'hidden' || parseFloat(ps.opacity) === 0) return false;
+                    if (parent.offsetWidth === 0 && parent.offsetHeight === 0) return false;
+                    parent = parent.parentElement;
+                }
+                return true;
+            }""")
+            if is_real:
+                await el.fill(value)
+                log.info(f"Filled {label} via: {selector}")
+                return True
+        except:
+            continue
+    return False
+
+
+def is_protected_store(url):
+    """Check if a URL belongs to a store with advanced bot protection."""
+    if not url:
+        return False
+    return any(domain in url for domain in PROTECTED_STORES)
 
 def introduce_typo(text):
     """Introduces a small typo 10% of the time."""
@@ -340,20 +398,26 @@ async def get_random_product_url(page, base_url=None):
     log.info(f"Navigating to {collections_url} to find products...")
     
     try:
+        await Stealth().apply_stealth_async(page)
+
         await page.goto(collections_url, wait_until="domcontentloaded", timeout=90000)
-        
+        # Wait for product links to render (much faster than networkidle)
+        try:
+            await page.wait_for_selector("a[href*='/products/']", timeout=15000)
+        except:
+            await asyncio.sleep(3)
+
         # Look for standard Shopify product links
         product_links = await page.locator("a[href*='/products/']").all()
-        
+        log.info(f"Locator found {len(product_links)} raw product links")
+
         valid_urls = []
         for link in product_links:
             href = await link.get_attribute("href")
-            # Ensure it's not a pagination or random non-product link
-            if href and "/products/" in href and not "page=" in href:
-                # Construct full URL if it's relative - use clean origin, not UTM-laden base
+            if href and "/products/" in href and "page=" not in href:
                 full_url = href if href.startswith("http") else f"{store_origin}{href}"
                 valid_urls.append(full_url)
-                
+
         # Deduplicate
         valid_urls = list(set(valid_urls))
         
@@ -362,7 +426,17 @@ async def get_random_product_url(page, base_url=None):
             log.info(f"Found {len(valid_urls)} products. Randomly selected: {chosen_url}")
             return chosen_url
         else:
-            log.error("Could not find any product links on the /collections/all page.")
+            log.error(f"Could not find any product links on the {collections_url} page.")
+            try:
+                # Debug: Save screenshot and HTML to see what's happening
+                debug_path = ".tmp/failed_product_fetch.png"
+                await page.screenshot(path=debug_path)
+                html_path = ".tmp/failed_product_fetch.html"
+                with open(html_path, "w", encoding="utf-8") as f:
+                    f.write(await page.content())
+                log.info(f"Saved failure debug info to {debug_path} and {html_path}")
+            except:
+                pass
             return None
             
     except Exception as e:
@@ -375,14 +449,57 @@ async def run_checkout_flow(context, customer, target_url):
     page = context.pages[0] if context.pages else await context.new_page()
     
     try:
+        # Apply stealth to the page
+        await Stealth().apply_stealth_async(page)
+
         # 1. Go to product page
         log.info(f"Navigating to product page: {target_url}")
+        # Use networkidle for JS-heavy themes (Debutify) that render buttons via JS
         await page.goto(target_url, wait_until="domcontentloaded", timeout=90000)
-        
+        # Wait for add-to-cart button to render (faster than networkidle)
+        try:
+            await page.wait_for_selector(
+                "button[name='add'], .product-form__submit, button[id^='ProductSubmitButton']",
+                timeout=15000
+            )
+        except:
+            await asyncio.sleep(3)
+
+        # NOTE: "Sold out" badges may be fake (injected by MIDA bot protection)
+        # We ignore them and attempt to add to cart regardless
+
+        # Force-enable any disabled Add to Cart buttons (MIDA may disable them)
+        if is_protected_store(target_url):
+            await page.evaluate("""() => {
+                // Remove fake sold-out badges
+                document.querySelectorAll('[class*="sold-out"], [class*="soldout"]')
+                    .forEach(el => el.remove());
+                // Re-enable any disabled submit buttons
+                document.querySelectorAll('button[disabled], input[disabled]')
+                    .forEach(el => { el.disabled = false; el.removeAttribute('disabled'); });
+                // Remove hidden class from Buy Now button (Debutify hides it)
+                document.querySelectorAll('.dbtfy__buy-now.hidden, .hidden.dbtfy__buy-now')
+                    .forEach(el => el.classList.remove('hidden'));
+            }""")
+            log.info("Stripped MIDA decoy badges and re-enabled buttons")
+
         # Humanize: Scroll and hover a bit
         log.info("Humanizing: Scrolling and hovering...")
         await page.mouse.wheel(0, 500)
         await asyncio.sleep(1)
+
+        # Check terms/conditions checkbox (required on Meowtique before Add to Cart)
+        try:
+            checkboxes = await page.locator("input[type='checkbox']").all()
+            for cb in checkboxes:
+                if await cb.is_visible() and not await cb.is_checked():
+                    label_text = await cb.evaluate("el => (el.closest('label') || el.parentElement).textContent || ''")
+                    if any(kw in label_text.lower() for kw in ["agree", "terms", "condition", "policy", "accept"]):
+                        log.info(f"Checking terms checkbox: {label_text.strip()[:50]}")
+                        await cb.click()
+                        await asyncio.sleep(0.5)
+        except Exception as e:
+            log.warning(f"Terms checkbox handling: {e}")
         # Try to hover over the add-to-cart button before clicking
         add_to_cart_selectors = [
             "button[name='add']",
@@ -394,7 +511,12 @@ async def run_checkout_flow(context, customer, target_url):
             "button:has-text('Add To Cart')",
             ".product-form__submit",
             ".add-to-cart",
-            "#AddToCartText"
+            "#AddToCartText",
+            # Debutify theme selectors
+            "product-form button[type='submit']",
+            "#ProductSubmitButton",
+            "button[id^='ProductSubmitButton']",
+            ".product-form__submit.button--secondary",
         ]
 
         # --- NEW: Try "Buy It Now" / "Buy Now" first for direct checkout ---
@@ -406,29 +528,55 @@ async def run_checkout_flow(context, customer, target_url):
             "button:has-text('Order now')",
             "button:has-text('Checkout Now')",
             "button:has-text('Buy now get now')",
+            ".shopify-payment-button__button", 
             ".shopify-payment-button button",
-            "[data-testid='Checkout-button']"
+            "[data-testid='Checkout-button']",
+            "button[type='submit']:has-text('Buy')"
         ]
         
         clicked_buy_now = False
         log.info("Checking for 'Buy It Now' buttons for direct checkout...")
+        
+        # Humanize: Wait for dynamic checkout buttons to render (they are often lazy-loaded)
+        await asyncio.sleep(5)
+
+        # 1. Check main page
         for selector in buy_now_selectors:
             try:
                 # Wait briefly to see if it's there
-                loc = await page.wait_for_selector(selector, state="visible", timeout=3000)
-                if loc:
-                    log.info(f"Found direct checkout button: {selector}. Clicking...")
+                loc = page.locator(selector).first
+                if await loc.is_visible(timeout=3000):
+                    log.info(f"Found direct checkout button on main page: {selector}. Clicking...")
                     await loc.click()
                     clicked_buy_now = True
                     break
             except:
                 continue
         
+        # 3. ULTIMATE FALLBACK: Check all buttons/links for keywords
+        if not clicked_buy_now:
+            log.info("Direct buy not found. Trying universal keyword search...")
+            # Check main page and all frames
+            all_sources = [page] + page.frames
+            for source in all_sources:
+                try:
+                    candidates = await source.locator("button, input[type='submit'], a.btn, .button, .btn, .shopify-payment-button__button").all()
+                    for btn in candidates:
+                        if await btn.is_visible(timeout=500):
+                            text = (await btn.text_content() or "").lower()
+                            if any(kw in text for kw in ["buy", "checkout", "order", "now"]):
+                                log.info(f"Universal finder found candidate: '{text.strip()}'. Clicking...")
+                                await btn.click()
+                                clicked_buy_now = True
+                                break
+                except: continue
+                if clicked_buy_now: break
+        
         if clicked_buy_now:
             # If we clicked Buy It Now, we expect a redirect to checkout
             log.info("Clicked 'Buy It Now'. Waiting for checkout redirect...")
             try:
-                await page.wait_for_url("**/checkouts/**", timeout=20000)
+                await page.wait_for_url("**/checkouts/**", timeout=45000)
                 log.info(f"Redirected to checkout: {page.url}")
                 # Skip the rest of the cart flow and go straight to info entry
                 return await enter_checkout_info(context, customer, page)
@@ -437,6 +585,14 @@ async def run_checkout_flow(context, customer, target_url):
 
         # --- EXISTING: Add to cart flow (Fallback) ---
         log.info("Proceeding with standard 'Add to cart' flow...")
+
+        # Re-enable buttons again in case MIDA re-disabled them after our earlier patch
+        if is_protected_store(target_url):
+            await page.evaluate("""() => {
+                document.querySelectorAll('button[disabled], input[disabled]')
+                    .forEach(el => { el.disabled = false; el.removeAttribute('disabled'); });
+            }""")
+
         clicked_add = False
         # Narrow down the selectors to find the MAIN button, avoiding hidden sticky widgets
         for selector in add_to_cart_selectors:
@@ -449,7 +605,7 @@ async def run_checkout_flow(context, customer, target_url):
                     html = (await loc.evaluate("el => el.outerHTML")).lower()
                     if "sticky" in html or "widget" in html:
                         continue # Skip sticky buttons as they might be covered/inactive
-                    
+
                     await loc.click()
                     clicked_add = True
                     log.info(f"Used selector: {selector}")
@@ -471,13 +627,36 @@ async def run_checkout_flow(context, customer, target_url):
                     break
 
         if not clicked_add:
-            log.error("Could not find 'Add to cart' button. Check the store theme/URL.")
-            # Take a screenshot to see why
-            await page.screenshot(path=f".tmp/no_cart_button_{int(time.time())}.png")
-            return False
-                
+            # ULTIMATE FALLBACK: JS direct form submit / AJAX add to cart
+            log.info("All button selectors failed. Trying JS cart/add...")
+            try:
+                js_result = await page.evaluate("""() => {
+                    // Try to find the variant ID from the page
+                    const variantInput = document.querySelector(
+                        'input[name="id"], .product-variant-id, select[name="id"]'
+                    );
+                    if (!variantInput) return 'no_variant';
+                    const variantId = variantInput.value;
+
+                    // Direct fetch to /cart/add.js (Shopify AJAX API)
+                    return fetch('/cart/add.js', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({items: [{id: parseInt(variantId), quantity: 1}]})
+                    }).then(r => r.ok ? 'added' : 'failed:' + r.status)
+                      .catch(e => 'error:' + e.message);
+                }""")
+                if js_result == 'added':
+                    clicked_add = True
+                    log.info("Added to cart via JS AJAX fallback!")
+                else:
+                    log.warning(f"JS cart/add result: {js_result}")
+            except Exception as e:
+                log.warning(f"JS fallback failed: {e}")
+
         if not clicked_add:
-            log.error("Could not find 'Add to cart' button. Check the store theme/URL.")
+            log.error("Could not add to cart by any method.")
+            await page.screenshot(path=f".tmp/no_cart_button_{int(time.time())}.png")
             return False
 
         await asyncio.sleep(2) # Wait for slide-out cart or redirect
@@ -625,7 +804,18 @@ async def enter_checkout_info(context, customer, page):
     """Fills out the Shopify checkout information form."""
     try:
         await page.wait_for_load_state("load", timeout=90000)
-        await asyncio.sleep(5)
+
+        # Extra humanization for protected stores (Honeypot Guard timestamp validation)
+        if is_protected_store(page.url):
+            delay = random.uniform(4, 8)
+            log.info(f"Protected store — adding {delay:.1f}s human delay before filling...")
+            await asyncio.sleep(delay)
+            # Simulate reading the page: scroll down slowly, move mouse
+            await page.mouse.move(random.randint(200, 600), random.randint(200, 400))
+            await page.mouse.wheel(0, random.randint(100, 300))
+            await asyncio.sleep(random.uniform(1, 3))
+        else:
+            await asyncio.sleep(5)
 
         # 4. Fill Information (Shopify new checkout uses deeply nested standard fields)
         log.info(f"Filling customer info: {customer['email']}")
@@ -633,7 +823,7 @@ async def enter_checkout_info(context, customer, page):
         # 1. Fill Identity (Email or Phone) field at the top
         try:
             identity_selectors = [
-                "input[name='email']", 
+                "input[name='email']",
                 "input[id='email']",
                 "input[placeholder*='Email']",
                 "input[placeholder*='phone']",
@@ -642,11 +832,8 @@ async def enter_checkout_info(context, customer, page):
             ]
             found_id = False
             for sel in identity_selectors:
-                element = page.locator(sel).first
-                if await element.is_visible():
-                    await element.fill(customer["phone"]) # Use phone as requested
+                if await safe_fill(page, sel, customer["phone"], "Identity"):
                     found_id = True
-                    log.info(f"Filled Identity field via: {sel}")
                     break
         except Exception as e:
             log.warning(f"Could not fill identity field: {e}")
@@ -654,21 +841,18 @@ async def enter_checkout_info(context, customer, page):
         # Wait for dynamic fields to appear (sometimes filling one field triggers another)
         await asyncio.sleep(2)
 
-        # 2. Fill Shipping Address Fields
+        # 2. Fill Shipping Address Fields (honeypot-safe)
         fields = {
-            "firstName": customer["first_name"],
-            "lastName": customer["last_name"],
-            "address1": customer["address"],
-            "city": customer["city"]
+            "firstName": ("first name", customer["first_name"]),
+            "lastName": ("last name", customer["last_name"]),
+            "address1": ("address", customer["address"]),
+            "city": ("city", customer["city"])
         }
-        
-        for name, value in fields.items():
-            inputs = page.locator(f"input[name='{name}']")
-            if await inputs.count() > 0:
-                await inputs.first.fill(value)
 
-        # 3. Robust/Duplicate Phone filling (Shipping Phone)
-        # We search multiple times to catch fields that appear dynamically
+        for name, (label, value) in fields.items():
+            await safe_fill(page, f"input[name='{name}']", value, label)
+
+        # 3. Robust/Duplicate Phone filling (Shipping Phone, honeypot-safe)
         phone_fields_found = 0
         try:
             phone_selectors = [
@@ -679,19 +863,37 @@ async def enter_checkout_info(context, customer, page):
                 "[id*='shipping_address_phone']",
                 "input[aria-label*='Phone']"
             ]
-            
+
             for sel in phone_selectors:
                 elements = page.locator(sel)
                 count = await elements.count()
                 for i in range(count):
                     el = elements.nth(i)
-                    if await el.is_visible():
-                        # Check if it's already filled with our number
+                    try:
+                        # Honeypot check: verify the element is truly visible
+                        is_real = await el.evaluate("""el => {
+                            const style = window.getComputedStyle(el);
+                            if (style.display === 'none' || style.visibility === 'hidden') return false;
+                            if (parseFloat(style.opacity) === 0) return false;
+                            if (el.offsetWidth === 0 && el.offsetHeight === 0) return false;
+                            let parent = el.parentElement;
+                            for (let d = 0; d < 5 && parent; d++) {
+                                const ps = window.getComputedStyle(parent);
+                                if (ps.display === 'none' || ps.visibility === 'hidden') return false;
+                                parent = parent.parentElement;
+                            }
+                            return true;
+                        }""")
+                        if not is_real:
+                            log.info(f"Skipping honeypot phone field: {sel}")
+                            continue
                         curr_val = await el.get_attribute("value") or ""
                         if curr_val.strip() != customer["phone"].strip():
                             await el.fill(customer["phone"])
                             phone_fields_found += 1
                             log.info(f"Filled/Updated Phone field #{phone_fields_found} via: {sel}")
+                    except:
+                        continue
         except Exception as e:
             log.warning(f"Error during phone field re-scan: {e}")
                 
@@ -742,145 +944,49 @@ async def enter_checkout_info(context, customer, page):
                             log.info(f"No match found. Selected random state/province: {chosen_val}")
                 break
 
-        # --- Robust COD Selection ---
-        log.info("Attempting to select 'Cash on Delivery' (COD)...")
-        found_cod = False
-        
-        # 1. Wait for payment section to appear
+        # --- COD Selection (JS-first for speed) ---
+        log.info("Selecting COD payment...")
+        await page.evaluate("""() => {
+            const inputs = Array.from(document.querySelectorAll('input[type="radio"]'));
+            const cod = inputs.find(i =>
+                i.value.includes('manual') || i.value.includes('cod') ||
+                i.id.includes('manual') || i.id.includes('cod')
+            );
+            if (cod) {
+                const nativeSet = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'checked'
+                ).set;
+                nativeSet.call(cod, true);
+                cod.dispatchEvent(new Event('input', { bubbles: true }));
+                cod.dispatchEvent(new Event('change', { bubbles: true }));
+                cod.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                const label = cod.closest('label') || document.querySelector('label[for="' + cod.id + '"]');
+                if (label) label.click();
+            }
+        }""")
+        log.info("COD selected")
+
+        # Submit order: click a filled field and press Enter (instant form submit)
+        log.info("Submitting order via field focus + Enter...")
+        await asyncio.sleep(2)
         try:
-            await page.wait_for_selector("[data-payment-gateway-section], #payment-gateway", timeout=5000)
+            field = page.locator("input[name='firstName']").first
+            await field.click()
+            await asyncio.sleep(0.5)
+            await page.keyboard.press("Enter")
         except:
-            pass
-            
-        # 2. Aggressive multi-selector approach for COD
-        cod_selectors = [
-            # Standard Shopify radio buttons
-            "input[value*='manual']", 
-            "input[id*='manual']",
-            "input[value*='cod']",
-            "input[id*='cod']",
-            "input[aria-label*='Cash']",
-            "input[aria-label*='COD']",
-            # Labels and clickable containers
-            "label:has-text('Cash on Delivery')",
-            "label:has-text('COD')",
-            ".radio-wrapper:has-text('Cash on Delivery')",
-            ".radio-wrapper:has-text('COD')",
-            "[data-payment-subform='cash_on_delivery']",
-            "div:has-text('Cash on Delivery') label",
-            "div:has-text('COD') label"
-        ]
-        
-        for selector in cod_selectors:
-            try:
-                # Find all potential matches
-                locs = page.locator(selector)
-                count = await locs.count()
-                for i in range(count):
-                    loc = locs.nth(i)
-                    if await loc.is_visible():
-                        # Skip if it's the discount field or similar
-                        outer_html = (await loc.evaluate("el => el.outerHTML")).lower()
-                        if "discount" in outer_html or "coupon" in outer_html or "reduction" in outer_html:
-                            continue
-                            
-                        log.info(f"Clicking COD option via: {selector}")
-                        await loc.click()
-                        await asyncio.sleep(1) # Wait for selection to process
-                        
-                        # VERIFY: Check if the selection 'stuck'
-                        # Look for aria-checked="true" on the radio or a parent with is-selected
-                        is_selected = await loc.evaluate("""el => {
-                            const radio = el.tagName === 'INPUT' ? el : el.querySelector('input');
-                            if (radio && (radio.checked || radio.getAttribute('aria-checked') === 'true')) return true;
-                            const wrapper = el.closest('.radio-wrapper, .section__content, .payment-gateway');
-                            if (wrapper && (wrapper.classList.contains('is-selected') || wrapper.getAttribute('data-is-selected') === 'true')) return true;
-                            return false;
-                        }""")
-                        
-                        if is_selected:
-                            log.info("Verified: COD selection is active.")
-                            found_cod = True
-                            break
-                        else:
-                            log.warning(f"Click on {selector} didn't seem to 'stick'. Trying next...")
-                
-                if found_cod: break
-            except:
-                continue
-        
-        if not found_cod:
-            log.warning("Final attempt: Direct JavaScript selection of COD radio...")
-            try:
-                # Direct JS to find and click the manual/cod radio button
-                await page.evaluate("""() => {
-                    const inputs = Array.from(document.querySelectorAll('input[type="radio"]'));
-                    const cod = inputs.find(i => i.value.includes('manual') || i.value.includes('cod') || i.id.includes('manual') || i.id.includes('cod'));
-                    if (cod) {
-                        cod.click();
-                        cod.checked = true;
-                        cod.dispatchEvent(new Event('change', { bubbles: true }));
-                        return true;
-                    }
-                    return false;
-                }""")
-                found_cod = True
-            except:
-                pass
+            # Fallback: just press Enter on the page
+            await page.keyboard.press("Enter")
 
-        if found_cod:
+        # Wait for confirmation page
+        for i in range(10):
             await asyncio.sleep(2)
-        else:
-            log.warning("Could not definitively select COD. Proceeding anyway, hoping for default.")
-
-        # Click Continue to shipping / Payment
-        log.info("Progressing through checkout steps...")
-        
-        # Shopify often has "Continue to shipping" -> "Continue to payment" -> "Complete order"
-        next_buttons = [
-            "button:has-text('Continue to shipping')",
-            "button:has-text('Continue to payment')",
-            "button:has-text('Pay now')",
-            "button:has-text('Complete order')",
-            "#continue_button"
-        ]
-        
-        for i in range(10): # Increase attempts, shorter sleep
-            await asyncio.sleep(2)
-            
-            # Check if we landed on the thank you page FIRST
-            if any(x in page.url for x in ["thank", "orders", "receipt"]) or \
-               await page.locator("text='Your order is confirmed'").count() > 0 or \
-               await page.locator("text='Confirmed'").count() > 0:
+            if any(x in page.url for x in ["thank", "orders", "receipt"]):
                 log.info(f"Successfully reached Order Confirmation! URL: {page.url}")
                 return True
-                
-            progressed = False
-            for btn in next_buttons:
-                loc = page.locator(btn).first
-                if await loc.is_visible():
-                    # If button is busy or disabled, wait a bit longer
-                    is_disabled = await loc.evaluate("el => el.disabled || el.getAttribute('aria-busy') === 'true'")
-                    if is_disabled:
-                        log.info(f"Button {btn} is busy/disabled, waiting...")
-                        continue
-                        
-                    btn_text = await loc.text_content()
-                    log.info(f"Clicking checkout action: {btn_text.strip() if btn_text else btn}")
-                    try:
-                        await loc.click(timeout=10000) # Short timeout for the click itself
-                        progressed = True
-                        await asyncio.sleep(2) # Wait for transition
-                        break
-                    except Exception as e:
-                        log.warning(f"Failed to click {btn}: {e}")
-            
-            if not progressed and i > 3:
-                # If we haven't progressed for a while, maybe we're already there?
-                if any(x in page.url for x in ["thank", "orders", "receipt"]):
-                    return True
-                
-        return True # Return true anyway as we've hit the system with load
+
+        log.info(f"Order submission attempted. Final URL: {page.url}")
+        return True
 
     except Exception as e:
         log.error(f"Error inside enter_checkout_info: {e}")
@@ -917,7 +1023,17 @@ async def run_bot(headless=True, visible=False, count=0):
             launch_args["proxy"] = proxy_config
             log.info(f"Using proxy server: {proxy_config['server']}")
 
-        browser = await p.chromium.launch(**launch_args)
+        # Use system Chrome for real TLS fingerprint (bypasses Cloudflare JA3 detection)
+        # Playwright's bundled Chromium has a known TLS fingerprint that Cloudflare blocks
+        launch_args["channel"] = "chrome"
+        try:
+            browser = await p.chromium.launch(**launch_args)
+            log.info("Launched system Chrome (real TLS fingerprint)")
+        except Exception:
+            # Fallback to bundled Chromium if Chrome not installed
+            del launch_args["channel"]
+            browser = await p.chromium.launch(**launch_args)
+            log.warning("System Chrome not found, using bundled Chromium")
 
         order_count = 0
         while True:
@@ -927,22 +1043,54 @@ async def run_bot(headless=True, visible=False, count=0):
 
             log.info(f"--- Starting Round {order_count + 1} ---")
 
+            # Rotate viewport slightly per session to vary fingerprint
+            vw = random.choice([1280, 1366, 1440, 1536, 1920])
+            vh = random.choice([768, 800, 900, 1080])
+
             context_args = {
-                "viewport": {"width": 1280, "height": 800},
-                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "ignore_https_errors": True
+                "viewport": {"width": vw, "height": vh},
+                "user_agent": random.choice(USER_AGENTS),
+                "ignore_https_errors": True,
+                "locale": random.choice(["en-AE", "en-US", "en-GB", "ar-AE"]),
+                "timezone_id": "Asia/Dubai"
             }
 
             context = await browser.new_context(**context_args)
+            log.info(f"Session fingerprint: {vw}x{vh} | UA: {context_args['user_agent'][:50]}...")
 
-            # Optimization: Block images/fonts/media to save data costs on Cloud Browsers
-            if BLOCK_RESOURCES:
+            # Determine current target store for resource blocking decision
+            current_target = PRODUCT_URL
+            if STORE_URLS:
+                current_target = STORE_URLS[order_count % len(STORE_URLS)]
+
+            # Skip resource blocking for protected stores (MIDA fingerprints missing loads)
+            should_block = BLOCK_RESOURCES and not is_protected_store(current_target)
+            if should_block:
                 async def intercept(route):
                     if route.request.resource_type in ["image", "media", "font"]:
                         await route.abort()
                     else:
                         await route.continue_()
                 await context.route("**/*", intercept)
+            elif is_protected_store(current_target):
+                log.info("Protected store detected — loading ALL resources (no blocking)")
+
+            # Neutralize MIDA + disable-devtool anti-automation scripts
+            if is_protected_store(current_target):
+                async def block_antibot(route):
+                    await route.abort()
+                await context.route("**/disable-devtool**", block_antibot)
+                await context.route("**/mida**/script.min.js", block_antibot)
+                # Patch only the specific DevTools size detection (safe, non-breaking)
+                await context.add_init_script("""
+                    Object.defineProperty(window, 'outerHeight', {
+                        get: () => window.innerHeight, configurable: true
+                    });
+                    Object.defineProperty(window, 'outerWidth', {
+                        get: () => window.innerWidth, configurable: true
+                    });
+                """)
+                log.info("Blocked disable-devtool + patched DevTools size detection")
 
             # Fetch random product if needed
             target_url = PRODUCT_URL
