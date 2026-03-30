@@ -7,7 +7,11 @@ import argparse
 from datetime import datetime
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
+try:
+    from playwright_stealth import Stealth
+    HAS_STEALTH = True
+except ImportError:
+    HAS_STEALTH = False
 
 # Load .env
 load_dotenv()
@@ -398,7 +402,8 @@ async def get_random_product_url(page, base_url=None):
     log.info(f"Navigating to {collections_url} to find products...")
     
     try:
-        await Stealth().apply_stealth_async(page)
+        if HAS_STEALTH:
+            await Stealth().apply_stealth_async(page)
 
         await page.goto(collections_url, wait_until="domcontentloaded", timeout=90000)
         # Wait for product links to render (much faster than networkidle)
@@ -450,7 +455,8 @@ async def run_checkout_flow(context, customer, target_url):
     
     try:
         # Apply stealth to the page
-        await Stealth().apply_stealth_async(page)
+        if HAS_STEALTH:
+            await Stealth().apply_stealth_async(page)
 
         # 1. Go to product page
         log.info(f"Navigating to product page: {target_url}")
