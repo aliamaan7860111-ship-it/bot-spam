@@ -20,8 +20,10 @@ supabase: Client = create_client(
 
 def get_customer(phone: str) -> dict | None:
     """Get customer by phone number."""
-    res = supabase.table("customers").select("*").eq("phone", phone).maybe_single().execute()
-    return res.data
+    res = supabase.table("customers").select("*").eq("phone", phone).execute()
+    if res.data and len(res.data) > 0:
+        return res.data[0]
+    return None
 
 
 def create_customer(phone: str, name: str = None, store: str = None) -> dict:
