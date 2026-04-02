@@ -17,11 +17,74 @@ load_dotenv()
 
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+VISION_MODEL = "claude-haiku-4-5-20251001"
 STORE = os.getenv("DEFAULT_STORE", "amarasroom")
 CURRENCY = os.getenv("STORE_CURRENCY", "AED")
 
+# ── Brand aliases — maps common misspellings/abbreviations to DB brand names ──
+
+BRAND_ALIASES = {
+    # Chanel
+    "chanel": "Chanel", "channel": "Chanel", "chanell": "Chanel", "coco": "Chanel",
+    "coco chanel": "Chanel", "chanel bag": "Chanel", "cc": "Chanel",
+    # Louis Vuitton
+    "lv": "Louis Vuitton", "louis vuitton": "Louis Vuitton", "louis": "Louis Vuitton",
+    "vuitton": "Louis Vuitton", "louie vuitton": "Louis Vuitton", "louie": "Louis Vuitton",
+    "loui vuitton": "Louis Vuitton", "luis vuitton": "Louis Vuitton",
+    # Hermes
+    "hermes": "Hermes", "hermès": "Hermes", "hermez": "Hermes", "birkin": "Hermes",
+    "kelly": "Hermes",
+    # Gucci
+    "gucci": "Gucci", "guchi": "Gucci", "goochi": "Gucci",
+    # Dior
+    "dior": "Dior", "christian dior": "Dior", "dior bag": "Dior",
+    "lady dior": "Dior", "book tote": "Dior",
+    # Prada
+    "prada": "Prada", "pradaa": "Prada",
+    # Fendi
+    "fendi": "Fendi", "fendi bag": "Fendi", "baguette": "Fendi",
+    # Celine
+    "celine": "Celine", "céline": "Celine", "celin": "Celine",
+    # Balenciaga
+    "balenciaga": "Balenciaga", "balenciaga bag": "Balenciaga",
+    "balenci": "Balenciaga", "city bag": "Balenciaga",
+    # YSL
+    "ysl": "YSL", "saint laurent": "YSL", "yves saint laurent": "YSL",
+    "saint laurant": "YSL",
+    # Bottega
+    "bottega": "Bottega Veneta", "bottega veneta": "Bottega Veneta", "bv": "Bottega Veneta",
+    # Givenchy
+    "givenchy": "Givenchy", "givency": "Givenchy",
+    # Versace
+    "versace": "Versace", "versaci": "Versace",
+    # Burberry
+    "burberry": "Burberry", "burber": "Burberry", "burberry bag": "Burberry",
+    # Goyard
+    "goyard": "Goyard",
+    # Loewe
+    "loewe": "Loewe", "loewe bag": "Loewe",
+}
+
+COLOR_ALIASES = {
+    "black": "Black", "blk": "Black", "noir": "Black",
+    "white": "White", "wht": "White", "blanc": "White",
+    "gold": "Gold", "golden": "Gold", "metallic gold": "Metallic Gold",
+    "silver": "Silver", "metallic silver": "Silver",
+    "brown": "Brown", "tan": "Brown", "camel": "Brown",
+    "beige": "Beige", "cream": "Beige", "nude": "Beige",
+    "red": "Red", "rouge": "Red",
+    "blue": "Blue", "navy": "Blue",
+    "green": "Green", "olive": "Green",
+    "pink": "Pink", "rose": "Pink",
+    "grey": "Grey", "gray": "Grey",
+    "etoupe": "Etoupe",
+}
+
+CATEGORY_KEYWORDS = ["bag", "bags", "handbag", "handbags", "wallet", "wallets", "purse",
+                     "shoes", "shoe", "sneakers", "belt", "belts", "scarf", "scarves",
+                     "watch", "watches", "sunglasses", "jewelry", "jewellery"]
+
 # ── System Prompt ──────────────────────────────────────────
-# Basic version — will be replaced with full training manual later
 
 SYSTEM_PROMPT = f"""You are a friendly and confident sales assistant for Amara's Room — a premium luxury accessories store based in Dubai.
 
@@ -33,9 +96,23 @@ SYSTEM_PROMPT = f"""You are a friendly and confident sales assistant for Amara's
 - You use emojis sparingly and naturally
 - You never sound robotic or scripted
 
+# CRITICAL RULE: ALWAYS SHOW PRODUCTS
+When you have product catalog data in the [CATALOG DATA] section, you MUST show those products to the customer immediately. Do NOT ask more qualifying questions when you already have matching products. Show what you have first, then ask if they want to see more options.
+
+Format products like this:
+1. Product Name — Color | Price {CURRENCY}
+2. Product Name — Color | Price {CURRENCY}
+
+Then ask which one they'd like to see photos of or if they'd like to order.
+
+# CRITICAL RULE: BE HONEST ABOUT INVENTORY
+If the [CATALOG DATA] says "No matching products found" — be honest. Say you don't have that specific item right now, but suggest what you DO have from the catalog. NEVER pretend you have items that aren't in the catalog data.
+
+If the catalog shows products from a different brand than what the customer asked for, say something like "We don't have [requested brand] right now, but we have some beautiful [available brand] pieces — want to take a look?"
+
 # Your Job
-1. Greet warmly and understand what the customer is looking for
-2. Search your product catalog and recommend matching items
+1. Greet warmly when they say hi
+2. When they ask about products — search and show matching items IMMEDIATELY
 3. Share product details: name, color, price, and what's included
 4. Handle questions and concerns confidently
 5. When ready, collect order details: name, address, phone number, and confirm the product
@@ -49,18 +126,12 @@ SYSTEM_PROMPT = f"""You are a friendly and confident sales assistant for Amara's
 
 # Rules
 - NEVER claim items are "original" or "authentic" — just describe the quality and craftsmanship
-- NEVER make up product information — only reference products from the catalog data provided
+- NEVER make up product information — ONLY reference products from the [CATALOG DATA] section
 - NEVER continue messaging after a customer says "stop" or "not interested"
 - If you don't have an answer, say "Let me check with the team and get back to you"
 - If the customer seems frustrated or angry, offer to connect them with a team member
 - One question at a time — don't overwhelm with multiple questions
 - Keep it conversational, not transactional
-
-# Product Recommendations
-When recommending products, format them clearly:
-- Product name — Color | Price {CURRENCY}
-- Brief one-line description if helpful
-- Offer to show photos
 
 # Order Collection
 When a customer wants to buy, collect these one at a time:
@@ -69,11 +140,6 @@ When a customer wants to buy, collect these one at a time:
 3. Phone number for the delivery rider
 4. Confirm: product, quantity, total price, address
 Only after they confirm all details, say "Order confirmed!" and nothing more about the order.
-
-# When You Have No Matching Products
-If the customer asks for something not in your catalog, say something like:
-"We don't have that exact piece right now, but let me show you some similar options we have!"
-Then suggest the closest matches from your catalog.
 """
 
 
@@ -82,20 +148,23 @@ def format_products_for_context(products: list) -> str:
     if not products:
         return "No matching products found in catalog."
 
-    lines = ["Available products matching the query:"]
-    for p in products:
-        line = f"- {p['title']} | Color: {p.get('color', 'N/A')} | {p['price']} {p.get('currency', CURRENCY)}"
+    lines = ["MATCHING PRODUCTS IN YOUR CATALOG:"]
+    for i, p in enumerate(products, 1):
+        line = f"\n{i}. {p['title']}"
+        line += f"\n   Color: {p.get('color', 'N/A')}"
+        line += f"\n   Price: {p['price']} {p.get('currency', CURRENCY)}"
         if p.get('compare_at_price'):
             line += f" (was {p['compare_at_price']} {p.get('currency', CURRENCY)})"
         if p.get('material'):
-            line += f" | Material: {p['material']}"
+            line += f"\n   Material: {p['material']}"
         if p.get('description'):
-            line += f"\n  Description: {p['description'][:150]}"
+            line += f"\n   Description: {p['description'][:150]}"
         if p.get('studio_images'):
-            line += f"\n  Images available: {len(p['studio_images'])} photos"
-        line += f"\n  Product ID: {p['id']}"
+            line += f"\n   Has {len(p['studio_images'])} product photos available to send"
+        line += f"\n   Product ID: {p['id']}"
         lines.append(line)
 
+    lines.append("\nIMPORTANT: Show these products to the customer NOW. Do not ask more qualifying questions.")
     return "\n".join(lines)
 
 
@@ -106,14 +175,45 @@ def format_conversation_history(history: list) -> list:
         role = "user" if msg["role"] == "customer" else "assistant"
         content = msg["content"]
         if msg.get("message_type") == "image" and msg.get("image_url"):
-            content = f"[Customer sent an image: {msg['image_url']}]\n{content}"
+            content = f"[Customer sent an image]\n{content}"
         messages.append({"role": role, "content": content})
     return messages
 
 
+def extract_search_terms(text: str) -> dict:
+    """Extract brand, color, and category from message text using fuzzy matching."""
+    text_lower = text.lower().strip()
+    words = text_lower.split()
+
+    matched_brand = None
+    matched_color = None
+    matched_category = None
+
+    # Check multi-word aliases first (longest match wins)
+    for alias in sorted(BRAND_ALIASES.keys(), key=len, reverse=True):
+        if alias in text_lower:
+            matched_brand = BRAND_ALIASES[alias]
+            break
+
+    for alias in sorted(COLOR_ALIASES.keys(), key=len, reverse=True):
+        if alias in text_lower:
+            matched_color = COLOR_ALIASES[alias]
+            break
+
+    for keyword in CATEGORY_KEYWORDS:
+        if keyword in text_lower:
+            matched_category = "Bags"  # For now, most categories map to bags
+            break
+
+    return {
+        "brand": matched_brand,
+        "color": matched_color,
+        "category": matched_category,
+    }
+
+
 async def identify_image(image_url: str) -> str:
-    """Use Claude Vision to identify a product from an image."""
-    # Download the image
+    """Use Claude Vision (Haiku) to identify a product from an image."""
     async with httpx.AsyncClient(timeout=30) as http:
         resp = await http.get(image_url)
         if resp.status_code != 200:
@@ -122,7 +222,6 @@ async def identify_image(image_url: str) -> str:
     import base64
     image_data = base64.b64encode(resp.content).decode("utf-8")
 
-    # Determine media type
     content_type = resp.headers.get("content-type", "image/jpeg")
     if "png" in content_type:
         media_type = "image/png"
@@ -132,8 +231,8 @@ async def identify_image(image_url: str) -> str:
         media_type = "image/jpeg"
 
     vision_resp = client.messages.create(
-        model=MODEL,
-        max_tokens=300,
+        model=VISION_MODEL,
+        max_tokens=200,
         messages=[{
             "role": "user",
             "content": [
@@ -143,7 +242,7 @@ async def identify_image(image_url: str) -> str:
                 },
                 {
                     "type": "text",
-                    "text": "Identify this product. What brand is it? What type of item (bag, wallet, shoes, etc.)? What color? What specific model name if you can tell? Reply in this format only:\nBrand: ...\nType: ...\nColor: ...\nModel: ...",
+                    "text": "Identify this product briefly. Reply ONLY in this format:\nBrand: ...\nType: ...\nColor: ...\nModel: ...",
                 },
             ],
         }],
@@ -173,7 +272,6 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
     if message_type == "image" and image_url:
         image_context = await identify_image(image_url)
         save_message(phone, "customer", f"[Sent an image]", message_type="image", image_url=image_url)
-        # Use the Vision identification to search products
         message_text = f"Customer sent an image. Vision identified: {image_context}"
     else:
         save_message(phone, "customer", message_text, message_type="text")
@@ -182,85 +280,79 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
     history = get_conversation_history(phone)
     claude_messages = format_conversation_history(history)
 
-    # 6. Search for products based on the message
-    # Extract potential search terms from the message
+    # 6. ALWAYS search for products — use multiple strategies
     products = []
-    search_text = message_text.lower()
 
-    # Search by brand keywords
-    brands = ["chanel", "hermes", "louis vuitton", "lv", "gucci", "dior", "prada", "fendi", "celine", "balenciaga", "ysl", "bottega"]
-    colors = ["black", "white", "gold", "silver", "brown", "beige", "red", "blue", "green", "pink", "metallic"]
-    categories = ["bag", "bags", "wallet", "wallets", "shoes", "belt", "belts", "scarf", "scarves"]
+    # Strategy A: Extract search terms from current message
+    search_terms = extract_search_terms(message_text)
 
-    matched_brand = None
-    matched_color = None
-    matched_category = None
-
-    for b in brands:
-        if b in search_text:
-            matched_brand = b
-            break
-
-    for c in colors:
-        if c in search_text:
-            matched_color = c
-            break
-
-    for cat in categories:
-        if cat in search_text:
-            matched_category = cat
-            break
-
-    # If image was identified, parse Vision output for search
+    # Strategy B: If image was identified, parse vision output too
     if image_context:
-        ic_lower = image_context.lower()
-        for b in brands:
-            if b in ic_lower:
-                matched_brand = b
-                break
-        for c in colors:
-            if c in ic_lower:
-                matched_color = c
-                break
+        vision_terms = extract_search_terms(image_context)
+        if vision_terms["brand"] and not search_terms["brand"]:
+            search_terms["brand"] = vision_terms["brand"]
+        if vision_terms["color"] and not search_terms["color"]:
+            search_terms["color"] = vision_terms["color"]
+
+    # Strategy C: Check recent conversation history for context
+    # (e.g., they asked about Chanel before, now they say "medium" or "black")
+    if not search_terms["brand"]:
+        for msg in reversed(history):
+            if msg["role"] == "customer":
+                past_terms = extract_search_terms(msg["content"])
+                if past_terms["brand"]:
+                    search_terms["brand"] = past_terms["brand"]
+                    break
 
     # Search with whatever we found
-    if matched_brand or matched_color or matched_category:
+    if search_terms["brand"] or search_terms["color"] or search_terms["category"]:
         products = search_products(
-            brand=matched_brand,
-            color=matched_color,
-            category=matched_category,
+            brand=search_terms["brand"],
+            color=search_terms["color"],
+            category=search_terms["category"],
             store=STORE
         )
-    elif any(word in search_text for word in ["product", "item", "what do you have", "show me", "catalog", "collection"]):
-        # Generic browse — show everything
-        products = search_products(store=STORE)
+
+    # If no specific search matched, check if they're asking to see products generally
+    if not products:
+        general_triggers = ["what do you have", "show me", "catalog", "collection",
+                           "products", "items", "available", "stock", "what kind",
+                           "what bags", "what type", "options"]
+        if any(trigger in message_text.lower() for trigger in general_triggers):
+            products = search_products(store=STORE)
 
     # 7. Build the context for Claude
     product_context = format_products_for_context(products) if products else ""
 
+    # Also always include what's in stock (brief summary) even if no specific search
+    all_products = search_products(store=STORE)
+    if not products and all_products:
+        inventory_summary = "CURRENT FULL INVENTORY (mention these if relevant):\n"
+        for p in all_products:
+            inventory_summary += f"- {p['title']} | {p.get('color', 'N/A')} | {p['price']} {CURRENCY}\n"
+        product_context = inventory_summary
+
     customer_context = f"""Customer info:
 - Phone: {phone}
-- Name: {customer.get('name', 'Unknown')}
+- Name: {customer.get('name') or 'Unknown'}
 - Stage: {customer.get('funnel_stage', 'new')}
 - Store: {customer.get('store', STORE)}"""
 
-    # Add product context to the latest user message
-    if product_context:
-        # Append product data as a system-like injection in the user message
-        if claude_messages and claude_messages[-1]["role"] == "user":
-            claude_messages[-1]["content"] += f"\n\n[CATALOG DATA — use this to answer]\n{product_context}"
-        else:
-            claude_messages.append({
-                "role": "user",
-                "content": f"{message_text}\n\n[CATALOG DATA — use this to answer]\n{product_context}"
-            })
+    # Build the full user message with catalog data appended
+    if claude_messages and claude_messages[-1]["role"] == "user":
+        catalog_section = f"\n\n[CATALOG DATA]\n{product_context}" if product_context else "\n\n[CATALOG DATA]\nNo specific products matched this query. Check inventory summary."
+        claude_messages[-1]["content"] += catalog_section
+    else:
+        content = message_text
+        if product_context:
+            content += f"\n\n[CATALOG DATA]\n{product_context}"
+        claude_messages.append({"role": "user", "content": content})
 
     # Ensure messages alternate properly (Claude requirement)
     cleaned_messages = []
     last_role = None
     for msg in claude_messages:
         if msg["role"] == last_role:
-            # Merge consecutive same-role messages
             cleaned_messages[-1]["content"] += "\n" + msg["content"]
         else:
             cleaned_messages.append(msg)
@@ -285,13 +377,22 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
     # 9. Determine which product images to send
     images_to_send = []
     if products:
-        # Check if Claude's reply mentions specific products — send images for first mentioned
+        # If we found matching products, send images of the first one that Claude mentions
+        reply_lower = reply.lower()
         for p in products:
-            title_words = p["title"].lower().split()
-            if any(word in reply.lower() for word in title_words if len(word) > 3):
+            # Check if any significant word from the product title appears in the reply
+            title_words = [w.lower() for w in p["title"].replace("|", "").split() if len(w) > 3]
+            if any(word in reply_lower for word in title_words):
                 if p.get("studio_images"):
-                    images_to_send = p["studio_images"][:2]  # Send max 2 images
+                    images_to_send = p["studio_images"][:2]
                 break
+
+        # If Claude mentioned products but we couldn't match which one, send first product's images
+        if not images_to_send and len(products) <= 3:
+            for p in products:
+                if p.get("studio_images"):
+                    images_to_send = p["studio_images"][:1]
+                    break
 
     # 10. Save bot reply
     product_ids = [p["id"] for p in products] if products else []
