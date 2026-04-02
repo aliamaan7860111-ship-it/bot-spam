@@ -268,13 +268,12 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
         return {"reply": None, "images": [], "products": []}
 
     # 4. Handle image messages — identify the product
+    # NOTE: Messages are already saved to DB by webhook_server.py (for batching)
+    # We only need to do vision identification here, not save again
     image_context = ""
     if message_type == "image" and image_url:
         image_context = await identify_image(image_url)
-        save_message(phone, "customer", f"[Sent an image]", message_type="image", image_url=image_url)
         message_text = f"Customer sent an image. Vision identified: {image_context}"
-    else:
-        save_message(phone, "customer", message_text, message_type="text")
 
     # 5. Load conversation history
     history = get_conversation_history(phone)
@@ -283,8 +282,28 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
     # 6. ALWAYS search for products — use multiple strategies
     products = []
 
-    # Strategy A: Extract search terms from current message
-    search_terms = extract_search_terms(message_text)
+    # Strategy A: Extract search terms from ALL recent customer messages
+    # (handles batched rapid messages — "hi" + "i need lv" + "what prices")
+    search_terms = {"brand": None, "color": None, "category": None}
+    for msg in reversed(history):
+        if msg["role"] != "customer":
+            break  # Stop at last bot reply — only scan new customer messages
+        msg_terms = extract_search_terms(msg["content"])
+        if msg_terms["brand"] and not search_terms["brand"]:
+            search_terms["brand"] = msg_terms["brand"]
+        if msg_terms["color"] and not search_terms["color"]:
+            search_terms["color"] = msg_terms["color"]
+        if msg_terms["category"] and not search_terms["category"]:
+            search_terms["category"] = msg_terms["category"]
+
+    # Also check the current message text (for image identification etc.)
+    current_terms = extract_search_terms(message_text)
+    if current_terms["brand"] and not search_terms["brand"]:
+        search_terms["brand"] = current_terms["brand"]
+    if current_terms["color"] and not search_terms["color"]:
+        search_terms["color"] = current_terms["color"]
+    if current_terms["category"] and not search_terms["category"]:
+        search_terms["category"] = current_terms["category"]
 
     # Strategy B: If image was identified, parse vision output too
     if image_context:
@@ -294,8 +313,8 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
         if vision_terms["color"] and not search_terms["color"]:
             search_terms["color"] = vision_terms["color"]
 
-    # Strategy C: Check recent conversation history for context
-    # (e.g., they asked about Chanel before, now they say "medium" or "black")
+    # Strategy C: Check older conversation history for context
+    # (e.g., they asked about Chanel earlier, now they say "black")
     if not search_terms["brand"]:
         for msg in reversed(history):
             if msg["role"] == "customer":
