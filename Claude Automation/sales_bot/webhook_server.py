@@ -15,7 +15,7 @@ load_dotenv()
 
 from brain import process_message
 from whatchimp_client import send_text, send_image
-from supabase_client import save_message
+from supabase_client import save_message, create_customer
 
 # ── Logging ────────────────────────────────────────────────
 
@@ -138,6 +138,9 @@ async def handle_webhook(request: Request):
             return {"status": "skipped", "reason": "empty message"}
 
         log.info(f"Webhook: phone={phone}, type={message_type}, msg={message_text[:50]}")
+
+        # ── Ensure customer exists before saving message ───
+        create_customer(phone, name=first_name if first_name else None)
 
         # ── Save message to DB immediately ─────────────────
         # (brain will load these from conversation history when it processes)
