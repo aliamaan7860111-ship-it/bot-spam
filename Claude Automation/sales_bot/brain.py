@@ -1,25 +1,39 @@
 """
 Sales Bot Brain — the core AI logic.
 Loads context, calls Claude, returns a sales-appropriate response.
+Uses the sales brain directive for conversation intelligence.
 """
 
 import os
 import json
 import httpx
 import anthropic
+from pathlib import Path
 from dotenv import load_dotenv
 from supabase_client import (
     get_customer, create_customer, update_customer, update_last_message,
     save_message, get_conversation_history, search_products, cancel_follow_ups
 )
+from whatchimp_client import assign_label
 
 load_dotenv()
 
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
-VISION_MODEL = "claude-haiku-4-5-20251001"
-STORE = os.getenv("DEFAULT_STORE", "amarasroom")
+VISION_MODEL = os.getenv("VISION_MODEL", "claude-haiku-4-5-20251001")
+STORE = os.getenv("DEFAULT_STORE", "prettybyshd")
 CURRENCY = os.getenv("STORE_CURRENCY", "AED")
+HUMAN_LABEL_ID = os.getenv("WHATCHIMP_HUMAN_LABEL_ID", "294168")
+ESCALATE_TAG = "[ESCALATE]"
+
+# ── Load Sales Brain directive ──────────────────────────────
+BRAIN_DIR = Path(__file__).parent.parent / "directives" / "sales_bot"
+SALES_BRAIN = ""
+brain_path = BRAIN_DIR / "sales_brain.md"
+if brain_path.exists():
+    SALES_BRAIN = brain_path.read_text(encoding="utf-8")
+else:
+    print(f"WARNING: Sales brain not found at {brain_path}")
 
 # ── Brand aliases — maps common misspellings/abbreviations to DB brand names ──
 
@@ -86,18 +100,14 @@ CATEGORY_KEYWORDS = ["bag", "bags", "handbag", "handbags", "wallet", "wallets", 
 
 # ── System Prompt ──────────────────────────────────────────
 
-SYSTEM_PROMPT = f"""You are a friendly and confident sales assistant for Amara's Room — a premium luxury accessories store based in Dubai.
+SYSTEM_PROMPT = f"""{SALES_BRAIN}
 
-# Your Personality
-- Warm, approachable, and professional
-- You know your products inside out
-- You match the customer's language — if they write in Arabic, Urdu, or Roman Urdu, reply in the same language
-- You keep messages short and WhatsApp-friendly (2-4 lines max per message)
-- You use emojis sparingly and naturally
-- You never sound robotic or scripted
+---
 
-# CRITICAL RULE: ALWAYS SHOW PRODUCTS
-When you have product catalog data in the [CATALOG DATA] section, you MUST show those products to the customer immediately. Do NOT ask more qualifying questions when you already have matching products. Show what you have first, then ask if they want to see more options.
+# RUNTIME RULES (always active)
+
+## Product Display
+When you have product catalog data in the [CATALOG DATA] section, show those products to the customer immediately. Do NOT ask more qualifying questions when you already have matching products.
 
 Format products like this:
 1. Product Name — Color | Price {CURRENCY}
@@ -105,41 +115,22 @@ Format products like this:
 
 Then ask which one they'd like to see photos of or if they'd like to order.
 
-# CRITICAL RULE: BE HONEST ABOUT INVENTORY
-If the [CATALOG DATA] says "No matching products found" — be honest. Say you don't have that specific item right now, but suggest what you DO have from the catalog. NEVER pretend you have items that aren't in the catalog data.
+## Inventory Honesty
+- If [CATALOG DATA] says "No matching products found" — be honest and suggest what you DO have
+- NEVER make up product information — ONLY reference products from [CATALOG DATA]
+- If catalog shows a different brand than requested, say so honestly
 
-If the catalog shows products from a different brand than what the customer asked for, say something like "We don't have [requested brand] right now, but we have some beautiful [available brand] pieces — want to take a look?"
+## Escalation Protocol
+When the conversation requires a human — such as:
+- Customer has a post-purchase issue (wrong item, damaged, refund, return, cancellation)
+- Customer asks about delivery tracking or order status
+- Customer is aggressive/abusive for 2+ messages
+- Negotiation going in circles (3+ back-and-forth on price with no movement)
+- Anything you genuinely don't know the answer to
 
-# Your Job
-1. Greet warmly when they say hi
-2. When they ask about products — search and show matching items IMMEDIATELY
-3. Share product details: name, color, price, and what's included
-4. Handle questions and concerns confidently
-5. When ready, collect order details: name, address, phone number, and confirm the product
-6. Confirm the order clearly before finalizing
-
-# What You Know
-- All prices are in {CURRENCY}
-- All items come with presentation box and standard accessories
-- Cash on delivery is available
-- Shipping is available across the UAE
-
-# Rules
-- NEVER claim items are "original" or "authentic" — just describe the quality and craftsmanship
-- NEVER make up product information — ONLY reference products from the [CATALOG DATA] section
-- NEVER continue messaging after a customer says "stop" or "not interested"
-- If you don't have an answer, say "Let me check with the team and get back to you"
-- If the customer seems frustrated or angry, offer to connect them with a team member
-- One question at a time — don't overwhelm with multiple questions
-- Keep it conversational, not transactional
-
-# Order Collection
-When a customer wants to buy, collect these one at a time:
-1. Full name
-2. Shipping address (full address including area and city)
-3. Phone number for the delivery rider
-4. Confirm: product, quantity, total price, address
-Only after they confirm all details, say "Order confirmed!" and nothing more about the order.
+Then start your reply with exactly: {ESCALATE_TAG}
+Followed by your customer-facing message (e.g., "Let me connect you with someone from the team who can help with this directly.")
+The system will automatically handle the handoff — you just need the tag.
 """
 
 
@@ -392,6 +383,20 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
     )
 
     reply = response.content[0].text
+
+    # 8b. Check for escalation tag
+    if reply.startswith(ESCALATE_TAG):
+        reply = reply[len(ESCALATE_TAG):].strip()
+        # Label the customer as "Human" in WhatChimp
+        try:
+            await assign_label(phone, HUMAN_LABEL_ID)
+        except Exception as e:
+            print(f"Failed to assign Human label for {phone}: {e}")
+        # Flag in Supabase so bot stops replying
+        update_customer(phone, human_takeover=True)
+        # Save the escalation reply and return (no product images needed)
+        save_message(phone, "bot", reply)
+        return {"reply": reply, "images": [], "products": []}
 
     # 9. Determine which product images to send
     images_to_send = []
