@@ -89,7 +89,7 @@ def save_message(customer_phone: str, role: str, content: str,
 def get_conversation_history(customer_phone: str, limit: int = None) -> list:
     """Get recent conversation history for a customer, oldest first."""
     if limit is None:
-        limit = int(os.getenv("MAX_CONVERSATION_HISTORY", "20"))
+        limit = int(os.getenv("MAX_CONVERSATION_HISTORY", "10"))
 
     res = (supabase.table("conversations")
            .select("role, content, message_type, image_url, created_at")
