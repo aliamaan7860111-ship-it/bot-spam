@@ -314,28 +314,35 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
                     search_terms["brand"] = past_terms["brand"]
                     break
 
-    # Search with whatever we found
-    if search_terms["brand"] or search_terms["color"] or search_terms["category"]:
-        products = search_products(
-            brand=search_terms["brand"],
-            color=search_terms["color"],
-            category=search_terms["category"],
-            store=STORE
-        )
+    # Search with whatever we found (wrapped in try/except for Supabase flakiness)
+    try:
+        if search_terms["brand"] or search_terms["color"] or search_terms["category"]:
+            products = search_products(
+                brand=search_terms["brand"],
+                color=search_terms["color"],
+                category=search_terms["category"],
+                store=STORE
+            )
 
-    # If no specific search matched, check if they're asking to see products generally
-    if not products:
-        general_triggers = ["what do you have", "show me", "catalog", "collection",
-                           "products", "items", "available", "stock", "what kind",
-                           "what bags", "what type", "options"]
-        if any(trigger in message_text.lower() for trigger in general_triggers):
-            products = search_products(store=STORE)
+        # If no specific search matched, check if they're asking to see products generally
+        if not products:
+            general_triggers = ["what do you have", "show me", "catalog", "collection",
+                               "products", "items", "available", "stock", "what kind",
+                               "what bags", "what type", "options"]
+            if any(trigger in message_text.lower() for trigger in general_triggers):
+                products = search_products(store=STORE)
+    except Exception as e:
+        print(f"Product search failed (will continue without catalog): {e}")
+        products = []
 
     # 7. Build the context for Claude
     product_context = format_products_for_context(products) if products else ""
 
     # Also always include what's in stock (brief summary) even if no specific search
-    all_products = search_products(store=STORE)
+    try:
+        all_products = search_products(store=STORE)
+    except Exception:
+        all_products = []
     if not products and all_products:
         inventory_summary = "CURRENT FULL INVENTORY (mention these if relevant):\n"
         for p in all_products:
