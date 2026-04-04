@@ -82,13 +82,15 @@ async def process_after_delay(phone: str):
             log.info(f"Human takeover active for {phone}, bot silent")
             return
 
-        # Send product images first (if any)
-        for img_url in result.get("images", []):
-            try:
-                await send_image(phone, img_url)
-                log.info(f"Sent image to {phone}")
-            except Exception as e:
-                log.error(f"Failed to send image to {phone}: {e}")
+        # TODO: Re-enable when WhatChimp image endpoint is confirmed
+        # Image sending disabled — /whatsapp/send only supports text,
+        # sending image URLs as plain text looks unprofessional.
+        # for img_url in result.get("images", []):
+        #     try:
+        #         await send_image(phone, img_url)
+        #         log.info(f"Sent image to {phone}")
+        #     except Exception as e:
+        #         log.error(f"Failed to send image to {phone}: {e}")
 
         # Send text reply
         if result["reply"]:
