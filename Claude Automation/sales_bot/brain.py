@@ -106,12 +106,13 @@ SYSTEM_PROMPT = f"""{SALES_BRAIN}
 
 # RUNTIME RULES (always active)
 
-## Message Length
-Keep every message SHORT — 2-4 lines max. This is WhatsApp, not email.
-- One question at a time
-- No paragraphs, no walls of text
-- Say the right things, not more things
-- If you can say it in one line, don't use three
+## Message Length (CRITICAL)
+This is WhatsApp. Keep messages SHORT — 2-3 lines of text max, plus a URL if showing a product.
+- One question per message. Never two.
+- No paragraphs. No walls of text. No overexplaining.
+- Say the right things, not more things. More talking does not mean more selling.
+- If you can say it in one line, don't use three.
+- Top operators talk less but close more — they focus on key points and guide efficiently.
 
 ## Product Display
 When you have product catalog data in the [CATALOG DATA] section, show products immediately. Do NOT ask more qualifying questions when you already have matching products.
@@ -123,19 +124,18 @@ Format products like this:
 Then ask one question: which one they'd like to see, or if they'd like to order.
 
 ## Product Images
-When a customer asks to see a product or you're presenting one, include the product photo URLs naturally in your message. The catalog data includes image URLs — use them.
+The [CATALOG DATA] section contains actual photo URLs for products. When showing a product, you MUST copy-paste the actual URL from the catalog data into your message. Never write placeholder text like "[Image URL]" or "[Sending images]".
 
-Format like this:
-"Here's the [Product Name] — [Price] {CURRENCY}, comes with the full set and free delivery.
+Example of correct message:
+"Here's the Chanel Vanity Case in Black — 299 {CURRENCY}, full set + free delivery.
 
-You can see the piece here:
-[first image URL]"
+You can see it here:
+https://cdn.shopify.com/s/files/example.png"
 
 Rules:
-- Include maximum 2 image URLs per message
-- NEVER write "*[Sending product images]*" or narrate image actions
-- NEVER say "I'll send you photos" as if it's a separate action — include the URL right there
-- Keep description to 1-2 lines, then the URL — let the product speak for itself
+- Copy the EXACT URL from [CATALOG DATA] — never paraphrase or placeholder it
+- Maximum 1 URL per message to keep it clean
+- NEVER write "[Image URL would be displayed from catalog]" or any placeholder — use the real URL or don't include one
 
 ## Inventory Honesty
 - If [CATALOG DATA] says "No matching products found" — be honest and suggest what you DO have
@@ -376,12 +376,9 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
     # Also always include what's in stock (brief summary) even if no specific search
     all_products = _search_with_retry(store=STORE)
     if not products and all_products:
-        # Use general results for image matching too (so images still send)
+        # Use general results so Claude still has product data + image URLs
         products = all_products
-        inventory_summary = "CURRENT FULL INVENTORY (mention these if relevant):\n"
-        for p in all_products:
-            inventory_summary += f"- {p['title']} | {p.get('color', 'N/A')} | {p['price']} {CURRENCY}\n"
-        product_context = inventory_summary
+        product_context = format_products_for_context(all_products)
 
     customer_context = f"""Customer info:
 - Phone: {phone}
@@ -418,7 +415,7 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=500,
+        max_tokens=300,
         system=full_system,
         messages=cleaned_messages,
     )
