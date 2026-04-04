@@ -314,36 +314,46 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
                     search_terms["brand"] = past_terms["brand"]
                     break
 
-    # Search with whatever we found (wrapped in try/except for Supabase flakiness)
-    try:
-        if search_terms["brand"] or search_terms["color"] or search_terms["category"]:
-            products = search_products(
-                brand=search_terms["brand"],
-                color=search_terms["color"],
-                category=search_terms["category"],
-                store=STORE
-            )
+    # Search with whatever we found (with retry for Supabase/Cloudflare flakiness)
+    import time as _time
 
-        # If no specific search matched, check if they're asking to see products generally
-        if not products:
-            general_triggers = ["what do you have", "show me", "catalog", "collection",
-                               "products", "items", "available", "stock", "what kind",
-                               "what bags", "what type", "options"]
-            if any(trigger in message_text.lower() for trigger in general_triggers):
-                products = search_products(store=STORE)
-    except Exception as e:
-        print(f"Product search failed (will continue without catalog): {e}")
-        products = []
+    def _search_with_retry(**kwargs):
+        """Try search up to 2 times with a short delay on failure."""
+        for attempt in range(2):
+            try:
+                return search_products(**kwargs)
+            except Exception as e:
+                if attempt == 0:
+                    print(f"Product search failed (attempt 1), retrying in 1s: {e}")
+                    _time.sleep(1)
+                else:
+                    print(f"Product search failed (attempt 2), giving up: {e}")
+                    return []
+
+    if search_terms["brand"] or search_terms["color"] or search_terms["category"]:
+        products = _search_with_retry(
+            brand=search_terms["brand"],
+            color=search_terms["color"],
+            category=search_terms["category"],
+            store=STORE
+        )
+
+    # If no specific search matched, check if they're asking to see products generally
+    if not products:
+        general_triggers = ["what do you have", "show me", "catalog", "collection",
+                           "products", "items", "available", "stock", "what kind",
+                           "what bags", "what type", "options"]
+        if any(trigger in message_text.lower() for trigger in general_triggers):
+            products = _search_with_retry(store=STORE)
 
     # 7. Build the context for Claude
     product_context = format_products_for_context(products) if products else ""
 
     # Also always include what's in stock (brief summary) even if no specific search
-    try:
-        all_products = search_products(store=STORE)
-    except Exception:
-        all_products = []
+    all_products = _search_with_retry(store=STORE)
     if not products and all_products:
+        # Use general results for image matching too (so images still send)
+        products = all_products
         inventory_summary = "CURRENT FULL INVENTORY (mention these if relevant):\n"
         for p in all_products:
             inventory_summary += f"- {p['title']} | {p.get('color', 'N/A')} | {p['price']} {CURRENCY}\n"
