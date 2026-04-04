@@ -33,10 +33,13 @@ async def send_image(phone: str, image_url: str, caption: str = "") -> dict:
             "apiToken": API_TOKEN,
             "phone_number_id": PHONE_NUMBER_ID,
             "phone_number": phone,
-            "message": caption,
+            "message": caption if caption else image_url,
             "image_url": image_url,
+            "type": "image",
         })
-        return resp.json()
+        result = resp.json()
+        print(f"[WhatChimp send_image response] {result}")
+        return result
 
 
 async def send_template(phone: str, template_name: str, language: str = "en_US",
