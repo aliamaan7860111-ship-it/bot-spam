@@ -216,7 +216,7 @@ def parse_order(page: dict) -> dict:
         "order_status": _get_select(props, FIELD_ORDER_STATUS),
         "payment": _get_select(props, FIELD_PAYMENT) or _get_rich_text(props, FIELD_PAYMENT),
         "customer_type": _get_select(props, FIELD_CUSTOMER_TYPE) or _get_rich_text(props, FIELD_CUSTOMER_TYPE),
-        "order_source_url": _get_url(props, FIELD_ORDER_SOURCE_URL) or _get_rich_text(props, FIELD_ORDER_SOURCE_URL),
+        "order_source_url": _get_rich_text(props, FIELD_ORDER_SOURCE_URL) or _get_url(props, FIELD_ORDER_SOURCE_URL),
         "image_urls": image_urls,
         "email": _get_rich_text(props, FIELD_EMAIL) or _get_url(props, FIELD_EMAIL),
         "platform_source": _get_select(props, FIELD_PLATFORM_SOURCE) or _get_rich_text(props, FIELD_PLATFORM_SOURCE),
