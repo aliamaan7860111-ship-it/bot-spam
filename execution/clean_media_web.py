@@ -59,6 +59,9 @@ OUTPUT_DIR = PROJECT_ROOT / ".tmp" / "cleaner_outputs"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Cache ffmpeg availability at startup (avoid subprocess timeout in threads)
+HAS_FFMPEG = check_ffmpeg()
+
 # Job tracking: job_id -> {status, total, done, errors, output_dir, zip_path, created}
 jobs = {}
 
@@ -215,8 +218,7 @@ def _process_job(job_id, files, output_dir, copies):
     job = jobs[job_id]
 
     try:
-        log.info(f"Job {job_id}: checking ffmpeg...")
-        has_ffmpeg = check_ffmpeg()
+        has_ffmpeg = HAS_FFMPEG
         log.info(f"Job {job_id}: ffmpeg={has_ffmpeg}, processing {len(files)} files")
 
         for source_file in files:
@@ -233,14 +235,17 @@ def _process_job(job_id, files, output_dir, copies):
                 output_path = output_dir / out_name
 
                 try:
+                    log.info(f"Job {job_id}: processing {source_file.name} (image={is_image}, video={is_video}) copy {copy_idx}")
                     if is_image:
                         ok = process_single_image(source_file, output_path)
                     elif is_video and has_ffmpeg:
                         ok = process_single_video(source_file, output_path)
                     else:
+                        log.warning(f"Job {job_id}: skipping {source_file.name} (unsupported or no ffmpeg)")
                         ok = False
+                    log.info(f"Job {job_id}: {source_file.name} copy {copy_idx} -> {'OK' if ok else 'FAIL'}")
                 except Exception as e:
-                    log.error(f"Job {job_id}: failed processing {source_file.name} copy {copy_idx}: {e}")
+                    log.error(f"Job {job_id}: failed processing {source_file.name} copy {copy_idx}: {e}", exc_info=True)
                     ok = False
 
                 if not ok:
