@@ -210,48 +210,61 @@ def upload():
 def _process_job(job_id, files, output_dir, copies):
     """Background worker: process all files for a job."""
     job = jobs[job_id]
-    has_ffmpeg = check_ffmpeg()
 
-    for source_file in files:
-        ext = source_file.suffix.lower()
-        is_image = ext in SUPPORTED_IMAGE_EXTENSIONS
-        is_video = ext in SUPPORTED_VIDEO_EXTENSIONS
+    try:
+        has_ffmpeg = check_ffmpeg()
 
-        # Use original filename (strip the uuid prefix we added)
-        original_name = "_".join(source_file.name.split("_")[1:])
-        original_path = Path(original_name)
+        for source_file in files:
+            ext = source_file.suffix.lower()
+            is_image = ext in SUPPORTED_IMAGE_EXTENSIONS
+            is_video = ext in SUPPORTED_VIDEO_EXTENSIONS
 
-        for copy_idx in range(1, copies + 1):
-            out_name = generate_output_filename(original_path, copy_idx, copies)
-            output_path = output_dir / out_name
+            # Use original filename (strip the uuid prefix we added)
+            original_name = "_".join(source_file.name.split("_")[1:])
+            original_path = Path(original_name)
 
-            if is_image:
-                ok = process_single_image(source_file, output_path)
-            elif is_video and has_ffmpeg:
-                ok = process_single_video(source_file, output_path)
-            else:
-                ok = False
+            for copy_idx in range(1, copies + 1):
+                out_name = generate_output_filename(original_path, copy_idx, copies)
+                output_path = output_dir / out_name
 
-            if not ok:
-                job["errors"] += 1
-            job["done"] += 1
+                try:
+                    if is_image:
+                        ok = process_single_image(source_file, output_path)
+                    elif is_video and has_ffmpeg:
+                        ok = process_single_video(source_file, output_path)
+                    else:
+                        ok = False
+                except Exception as e:
+                    log.error(f"Job {job_id}: failed processing {source_file.name} copy {copy_idx}: {e}")
+                    ok = False
 
-    # Create zip
-    zip_path = OUTPUT_DIR / f"{job_id}.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in sorted(output_dir.iterdir()):
-            if f.is_file():
-                zf.write(f, f.name)
+                if not ok:
+                    job["errors"] += 1
+                job["done"] += 1
 
-    job["zip_path"] = str(zip_path)
-    job["status"] = "done"
+        # Create zip
+        zip_path = OUTPUT_DIR / f"{job_id}.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in sorted(output_dir.iterdir()):
+                if f.is_file():
+                    zf.write(f, f.name)
 
-    # Clean up upload dir (keep outputs for download)
-    upload_dir = UPLOAD_DIR / job_id
-    if upload_dir.exists():
-        shutil.rmtree(upload_dir, ignore_errors=True)
+        job["zip_path"] = str(zip_path)
+        job["status"] = "done"
 
-    log.info(f"Job {job_id} complete: {job['done'] - job['errors']}/{job['total']} ok")
+        # Clean up upload dir (keep outputs for download)
+        upload_dir = UPLOAD_DIR / job_id
+        if upload_dir.exists():
+            shutil.rmtree(upload_dir, ignore_errors=True)
+
+        log.info(f"Job {job_id} complete: {job['done'] - job['errors']}/{job['total']} ok")
+
+    except Exception as e:
+        log.error(f"Job {job_id} CRASHED: {e}", exc_info=True)
+        job["status"] = "error"
+        job["error_message"] = str(e)
+        # Still mark remaining as done so frontend stops polling
+        job["done"] = job["total"]
 
 # ---------------------------------------------------------------------------
 # Status Polling
@@ -262,12 +275,15 @@ def status(job_id):
     job = jobs.get(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
-    return jsonify({
+    result = {
         "status": job["status"],
         "total": job["total"],
         "done": job["done"],
         "errors": job["errors"],
-    })
+    }
+    if job.get("error_message"):
+        result["error_message"] = job["error_message"]
+    return jsonify(result)
 
 # ---------------------------------------------------------------------------
 # Download
