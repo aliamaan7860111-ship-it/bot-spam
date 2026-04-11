@@ -197,22 +197,27 @@ def upload():
     }
 
     # Process in background thread
+    log.info(f"Job {job_id}: launching thread for {len(saved_files)} files x {copies} copies")
     thread = threading.Thread(
         target=_process_job,
         args=(job_id, saved_files, job_output_dir, copies),
         daemon=True,
     )
     thread.start()
+    log.info(f"Job {job_id}: thread started")
 
     return jsonify({"job_id": job_id, "total": total_tasks})
 
 
 def _process_job(job_id, files, output_dir, copies):
     """Background worker: process all files for a job."""
+    log.info(f"Job {job_id}: thread ENTERED _process_job")
     job = jobs[job_id]
 
     try:
+        log.info(f"Job {job_id}: checking ffmpeg...")
         has_ffmpeg = check_ffmpeg()
+        log.info(f"Job {job_id}: ffmpeg={has_ffmpeg}, processing {len(files)} files")
 
         for source_file in files:
             ext = source_file.suffix.lower()
