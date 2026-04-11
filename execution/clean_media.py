@@ -407,7 +407,7 @@ def build_ffmpeg_command(input_path, output_path, info, skip_crop=False):
         "-vf", vf,
         "-c:v", "libx264",
         "-crf", str(crf),
-        "-preset", "slow",
+        "-preset", "medium",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
     ]
@@ -451,7 +451,7 @@ def process_single_video(input_path, output_path):
             cmd,
             capture_output=True,
             text=True,
-            timeout=600,  # 10 min timeout for large videos
+            timeout=1800,  # 30 min timeout for large videos
         )
         if result.returncode != 0:
             # Show last 300 chars of stderr for debugging
