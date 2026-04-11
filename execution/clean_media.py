@@ -407,7 +407,7 @@ def build_ffmpeg_command(input_path, output_path, info, skip_crop=False):
         "-vf", vf,
         "-c:v", "libx264",
         "-crf", str(crf),
-        "-preset", "medium",
+        "-preset", "ultrafast",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
     ]
