@@ -582,11 +582,23 @@ async def run_checkout_flow(context, customer, target_url):
             # If we clicked Buy It Now, we expect a redirect to checkout
             log.info("Clicked 'Buy It Now'. Waiting for checkout redirect...")
             try:
+                # Some themes open checkout in a new tab/popup
+                async def _on_new_page(new_page):
+                    nonlocal page
+                    page = new_page
+                context.on("page", _on_new_page)
+
                 await page.wait_for_url("**/checkouts/**", timeout=45000)
                 log.info(f"Redirected to checkout: {page.url}")
                 # Skip the rest of the cart flow and go straight to info entry
                 return await enter_checkout_info(context, customer, page)
             except:
+                # Check if a new page with checkout was opened
+                for p in context.pages:
+                    if "/checkouts/" in p.url:
+                        page = p
+                        log.info(f"Found checkout in new tab: {page.url}")
+                        return await enter_checkout_info(context, customer, page)
                 log.warning("Buy It Now didn't redirect to checkout quickly. Falling back to cart flow.")
 
         # --- EXISTING: Add to cart flow (Fallback) ---
@@ -620,6 +632,31 @@ async def run_checkout_flow(context, customer, target_url):
                 break
                 
         if not clicked_add:
+            # Try clicking submit inside product-form custom element (Dawn/Shopify 2.0 themes)
+            log.info("Standard selectors failed. Trying product-form element submit...")
+            try:
+                clicked_add = await page.evaluate("""() => {
+                    const form = document.querySelector('product-form form, form[action*="/cart/add"]');
+                    if (form) {
+                        const btn = form.querySelector('button[type="submit"], button[name="add"], button');
+                        if (btn && !btn.disabled) {
+                            btn.disabled = false;
+                            btn.click();
+                            return true;
+                        }
+                        // Try submitting the form directly
+                        form.submit();
+                        return true;
+                    }
+                    return false;
+                }""")
+                if clicked_add:
+                    log.info("Clicked add-to-cart via product-form element")
+            except Exception as e:
+                log.warning(f"product-form fallback: {e}")
+                clicked_add = False
+
+        if not clicked_add:
             # Last resort: Any visible button with "cart" text that isn't sticky
             log.info("Standard selectors failed. Trying generic visible 'cart' button...")
             generic_btns = page.locator("button:visible, input[type='submit']:visible, a.button:visible")
@@ -637,12 +674,72 @@ async def run_checkout_flow(context, customer, target_url):
             log.info("All button selectors failed. Trying JS cart/add...")
             try:
                 js_result = await page.evaluate("""() => {
-                    // Try to find the variant ID from the page
+                    // Try to find the variant ID from multiple sources
+                    let variantId = null;
+
+                    // 1. Standard input fields
                     const variantInput = document.querySelector(
                         'input[name="id"], .product-variant-id, select[name="id"]'
                     );
-                    if (!variantInput) return 'no_variant';
-                    const variantId = variantInput.value;
+                    if (variantInput && variantInput.value) {
+                        variantId = variantInput.value;
+                    }
+
+                    // 2. URL parameter (e.g. ?variant=12345)
+                    if (!variantId) {
+                        const urlParams = new URLSearchParams(window.location.search);
+                        variantId = urlParams.get('variant');
+                    }
+
+                    // 3. Shopify product JSON in page (window.ShopifyAnalytics or meta tag)
+                    if (!variantId) {
+                        try {
+                            const meta = document.querySelector('meta[property="og:image"]');
+                            // Check ShopifyAnalytics
+                            if (window.ShopifyAnalytics && window.ShopifyAnalytics.meta && window.ShopifyAnalytics.meta.selectedVariantId) {
+                                variantId = window.ShopifyAnalytics.meta.selectedVariantId;
+                            }
+                        } catch(e) {}
+                    }
+
+                    // 4. Product JSON script tag (most Shopify themes have this)
+                    if (!variantId) {
+                        try {
+                            const scripts = document.querySelectorAll('script[type="application/json"]');
+                            for (const script of scripts) {
+                                const data = JSON.parse(script.textContent);
+                                if (data && data.product && data.product.variants && data.product.variants.length > 0) {
+                                    variantId = data.product.variants[0].id;
+                                    break;
+                                }
+                                // Some themes nest it differently
+                                if (data && data.variants && data.variants.length > 0) {
+                                    variantId = data.variants[0].id;
+                                    break;
+                                }
+                            }
+                        } catch(e) {}
+                    }
+
+                    // 5. product.json endpoint (inline fetch)
+                    if (!variantId) {
+                        try {
+                            const path = window.location.pathname;
+                            if (path.includes('/products/')) {
+                                const xhr = new XMLHttpRequest();
+                                xhr.open('GET', path + '.json', false); // synchronous
+                                xhr.send();
+                                if (xhr.status === 200) {
+                                    const pdata = JSON.parse(xhr.responseText);
+                                    if (pdata.product && pdata.product.variants && pdata.product.variants.length > 0) {
+                                        variantId = pdata.product.variants[0].id;
+                                    }
+                                }
+                            }
+                        } catch(e) {}
+                    }
+
+                    if (!variantId) return 'no_variant';
 
                     // Direct fetch to /cart/add.js (Shopify AJAX API)
                     return fetch('/cart/add.js', {
