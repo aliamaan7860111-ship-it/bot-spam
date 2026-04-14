@@ -1,12 +1,11 @@
 """
-WhatsApp Sales Bot — Webhook Server
-Receives incoming messages from WhatChimp and routes them through the brain.
+WhatsApp Sales Bot — Webhook Server v2
+Multi-store aware, with message dedup, rate limiting, and escalation reset.
 Batches rapid messages (4s window) so multiple quick messages = one response.
 """
 
 import os
 import asyncio
-import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
@@ -14,40 +13,31 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from brain import process_message
-from whatchimp_client import send_text, send_image
-from supabase_client import save_message, create_customer
-
-# ── Logging ────────────────────────────────────────────────
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+from whatchimp_client import send_text
+from supabase_client import (
+    save_message, create_customer, check_message_exists,
+    update_customer, get_customer
 )
-log = logging.getLogger("sales_bot")
+from config import get_store_config, rate_limiter, get_logger
+
+log = get_logger("webhook")
 
 # ── Message batching ───────────────────────────────────────
-# Tracks pending timers per phone number. When a message arrives,
-# we save it to DB immediately but delay processing by BATCH_DELAY seconds.
-# If another message arrives before the timer fires, the timer resets.
-# When the timer finally fires, the brain loads ALL recent messages from DB.
-
-BATCH_DELAY = 4  # seconds to wait for more messages before processing
+BATCH_DELAY = int(os.getenv("BATCH_DELAY", "4"))
 pending_timers: dict[str, asyncio.Task] = {}
-# Store the latest webhook data per phone so the processing task has context
 pending_context: dict[str, dict] = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Sales bot started — listening for webhooks")
+    log.info("Sales bot v2 started — listening for webhooks")
     yield
-    # Cancel all pending timers on shutdown
     for task in pending_timers.values():
         task.cancel()
     log.info("Sales bot shutting down")
 
 
-app = FastAPI(title="WhatsApp Sales Bot", lifespan=lifespan)
+app = FastAPI(title="WhatsApp Sales Bot v2", lifespan=lifespan)
 
 
 async def process_after_delay(phone: str):
@@ -55,46 +45,31 @@ async def process_after_delay(phone: str):
     try:
         await asyncio.sleep(BATCH_DELAY)
     except asyncio.CancelledError:
-        # Timer was reset because a new message arrived — do nothing
         return
 
-    # Timer expired — process now
     try:
         ctx = pending_context.pop(phone, {})
         pending_timers.pop(phone, None)
+        store_config = ctx.get("store_config", {})
+        phone_number_id = store_config.get("phone_number_id")
 
-        first_name = ctx.get("first_name", "")
+        log.info(f"Batch timer expired for {phone} — processing (store={store_config.get('store', '?')})")
 
-        log.info(f"Batch timer expired for {phone} — processing now")
-
-        # The brain loads conversation history from DB, which includes
-        # ALL messages saved during the batching window
         result = await process_message(
             phone=phone,
             message_text=ctx.get("last_message_text", ""),
-            first_name=first_name,
+            first_name=ctx.get("first_name", ""),
             message_type=ctx.get("last_message_type", "text"),
             image_url=ctx.get("last_image_url"),
+            store_config=store_config,
         )
 
-        # If human_takeover is active, don't send anything
         if result["reply"] is None:
             log.info(f"Human takeover active for {phone}, bot silent")
             return
 
-        # TODO: Re-enable when WhatChimp image endpoint is confirmed
-        # Image sending disabled — /whatsapp/send only supports text,
-        # sending image URLs as plain text looks unprofessional.
-        # for img_url in result.get("images", []):
-        #     try:
-        #         await send_image(phone, img_url)
-        #         log.info(f"Sent image to {phone}")
-        #     except Exception as e:
-        #         log.error(f"Failed to send image to {phone}: {e}")
-
-        # Send text reply
         if result["reply"]:
-            resp = await send_text(phone, result["reply"])
+            resp = await send_text(phone, result["reply"], phone_number_id=phone_number_id)
             log.info(f"Sent reply to {phone}: {result['reply'][:80]}...")
 
     except Exception as e:
@@ -104,23 +79,40 @@ async def process_after_delay(phone: str):
 @app.post("/webhook")
 async def handle_webhook(request: Request):
     """
-    Receives incoming WhatsApp messages from WhatChimp webhook.
-    Saves message immediately, but delays brain processing by BATCH_DELAY seconds
-    to batch rapid consecutive messages into one response.
+    Receives incoming WhatsApp messages from WhatChimp.
+    Routes to correct store based on phone_number_id.
+    Saves message immediately, delays brain processing by BATCH_DELAY seconds.
     """
     try:
         body = await request.json()
 
-        # Extract fields from WhatChimp payload
         phone = body.get("chat_id", "")
         user_message = body.get("user_message", "")
         first_name = body.get("first_name", "")
+        wa_message_id = body.get("message_id", "")
+        incoming_phone_number_id = body.get("phone_number_id", "")
 
         if not phone:
-            log.warning("No chat_id in webhook payload, skipping")
             return {"status": "skipped", "reason": "no phone"}
 
-        # Determine message type and content
+        # ── Multi-store routing ──────────────────────────
+        store_config = get_store_config(incoming_phone_number_id)
+        if not store_config:
+            log.warning(f"Unknown phone_number_id: {incoming_phone_number_id}")
+            return {"status": "skipped", "reason": "unknown store"}
+
+        # ── Rate limiting ────────────────────────────────
+        if not rate_limiter.is_allowed(phone):
+            log.warning(f"Rate limit exceeded for {phone}")
+            # Send once, then drop
+            return {"status": "rate_limited"}
+
+        # ── Message deduplication ────────────────────────
+        if wa_message_id and check_message_exists(wa_message_id):
+            log.info(f"Duplicate message {wa_message_id} for {phone}, skipping")
+            return {"status": "skipped", "reason": "duplicate"}
+
+        # ── Parse message ────────────────────────────────
         message_type = "text"
         message_text = ""
         image_url = None
@@ -133,53 +125,108 @@ async def handle_webhook(request: Request):
         elif isinstance(user_message, str):
             message_text = user_message
         else:
-            log.warning(f"Unexpected user_message format: {type(user_message)}")
             return {"status": "skipped", "reason": "unexpected format"}
 
         if not message_text and not image_url:
             return {"status": "skipped", "reason": "empty message"}
 
-        log.info(f"Webhook: phone={phone}, type={message_type}, msg={message_text[:50]}")
+        log.info(f"Webhook: phone={phone}, store={store_config['store']}, type={message_type}, msg={message_text[:50]}")
 
-        # ── Ensure customer exists before saving message ───
-        create_customer(phone, name=first_name if first_name else None)
+        # ── Ensure customer exists ───────────────────────
+        create_customer(phone, name=first_name if first_name else None,
+                       store=store_config["store"])
 
-        # ── Save message to DB immediately ─────────────────
-        # (brain will load these from conversation history when it processes)
+        # ── Save message to DB ───────────────────────────
         if message_type == "image" and image_url:
             save_message(phone, "customer", f"[Sent an image]",
-                        message_type="image", image_url=image_url)
+                        message_type="image", image_url=image_url,
+                        wa_message_id=wa_message_id)
         else:
-            save_message(phone, "customer", message_text, message_type="text")
+            save_message(phone, "customer", message_text, message_type="text",
+                        wa_message_id=wa_message_id)
 
-        # ── Update pending context for this phone ──────────
+        # ── Update pending context ───────────────────────
         pending_context[phone] = {
             "first_name": first_name,
             "last_message_text": message_text,
             "last_message_type": message_type,
             "last_image_url": image_url,
+            "store_config": store_config,
         }
 
-        # ── Reset the batch timer ──────────────────────────
-        # Cancel existing timer if there is one
+        # ── Reset batch timer ────────────────────────────
         if phone in pending_timers:
             pending_timers[phone].cancel()
-            log.info(f"Timer reset for {phone} — batching messages")
 
-        # Start a new timer
         pending_timers[phone] = asyncio.create_task(process_after_delay(phone))
 
-        return {"status": "ok", "action": "message_queued"}
+        return {"status": "ok", "action": "message_queued", "store": store_config["store"]}
 
     except Exception as e:
         log.error(f"Webhook error: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
 
 
+@app.post("/webhook/label-change")
+async def handle_label_change(request: Request):
+    """
+    Escalation reset — WhatChimp hits this when labels change.
+    If 'Human' label is removed, bot resumes for that customer.
+    """
+    try:
+        body = await request.json()
+        phone = body.get("chat_id", "")
+        removed_labels = body.get("removed_labels", [])
+        incoming_phone_number_id = body.get("phone_number_id", "")
+
+        store_config = get_store_config(incoming_phone_number_id)
+        human_label_id = store_config.get("human_label_id", "294168") if store_config else "294168"
+
+        if human_label_id in [str(l) for l in removed_labels]:
+            update_customer(phone, human_takeover=False)
+            log.info(f"Human label removed for {phone} — bot resumed")
+            return {"status": "ok", "action": "bot_resumed"}
+
+        return {"status": "ok", "action": "no_change"}
+
+    except Exception as e:
+        log.error(f"Label change webhook error: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/reset/{phone}")
+async def reset_human_takeover(phone: str):
+    """Manual reset — re-enable bot for a customer."""
+    customer = get_customer(phone)
+    if not customer:
+        return {"status": "error", "message": "customer not found"}
+
+    update_customer(phone, human_takeover=False)
+    log.info(f"Manual reset: bot resumed for {phone}")
+    return {"status": "ok", "action": "bot_resumed", "phone": phone}
+
+
 @app.get("/health")
 async def health():
-    """Health check endpoint."""
-    return {"status": "ok", "service": "whatsapp-sales-bot"}
+    """Health check with dependency status."""
+    checks = {"service": "whatsapp-sales-bot-v2"}
+
+    # Check Supabase
+    try:
+        from supabase_client import supabase
+        supabase.table("customers").select("phone").limit(1).execute()
+        checks["supabase"] = True
+    except Exception:
+        checks["supabase"] = False
+
+    # Check Claude API key
+    checks["claude_key_set"] = bool(os.getenv("ANTHROPIC_API_KEY"))
+    checks["whatchimp_key_set"] = bool(os.getenv("WHATCHIMP_API_TOKEN"))
+
+    all_ok = checks.get("supabase", False) and checks["claude_key_set"]
+    checks["status"] = "healthy" if all_ok else "degraded"
+
+    return checks
 
 
 if __name__ == "__main__":

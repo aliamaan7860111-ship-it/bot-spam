@@ -1,30 +1,32 @@
 """
-Sales Bot Brain — the core AI logic.
-Loads context, calls Claude, returns a sales-appropriate response.
-Uses the sales brain directive for conversation intelligence.
+Sales Bot Brain v2 — the core AI logic.
+Multi-store aware, with retry logic, vision escalation, and experience layer hooks.
 """
 
 import os
-import json
 import httpx
+import asyncio
 import anthropic
 from pathlib import Path
 from dotenv import load_dotenv
+from config import get_logger
 from supabase_client import (
-    get_customer, create_customer, update_customer, update_last_message,
-    save_message, get_conversation_history, search_products, cancel_follow_ups
+    create_customer, update_customer, update_last_message,
+    save_message, get_smart_history, search_products, cancel_follow_ups,
+    save_conversation_outcome, get_winning_examples
 )
 from whatchimp_client import assign_label
 
 load_dotenv()
 
+log = get_logger("brain")
+
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 VISION_MODEL = os.getenv("VISION_MODEL", "claude-haiku-4-5-20251001")
-STORE = os.getenv("DEFAULT_STORE", "prettybyshd")
-CURRENCY = os.getenv("STORE_CURRENCY", "AED")
-HUMAN_LABEL_ID = os.getenv("WHATCHIMP_HUMAN_LABEL_ID", "294168")
 ESCALATE_TAG = "[ESCALATE]"
+INTENT_TAG_PREFIX = "[INTENT:"
+ARCHETYPE_TAG_PREFIX = "[ARCHETYPE:"
 
 # ── Load Sales Brain directive ──────────────────────────────
 BRAIN_DIR = Path(__file__).parent.parent / "directives" / "sales_bot"
@@ -33,50 +35,42 @@ brain_path = BRAIN_DIR / "sales_brain.md"
 if brain_path.exists():
     SALES_BRAIN = brain_path.read_text(encoding="utf-8")
 else:
-    print(f"WARNING: Sales brain not found at {brain_path}")
+    log.warning(f"Sales brain not found at {brain_path}")
 
 # ── Brand aliases — maps common misspellings/abbreviations to DB brand names ──
+# TODO: Migrate to Supabase tables for live updates without redeployment
 
 BRAND_ALIASES = {
-    # Chanel
     "chanel": "Chanel", "channel": "Chanel", "chanell": "Chanel", "coco": "Chanel",
     "coco chanel": "Chanel", "chanel bag": "Chanel", "cc": "Chanel",
-    # Louis Vuitton
     "lv": "Louis Vuitton", "louis vuitton": "Louis Vuitton", "louis": "Louis Vuitton",
     "vuitton": "Louis Vuitton", "louie vuitton": "Louis Vuitton", "louie": "Louis Vuitton",
     "loui vuitton": "Louis Vuitton", "luis vuitton": "Louis Vuitton",
-    # Hermes
     "hermes": "Hermes", "hermès": "Hermes", "hermez": "Hermes", "birkin": "Hermes",
     "kelly": "Hermes",
-    # Gucci
     "gucci": "Gucci", "guchi": "Gucci", "goochi": "Gucci",
-    # Dior
     "dior": "Dior", "christian dior": "Dior", "dior bag": "Dior",
     "lady dior": "Dior", "book tote": "Dior",
-    # Prada
     "prada": "Prada", "pradaa": "Prada",
-    # Fendi
     "fendi": "Fendi", "fendi bag": "Fendi", "baguette": "Fendi",
-    # Celine
     "celine": "Celine", "céline": "Celine", "celin": "Celine",
-    # Balenciaga
     "balenciaga": "Balenciaga", "balenciaga bag": "Balenciaga",
     "balenci": "Balenciaga", "city bag": "Balenciaga",
-    # YSL
     "ysl": "YSL", "saint laurent": "YSL", "yves saint laurent": "YSL",
     "saint laurant": "YSL",
-    # Bottega
     "bottega": "Bottega Veneta", "bottega veneta": "Bottega Veneta", "bv": "Bottega Veneta",
-    # Givenchy
     "givenchy": "Givenchy", "givency": "Givenchy",
-    # Versace
     "versace": "Versace", "versaci": "Versace",
-    # Burberry
     "burberry": "Burberry", "burber": "Burberry", "burberry bag": "Burberry",
-    # Goyard
     "goyard": "Goyard",
-    # Loewe
     "loewe": "Loewe", "loewe bag": "Loewe",
+    "rolex": "Rolex", "rollex": "Rolex",
+    "omega": "Omega", "omegaa": "Omega",
+    "patek": "Patek Philippe", "patek philippe": "Patek Philippe",
+    "ap": "Audemars Piguet", "audemars": "Audemars Piguet", "audemars piguet": "Audemars Piguet",
+    "cartier": "Cartier", "cartier watch": "Cartier",
+    "hublot": "Hublot",
+    "richard mille": "Richard Mille", "rm": "Richard Mille",
 }
 
 COLOR_ALIASES = {
@@ -95,68 +89,58 @@ COLOR_ALIASES = {
 }
 
 CATEGORY_KEYWORDS = ["bag", "bags", "handbag", "handbags", "wallet", "wallets", "purse",
-                     "shoes", "shoe", "sneakers", "belt", "belts", "scarf", "scarves",
-                     "watch", "watches", "sunglasses", "jewelry", "jewellery"]
+                     "shoes", "shoe", "sneakers", "loafer", "loafers",
+                     "belt", "belts", "scarf", "scarves",
+                     "watch", "watches", "sunglasses", "jewelry", "jewellery",
+                     "cap", "caps", "hat"]
 
-# ── System Prompt ──────────────────────────────────────────
 
-SYSTEM_PROMPT = f"""{SALES_BRAIN}
+def build_system_prompt(store_config: dict) -> str:
+    """Build the system prompt with store-specific config."""
+    currency = store_config.get("currency", "AED")
+
+    return f"""{SALES_BRAIN}
 
 ---
 
 # RUNTIME RULES (always active)
 
 ## Message Length (CRITICAL)
-This is WhatsApp. Keep messages SHORT — 2-3 lines of text max, plus a URL if showing a product.
-- One question per message. Never two.
-- No paragraphs. No walls of text. No overexplaining.
-- Say the right things, not more things. More talking does not mean more selling.
-- If you can say it in one line, don't use three.
-- Top operators talk less but close more — they focus on key points and guide efficiently.
+This is WhatsApp. Keep messages SHORT — max 3-4 short lines.
+- Line break between each thought
+- One idea per line. No paragraphs.
+- Say the right thing, not more things.
 
 ## Product Display
-When you have product catalog data in the [CATALOG DATA] section, show products immediately. Do NOT ask more qualifying questions when you already have matching products.
-
-Format products like this:
-1. Product Name — Color | Price {CURRENCY}
-2. Product Name — Color | Price {CURRENCY}
-
-Then ask one question: which one they'd like to see, or if they'd like to order.
+When you have product catalog data in [CATALOG DATA], show products immediately.
+Format: 1. Product Name — Color | Price {currency}
+Then ask one question: which one they'd like, or if they'd like to order.
 
 ## Product Images
-The [CATALOG DATA] section contains actual photo URLs for products. When showing a product, you MUST copy-paste the actual URL from the catalog data into your message. Never write placeholder text like "[Image URL]" or "[Sending images]".
-
-Example of correct message:
-"Here's the Chanel Vanity Case in Black — 299 {CURRENCY}, full set + free delivery.
-
-You can see it here:
-https://cdn.shopify.com/s/files/example.png"
-
-Rules:
-- Copy the EXACT URL from [CATALOG DATA] — never paraphrase or placeholder it
-- Maximum 1 URL per message to keep it clean
-- NEVER write "[Image URL would be displayed from catalog]" or any placeholder — use the real URL or don't include one
+The [CATALOG DATA] contains photo URLs. Copy-paste the EXACT URL into your message.
+Never write placeholder text like "[Image URL]" or "[Sending images]".
+Maximum 1 URL per message.
 
 ## Inventory Honesty
-- If [CATALOG DATA] says "No matching products found" — be honest and suggest what you DO have
-- NEVER make up product information — ONLY reference products from [CATALOG DATA]
-- If catalog shows a different brand than requested, say so honestly
+- If no matching products found — be honest and suggest what you DO have
+- NEVER make up products — only reference what's in [CATALOG DATA]
+- If catalog shows a different brand than requested, say so
 
 ## Escalation Protocol
-When the conversation requires a human — such as:
-- Customer has a post-purchase issue (wrong item, damaged, refund, return, cancellation)
-- Customer asks about delivery tracking or order status
-- Customer is aggressive/abusive for 2+ messages
-- Negotiation going in circles (3+ back-and-forth on price with no movement)
-- Anything you genuinely don't know the answer to
+When the conversation requires a human, start your reply with exactly: {ESCALATE_TAG}
+Then write your customer-facing message after the tag.
+The system handles the handoff automatically.
 
-Then start your reply with exactly: {ESCALATE_TAG}
-Followed by your customer-facing message (e.g., "Let me connect you with someone from the team who can help with this directly.")
-The system will automatically handle the handoff — you just need the tag.
+## Intent & Archetype Tagging
+At the END of every reply, append these tags on their own line (system strips them before sending):
+{INTENT_TAG_PREFIX}<detected_intent>] {ARCHETYPE_TAG_PREFIX}<detected_archetype>]
+
+Intent options: greeting, product_search, price_inquiry, objection, order_intent, follow_up, image_request, general_question, escalation_needed
+Archetype options: speed_buyer, impulse, comparison, bargain, hesitant, research, skeptical, need_based, product_focused, window, returning, high_value, aggressive, unknown
 """
 
 
-def format_products_for_context(products: list) -> str:
+def format_products_for_context(products: list, currency: str = "AED") -> str:
     """Format product list as context for Claude."""
     if not products:
         return "No matching products found in catalog."
@@ -165,21 +149,21 @@ def format_products_for_context(products: list) -> str:
     for i, p in enumerate(products, 1):
         line = f"\n{i}. {p['title']}"
         line += f"\n   Color: {p.get('color', 'N/A')}"
-        line += f"\n   Price: {p['price']} {p.get('currency', CURRENCY)}"
+        line += f"\n   Price: {p['price']} {p.get('currency', currency)}"
         if p.get('compare_at_price'):
-            line += f" (was {p['compare_at_price']} {p.get('currency', CURRENCY)})"
+            line += f" (was {p['compare_at_price']} {p.get('currency', currency)})"
         if p.get('material'):
             line += f"\n   Material: {p['material']}"
         if p.get('description'):
             line += f"\n   Description: {p['description'][:150]}"
         if p.get('studio_images'):
-            line += f"\n   Photo URLs (include in message when showing this product):"
+            line += f"\n   Photo URLs:"
             for img_url in p['studio_images'][:2]:
                 line += f"\n   {img_url}"
         line += f"\n   Product ID: {p['id']}"
         lines.append(line)
 
-    lines.append("\nIMPORTANT: Show these products to the customer NOW. Do not ask more qualifying questions.")
+    lines.append("\nShow these products to the customer NOW.")
     return "\n".join(lines)
 
 
@@ -198,13 +182,11 @@ def format_conversation_history(history: list) -> list:
 def extract_search_terms(text: str) -> dict:
     """Extract brand, color, and category from message text using fuzzy matching."""
     text_lower = text.lower().strip()
-    words = text_lower.split()
 
     matched_brand = None
     matched_color = None
     matched_category = None
 
-    # Check multi-word aliases first (longest match wins)
     for alias in sorted(BRAND_ALIASES.keys(), key=len, reverse=True):
         if alias in text_lower:
             matched_brand = BRAND_ALIASES[alias]
@@ -217,62 +199,110 @@ def extract_search_terms(text: str) -> dict:
 
     for keyword in CATEGORY_KEYWORDS:
         if keyword in text_lower:
-            matched_category = "Bags"  # For now, most categories map to bags
+            matched_category = keyword.capitalize()
             break
 
-    return {
-        "brand": matched_brand,
-        "color": matched_color,
-        "category": matched_category,
-    }
+    return {"brand": matched_brand, "color": matched_color, "category": matched_category}
 
 
-async def identify_image(image_url: str) -> str:
-    """Use Claude Vision (Haiku) to identify a product from an image."""
-    async with httpx.AsyncClient(timeout=30) as http:
-        resp = await http.get(image_url)
-        if resp.status_code != 200:
-            return "Could not download the image."
+async def identify_image(image_url: str) -> tuple[str | None, bool]:
+    """
+    Use Claude Vision (Haiku) to identify a product from an image.
+    Returns (identification_text, success).
+    On failure: returns (None, False) — caller should escalate to human.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            resp = await http.get(image_url)
+            if resp.status_code != 200:
+                log.warning(f"Image download failed: status={resp.status_code}")
+                return None, False
 
-    import base64
-    image_data = base64.b64encode(resp.content).decode("utf-8")
+        import base64
+        image_data = base64.b64encode(resp.content).decode("utf-8")
 
-    content_type = resp.headers.get("content-type", "image/jpeg")
-    if "png" in content_type:
-        media_type = "image/png"
-    elif "webp" in content_type:
-        media_type = "image/webp"
-    else:
-        media_type = "image/jpeg"
+        content_type = resp.headers.get("content-type", "image/jpeg")
+        if "png" in content_type:
+            media_type = "image/png"
+        elif "webp" in content_type:
+            media_type = "image/webp"
+        else:
+            media_type = "image/jpeg"
 
-    vision_resp = client.messages.create(
-        model=VISION_MODEL,
-        max_tokens=200,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": media_type, "data": image_data},
-                },
-                {
-                    "type": "text",
-                    "text": "Identify this product briefly. Reply ONLY in this format:\nBrand: ...\nType: ...\nColor: ...\nModel: ...",
-                },
-            ],
-        }],
-    )
-    return vision_resp.content[0].text
+        vision_resp = client.messages.create(
+            model=VISION_MODEL,
+            max_tokens=200,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": media_type, "data": image_data},
+                    },
+                    {
+                        "type": "text",
+                        "text": "Identify this product briefly. Reply ONLY in this format:\nBrand: ...\nType: ...\nColor: ...\nModel: ...\n\nIf you cannot identify the product clearly, reply with: UNIDENTIFIED",
+                    },
+                ],
+            }],
+        )
+        result = vision_resp.content[0].text
+
+        # Check if vision couldn't identify
+        if "UNIDENTIFIED" in result.upper() or "sorry" in result.lower() or "cannot" in result.lower():
+            log.info(f"Vision could not identify image: {result[:100]}")
+            return None, False
+
+        return result, True
+
+    except Exception as e:
+        log.error(f"Vision identification failed: {e}")
+        return None, False
+
+
+def parse_tags(reply: str) -> tuple[str, str | None, str | None]:
+    """
+    Parse and strip intent/archetype tags from Claude's reply.
+    Returns (cleaned_reply, intent, archetype).
+    """
+    intent = None
+    archetype = None
+    cleaned = reply
+
+    # Extract intent tag
+    if INTENT_TAG_PREFIX in cleaned:
+        start = cleaned.index(INTENT_TAG_PREFIX)
+        end = cleaned.index("]", start) + 1
+        tag = cleaned[start:end]
+        intent = tag[len(INTENT_TAG_PREFIX):-1]
+        cleaned = cleaned[:start] + cleaned[end:]
+
+    # Extract archetype tag
+    if ARCHETYPE_TAG_PREFIX in cleaned:
+        start = cleaned.index(ARCHETYPE_TAG_PREFIX)
+        end = cleaned.index("]", start) + 1
+        tag = cleaned[start:end]
+        archetype = tag[len(ARCHETYPE_TAG_PREFIX):-1]
+        cleaned = cleaned[:start] + cleaned[end:]
+
+    return cleaned.strip(), intent, archetype
 
 
 async def process_message(phone: str, message_text: str, first_name: str = None,
-                          message_type: str = "text", image_url: str = None) -> dict:
+                          message_type: str = "text", image_url: str = None,
+                          store_config: dict = None) -> dict:
     """
     Main brain function. Processes an incoming message and returns a response.
-    Returns: {"reply": str, "images": list[str], "products": list[dict]}
+    Returns: {"reply": str | None, "images": list, "products": list}
     """
+    # Use store config or defaults
+    store = store_config.get("store", "elara") if store_config else "elara"
+    currency = store_config.get("currency", "AED") if store_config else "AED"
+    human_label_id = store_config.get("human_label_id", "294168") if store_config else "294168"
+    phone_number_id = store_config.get("phone_number_id") if store_config else None
+
     # 1. Get or create customer
-    customer = create_customer(phone, name=first_name, store=STORE)
+    customer = create_customer(phone, name=first_name, store=store)
     update_last_message(phone)
 
     # 2. Cancel any pending follow-ups (customer is active)
@@ -283,26 +313,41 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
         return {"reply": None, "images": [], "products": []}
 
     # 4. Handle image messages — identify the product
-    # NOTE: Messages are already saved to DB by webhook_server.py (for batching)
-    # We only need to do vision identification here, not save again
     image_context = ""
+    vision_success = True
     if message_type == "image" and image_url:
-        image_context = await identify_image(image_url)
+        identification, vision_success = await identify_image(image_url)
+
+        if not vision_success:
+            # Vision failed — escalate to human
+            escalation_msg = "Let me get someone from our team to take a look at this — they'll help you find exactly what you're looking for."
+            try:
+                await assign_label(phone, human_label_id, phone_number_id=phone_number_id)
+            except Exception as e:
+                log.error(f"Failed to assign Human label for {phone}: {e}")
+            update_customer(phone, human_takeover=True)
+            save_message(phone, "bot", escalation_msg)
+            # Save outcome
+            save_conversation_outcome(phone, store, intent="image_request",
+                                       outcome="escalated",
+                                       bot_response_summary="Vision failed, escalated to human")
+            return {"reply": escalation_msg, "images": [], "products": []}
+
+        image_context = identification
         message_text = f"Customer sent an image. Vision identified: {image_context}"
 
-    # 5. Load conversation history
-    history = get_conversation_history(phone)
+    # 5. Load conversation history (smart: first 2 + last 8)
+    history = get_smart_history(phone)
     claude_messages = format_conversation_history(history)
 
-    # 6. ALWAYS search for products — use multiple strategies
+    # 6. Search for products — multi-strategy
     products = []
 
-    # Strategy A: Extract search terms from ALL recent customer messages
-    # (handles batched rapid messages — "hi" + "i need lv" + "what prices")
+    # Strategy A: Extract from recent customer messages
     search_terms = {"brand": None, "color": None, "category": None}
     for msg in reversed(history):
         if msg["role"] != "customer":
-            break  # Stop at last bot reply — only scan new customer messages
+            break
         msg_terms = extract_search_terms(msg["content"])
         if msg_terms["brand"] and not search_terms["brand"]:
             search_terms["brand"] = msg_terms["brand"]
@@ -311,25 +356,20 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
         if msg_terms["category"] and not search_terms["category"]:
             search_terms["category"] = msg_terms["category"]
 
-    # Also check the current message text (for image identification etc.)
+    # Also check current message
     current_terms = extract_search_terms(message_text)
-    if current_terms["brand"] and not search_terms["brand"]:
-        search_terms["brand"] = current_terms["brand"]
-    if current_terms["color"] and not search_terms["color"]:
-        search_terms["color"] = current_terms["color"]
-    if current_terms["category"] and not search_terms["category"]:
-        search_terms["category"] = current_terms["category"]
+    for key in ("brand", "color", "category"):
+        if current_terms[key] and not search_terms[key]:
+            search_terms[key] = current_terms[key]
 
-    # Strategy B: If image was identified, parse vision output too
+    # Strategy B: Parse vision output
     if image_context:
         vision_terms = extract_search_terms(image_context)
-        if vision_terms["brand"] and not search_terms["brand"]:
-            search_terms["brand"] = vision_terms["brand"]
-        if vision_terms["color"] and not search_terms["color"]:
-            search_terms["color"] = vision_terms["color"]
+        for key in ("brand", "color"):
+            if vision_terms[key] and not search_terms[key]:
+                search_terms[key] = vision_terms[key]
 
-    # Strategy C: Check older conversation history for context
-    # (e.g., they asked about Chanel earlier, now they say "black")
+    # Strategy C: Older history for brand context
     if not search_terms["brand"]:
         for msg in reversed(history):
             if msg["role"] == "customer":
@@ -338,57 +378,52 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
                     search_terms["brand"] = past_terms["brand"]
                     break
 
-    # Search with whatever we found (with retry for Supabase/Cloudflare flakiness)
-    import time as _time
-
-    def _search_with_retry(**kwargs):
-        """Try search up to 2 times with a short delay on failure."""
-        for attempt in range(2):
-            try:
-                return search_products(**kwargs)
-            except Exception as e:
-                if attempt == 0:
-                    print(f"Product search failed (attempt 1), retrying in 1s: {e}")
-                    _time.sleep(1)
-                else:
-                    print(f"Product search failed (attempt 2), giving up: {e}")
-                    return []
-
+    # Search with whatever we found
     if search_terms["brand"] or search_terms["color"] or search_terms["category"]:
-        products = _search_with_retry(
+        products = search_products(
             brand=search_terms["brand"],
             color=search_terms["color"],
             category=search_terms["category"],
-            store=STORE
+            store=store
         )
 
-    # If no specific search matched, check if they're asking to see products generally
+    # General triggers fallback
     if not products:
         general_triggers = ["what do you have", "show me", "catalog", "collection",
                            "products", "items", "available", "stock", "what kind",
                            "what bags", "what type", "options"]
         if any(trigger in message_text.lower() for trigger in general_triggers):
-            products = _search_with_retry(store=STORE)
+            products = search_products(store=store)
 
-    # 7. Build the context for Claude
-    product_context = format_products_for_context(products) if products else ""
+    # 7. Build context for Claude
+    product_context = format_products_for_context(products, currency) if products else ""
 
-    # Also always include what's in stock (brief summary) even if no specific search
-    all_products = _search_with_retry(store=STORE)
-    if not products and all_products:
-        # Use general results so Claude still has product data + image URLs
-        products = all_products
-        product_context = format_products_for_context(all_products)
+    if not products:
+        all_products = search_products(store=store)
+        if all_products:
+            products = all_products
+            product_context = format_products_for_context(all_products, currency)
 
     customer_context = f"""Customer info:
 - Phone: {phone}
 - Name: {customer.get('name') or 'Unknown'}
 - Stage: {customer.get('funnel_stage', 'new')}
-- Store: {customer.get('store', STORE)}"""
+- Store: {store}"""
 
-    # Build the full user message with catalog data appended
+    # Experience layer injection
+    winning_examples = get_winning_examples(store=store)
+    experience_context = ""
+    if winning_examples:
+        examples = []
+        for w in winning_examples:
+            if w.get("bot_response_summary"):
+                examples.append(f"- {w.get('intent_detected', 'general')}: {w['bot_response_summary']}")
+        if examples:
+            experience_context = "\n\n## Past Winning Responses\n" + "\n".join(examples)
+
+    # Append catalog data to last user message
     if claude_messages and claude_messages[-1]["role"] == "user":
-        catalog_section = f"\n\n[CATALOG DATA]\n{product_context}" if product_context else "\n\n[CATALOG DATA]\nNo specific products matched this query. Check inventory summary."
+        catalog_section = f"\n\n[CATALOG DATA]\n{product_context}" if product_context else ""
         claude_messages[-1]["content"] += catalog_section
     else:
         content = message_text
@@ -406,66 +441,78 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
             cleaned_messages.append(msg)
             last_role = msg["role"]
 
-    # Ensure first message is from user
     if cleaned_messages and cleaned_messages[0]["role"] != "user":
         cleaned_messages.insert(0, {"role": "user", "content": "(conversation started)"})
 
-    # 8. Call Claude
-    full_system = f"{SYSTEM_PROMPT}\n\n{customer_context}"
+    # 8. Call Claude (with retry)
+    system_prompt = build_system_prompt(store_config or {})
+    full_system = f"{system_prompt}\n\n{customer_context}{experience_context}"
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=300,
-        system=full_system,
-        messages=cleaned_messages,
-    )
+    reply = None
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=300,
+            system=full_system,
+            messages=cleaned_messages,
+        )
+        reply = response.content[0].text
+    except Exception as e:
+        log.error(f"Claude API call failed: {e}")
+        # Retry once
+        try:
+            await asyncio.sleep(1)
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=300,
+                system=full_system,
+                messages=cleaned_messages,
+            )
+            reply = response.content[0].text
+        except Exception as e2:
+            log.error(f"Claude API retry failed: {e2}")
+            fallback_msg = "Give me a moment, checking on that for you."
+            save_message(phone, "bot", fallback_msg)
+            return {"reply": fallback_msg, "images": [], "products": []}
 
-    reply = response.content[0].text
+    # 8b. Parse intent/archetype tags
+    reply, detected_intent, detected_archetype = parse_tags(reply)
 
-    # 8b. Check for escalation tag
+    # 8c. Check for escalation tag
     if reply.startswith(ESCALATE_TAG):
         reply = reply[len(ESCALATE_TAG):].strip()
-        # Label the customer as "Human" in WhatChimp
         try:
-            await assign_label(phone, HUMAN_LABEL_ID)
+            await assign_label(phone, human_label_id, phone_number_id=phone_number_id)
         except Exception as e:
-            print(f"Failed to assign Human label for {phone}: {e}")
-        # Flag in Supabase so bot stops replying
+            log.error(f"Failed to assign Human label for {phone}: {e}")
         update_customer(phone, human_takeover=True)
-        # Save the escalation reply and return (no product images needed)
         save_message(phone, "bot", reply)
+        save_conversation_outcome(phone, store, intent=detected_intent,
+                                   archetype=detected_archetype,
+                                   outcome="escalated",
+                                   bot_response_summary=reply[:200])
         return {"reply": reply, "images": [], "products": []}
 
-    # 9. Determine which product images to send
-    images_to_send = []
-    if products:
-        # If we found matching products, send images of the first one that Claude mentions
-        reply_lower = reply.lower()
-        for p in products:
-            # Check if any significant word from the product title appears in the reply
-            title_words = [w.lower() for w in p["title"].replace("|", "").split() if len(w) > 3]
-            if any(word in reply_lower for word in title_words):
-                if p.get("studio_images"):
-                    images_to_send = p["studio_images"][:2]
-                break
-
-        # If Claude mentioned products but we couldn't match which one, send first product's images
-        if not images_to_send and len(products) <= 3:
-            for p in products:
-                if p.get("studio_images"):
-                    images_to_send = p["studio_images"][:1]
-                    break
-
-    # 10. Save bot reply
+    # 9. Save bot reply
     product_ids = [p["id"] for p in products] if products else []
     save_message(phone, "bot", reply, products_mentioned=product_ids)
 
-    # 11. Update funnel stage based on conversation
+    # 10. Update funnel stage
     if customer.get("funnel_stage") == "new" and products:
         update_customer(phone, funnel_stage="interested")
 
+    # 11. Save outcome metadata (for experience layer)
+    if detected_intent or detected_archetype:
+        save_conversation_outcome(
+            phone, store,
+            intent=detected_intent,
+            archetype=detected_archetype,
+            products_discussed=product_ids,
+            message_count=len(history),
+        )
+
     return {
         "reply": reply,
-        "images": images_to_send,
+        "images": [],  # Image sending disabled — handled by human escalation
         "products": products,
     }
