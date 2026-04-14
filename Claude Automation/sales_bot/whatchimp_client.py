@@ -87,21 +87,38 @@ async def remove_label(phone: str, label_ids: str, phone_number_id: str = None) 
         return resp.json()
 
 
-async def assign_custom_fields(phone: str, fields: dict, phone_number_id: str = None) -> dict:
-    """Assign custom fields to a subscriber (e.g. phone, order_id)."""
-    import json
+async def get_subscriber(phone: str, phone_number_id: str = None) -> dict | None:
+    """Get subscriber details including labels."""
     pnid = phone_number_id or _DEFAULT_PHONE_NUMBER_ID
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{BASE_URL}/whatsapp/subscriber/chat/assign-custom-fields",
+            f"{BASE_URL}/whatsapp/subscriber/get",
             data={
                 "apiToken": API_TOKEN,
                 "phone_number_id": pnid,
                 "phone_number": phone,
-                "custom_fields": json.dumps(fields),
             }
         )
-        return resp.json()
+        data = resp.json()
+        if data.get("status") == "1" and data.get("message"):
+            return data["message"][0] if isinstance(data["message"], list) else data["message"]
+        return None
+
+
+async def has_human_label(phone: str, human_label_id: str = "294168",
+                          phone_number_id: str = None) -> bool:
+    """Check if subscriber has the Human label in WhatChimp."""
+    sub = await get_subscriber(phone, phone_number_id)
+    if not sub:
+        return False
+    label_names = sub.get("label_names") or ""
+    label_ids = sub.get("label_ids") or ""
+    # Check by name or ID
+    if "Human" in str(label_names):
+        return True
+    if str(human_label_id) in str(label_ids):
+        return True
+    return False
 
 
 async def assign_to_team_member(phone: str, team_member_id: int,

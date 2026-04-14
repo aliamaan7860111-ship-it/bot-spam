@@ -13,10 +13,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from brain import process_message
-from whatchimp_client import send_text, assign_custom_fields
+from whatchimp_client import send_text
 from supabase_client import (
-    save_message, create_customer, check_message_exists,
-    update_customer, get_customer
+    save_message, create_customer, check_message_exists
 )
 from config import get_store_config, rate_limiter, get_logger
 
@@ -136,13 +135,6 @@ async def handle_webhook(request: Request):
         create_customer(phone, name=first_name if first_name else None,
                        store=store_config["store"])
 
-        # ── Assign phone custom field in WhatChimp (enables #phone# in flows)
-        try:
-            await assign_custom_fields(phone, {"phone": phone},
-                                       phone_number_id=store_config.get("phone_number_id"))
-        except Exception:
-            pass  # Non-critical — don't block message processing
-
         # ── Save message to DB ───────────────────────────
         if message_type == "image" and image_url:
             save_message(phone, "customer", f"[Sent an image]",
@@ -172,85 +164,6 @@ async def handle_webhook(request: Request):
     except Exception as e:
         log.error(f"Webhook error: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
-
-
-@app.post("/webhook/label-change")
-@app.get("/webhook/label-change")
-async def handle_label_change(request: Request):
-    """
-    Label change webhook — WhatChimp flow hits this when Human label changes.
-    Accepts query params OR JSON body (matches WhatChimp flow patterns).
-
-    Query param format (preferred — matches order confirmation pattern):
-      /webhook/label-change?chat_id=971...&action=silence_bot
-
-    JSON body format:
-      {"chat_id": "971...", "action": "silence_bot"}
-    """
-    try:
-        # Try query params first (WhatChimp flow standard), then JSON body
-        params = dict(request.query_params)
-        if not params:
-            try:
-                params = await request.json()
-            except Exception:
-                params = {}
-
-        log.info(f"Label change webhook received: {params}")
-
-        # Extract phone — try multiple field names
-        phone = params.get("chat_id") or params.get("phone_number") or params.get("phone") or ""
-        if not phone:
-            return {"status": "error", "message": "no phone in payload"}
-
-        # Determine action — try explicit action field first, then label arrays
-        action = body.get("action", "").lower()
-
-        if action in ("silence_bot", "silence", "add", "human_added"):
-            update_customer(phone, human_takeover=True)
-            log.info(f"Human label added for {phone} — bot silenced")
-            return {"status": "ok", "action": "bot_silenced"}
-
-        if action in ("resume_bot", "resume", "remove", "human_removed"):
-            update_customer(phone, human_takeover=False)
-            log.info(f"Human label removed for {phone} — bot resumed")
-            return {"status": "ok", "action": "bot_resumed"}
-
-        # Fallback: check label arrays
-        added_labels = params.get("added_labels", [])
-        removed_labels = params.get("removed_labels", [])
-        incoming_phone_number_id = params.get("phone_number_id", "")
-
-        store_config = get_store_config(incoming_phone_number_id)
-        human_label_id = store_config.get("human_label_id", "294168") if store_config else "294168"
-
-        if human_label_id in [str(l) for l in removed_labels]:
-            update_customer(phone, human_takeover=False)
-            log.info(f"Human label removed for {phone} — bot resumed")
-            return {"status": "ok", "action": "bot_resumed"}
-
-        if human_label_id in [str(l) for l in added_labels]:
-            update_customer(phone, human_takeover=True)
-            log.info(f"Human label added for {phone} — bot silenced")
-            return {"status": "ok", "action": "bot_silenced"}
-
-        return {"status": "ok", "action": "no_change"}
-
-    except Exception as e:
-        log.error(f"Label change webhook error: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
-
-
-@app.post("/reset/{phone}")
-async def reset_human_takeover(phone: str):
-    """Manual reset — re-enable bot for a customer."""
-    customer = get_customer(phone)
-    if not customer:
-        return {"status": "error", "message": "customer not found"}
-
-    update_customer(phone, human_takeover=False)
-    log.info(f"Manual reset: bot resumed for {phone}")
-    return {"status": "ok", "action": "bot_resumed", "phone": phone}
 
 
 @app.get("/health")

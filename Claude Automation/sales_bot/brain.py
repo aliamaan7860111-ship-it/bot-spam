@@ -11,11 +11,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 from config import get_logger
 from supabase_client import (
-    get_customer, create_customer, update_customer, update_last_message,
+    create_customer, update_customer, update_last_message,
     save_message, get_smart_history, search_products, cancel_follow_ups,
     save_conversation_outcome, get_winning_examples
 )
-from whatchimp_client import assign_label
+from whatchimp_client import assign_label, has_human_label
 
 load_dotenv()
 
@@ -308,10 +308,20 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
     # 2. Cancel any pending follow-ups (customer is active)
     cancel_follow_ups(phone)
 
-    # 3. Check if human has taken over — always fetch FRESH from DB
-    fresh_customer = get_customer(phone)
-    if fresh_customer and fresh_customer.get("human_takeover"):
-        return {"reply": None, "images": [], "products": []}
+    # 3. Check if human has taken over — check WhatChimp labels directly
+    try:
+        is_human = await has_human_label(phone, human_label_id, phone_number_id=phone_number_id)
+        # Sync DB with WhatChimp state
+        if is_human != bool(customer.get("human_takeover")):
+            update_customer(phone, human_takeover=is_human)
+        if is_human:
+            log.info(f"Human label active for {phone} — bot silent")
+            return {"reply": None, "images": [], "products": []}
+    except Exception as e:
+        log.warning(f"Could not check WhatChimp labels for {phone}: {e}")
+        # Fallback to DB flag if WhatChimp check fails
+        if customer.get("human_takeover"):
+            return {"reply": None, "images": [], "products": []}
 
     # 4. Handle image messages — identify the product
     image_context = ""
