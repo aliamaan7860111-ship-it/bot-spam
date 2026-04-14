@@ -170,13 +170,41 @@ async def handle_webhook(request: Request):
 @app.post("/webhook/label-change")
 async def handle_label_change(request: Request):
     """
-    Label change webhook — WhatChimp hits this when labels are added or removed.
-    - Human label ADDED → set human_takeover=True (bot goes silent)
-    - Human label REMOVED → set human_takeover=False (bot resumes)
+    Label change webhook — WhatChimp flow hits this when Human label changes.
+    Accepts multiple payload formats:
+
+    Format A (flow with action field):
+      {"chat_id": "971...", "action": "silence_bot"} or {"action": "resume_bot"}
+
+    Format B (structured label arrays):
+      {"chat_id": "971...", "added_labels": [294168], "removed_labels": []}
+
+    Format C (WhatChimp subscriber fields):
+      {"phone_number": "971...", "action": "silence_bot"}
     """
     try:
         body = await request.json()
-        phone = body.get("chat_id", "")
+        log.info(f"Label change webhook received: {body}")
+
+        # Extract phone — try multiple field names
+        phone = body.get("chat_id") or body.get("phone_number") or body.get("phone") or ""
+        if not phone:
+            return {"status": "error", "message": "no phone in payload"}
+
+        # Determine action — try explicit action field first, then label arrays
+        action = body.get("action", "").lower()
+
+        if action in ("silence_bot", "silence", "add", "human_added"):
+            update_customer(phone, human_takeover=True)
+            log.info(f"Human label added for {phone} — bot silenced")
+            return {"status": "ok", "action": "bot_silenced"}
+
+        if action in ("resume_bot", "resume", "remove", "human_removed"):
+            update_customer(phone, human_takeover=False)
+            log.info(f"Human label removed for {phone} — bot resumed")
+            return {"status": "ok", "action": "bot_resumed"}
+
+        # Fallback: check label arrays
         added_labels = body.get("added_labels", [])
         removed_labels = body.get("removed_labels", [])
         incoming_phone_number_id = body.get("phone_number_id", "")
@@ -184,15 +212,12 @@ async def handle_label_change(request: Request):
         store_config = get_store_config(incoming_phone_number_id)
         human_label_id = store_config.get("human_label_id", "294168") if store_config else "294168"
 
-        added_str = [str(l) for l in added_labels]
-        removed_str = [str(l) for l in removed_labels]
-
-        if human_label_id in removed_str:
+        if human_label_id in [str(l) for l in removed_labels]:
             update_customer(phone, human_takeover=False)
             log.info(f"Human label removed for {phone} — bot resumed")
             return {"status": "ok", "action": "bot_resumed"}
 
-        if human_label_id in added_str:
+        if human_label_id in [str(l) for l in added_labels]:
             update_customer(phone, human_takeover=True)
             log.info(f"Human label added for {phone} — bot silenced")
             return {"status": "ok", "action": "bot_silenced"}
