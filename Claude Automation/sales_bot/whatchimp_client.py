@@ -87,6 +87,23 @@ async def remove_label(phone: str, label_ids: str, phone_number_id: str = None) 
         return resp.json()
 
 
+async def assign_custom_fields(phone: str, fields: dict, phone_number_id: str = None) -> dict:
+    """Assign custom fields to a subscriber (e.g. phone, order_id)."""
+    import json
+    pnid = phone_number_id or _DEFAULT_PHONE_NUMBER_ID
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{BASE_URL}/whatsapp/subscriber/chat/assign-custom-fields",
+            data={
+                "apiToken": API_TOKEN,
+                "phone_number_id": pnid,
+                "phone_number": phone,
+                "custom_fields": json.dumps(fields),
+            }
+        )
+        return resp.json()
+
+
 async def assign_to_team_member(phone: str, team_member_id: int,
                                  phone_number_id: str = None) -> dict:
     """Assign chat to a human team member (for escalation)."""

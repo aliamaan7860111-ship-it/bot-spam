@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from brain import process_message
-from whatchimp_client import send_text
+from whatchimp_client import send_text, assign_custom_fields
 from supabase_client import (
     save_message, create_customer, check_message_exists,
     update_customer, get_customer
@@ -135,6 +135,13 @@ async def handle_webhook(request: Request):
         # ── Ensure customer exists ───────────────────────
         create_customer(phone, name=first_name if first_name else None,
                        store=store_config["store"])
+
+        # ── Assign phone custom field in WhatChimp (enables #phone# in flows)
+        try:
+            await assign_custom_fields(phone, {"phone": phone},
+                                       phone_number_id=store_config.get("phone_number_id"))
+        except Exception:
+            pass  # Non-critical — don't block message processing
 
         # ── Save message to DB ───────────────────────────
         if message_type == "image" and image_url:
