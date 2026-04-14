@@ -11,7 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from config import get_logger
 from supabase_client import (
-    create_customer, update_customer, update_last_message,
+    get_customer, create_customer, update_customer, update_last_message,
     save_message, get_smart_history, search_products, cancel_follow_ups,
     save_conversation_outcome, get_winning_examples
 )
@@ -308,8 +308,9 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
     # 2. Cancel any pending follow-ups (customer is active)
     cancel_follow_ups(phone)
 
-    # 3. Check if human has taken over
-    if customer.get("human_takeover"):
+    # 3. Check if human has taken over — always fetch FRESH from DB
+    fresh_customer = get_customer(phone)
+    if fresh_customer and fresh_customer.get("human_takeover"):
         return {"reply": None, "images": [], "products": []}
 
     # 4. Handle image messages — identify the product
@@ -396,13 +397,7 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
             products = search_products(store=store)
 
     # 7. Build context for Claude
-    product_context = format_products_for_context(products, currency) if products else ""
-
-    if not products:
-        all_products = search_products(store=store)
-        if all_products:
-            products = all_products
-            product_context = format_products_for_context(all_products, currency)
+    product_context = format_products_for_context(products, currency) if products else "No matching products found in catalog. Be honest — do NOT invent products. If the customer asked for a specific brand/item you don't have, say so and offer to check with the team."
 
     customer_context = f"""Customer info:
 - Phone: {phone}
@@ -478,9 +473,9 @@ async def process_message(phone: str, message_text: str, first_name: str = None,
     # 8b. Parse intent/archetype tags
     reply, detected_intent, detected_archetype = parse_tags(reply)
 
-    # 8c. Check for escalation tag
-    if reply.startswith(ESCALATE_TAG):
-        reply = reply[len(ESCALATE_TAG):].strip()
+    # 8c. Check for escalation tag — can appear anywhere in the reply
+    if ESCALATE_TAG in reply:
+        reply = reply.replace(ESCALATE_TAG, "").strip()
         try:
             await assign_label(phone, human_label_id, phone_number_id=phone_number_id)
         except Exception as e:

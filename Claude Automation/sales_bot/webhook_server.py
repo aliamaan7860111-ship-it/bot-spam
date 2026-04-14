@@ -170,22 +170,32 @@ async def handle_webhook(request: Request):
 @app.post("/webhook/label-change")
 async def handle_label_change(request: Request):
     """
-    Escalation reset — WhatChimp hits this when labels change.
-    If 'Human' label is removed, bot resumes for that customer.
+    Label change webhook — WhatChimp hits this when labels are added or removed.
+    - Human label ADDED → set human_takeover=True (bot goes silent)
+    - Human label REMOVED → set human_takeover=False (bot resumes)
     """
     try:
         body = await request.json()
         phone = body.get("chat_id", "")
+        added_labels = body.get("added_labels", [])
         removed_labels = body.get("removed_labels", [])
         incoming_phone_number_id = body.get("phone_number_id", "")
 
         store_config = get_store_config(incoming_phone_number_id)
         human_label_id = store_config.get("human_label_id", "294168") if store_config else "294168"
 
-        if human_label_id in [str(l) for l in removed_labels]:
+        added_str = [str(l) for l in added_labels]
+        removed_str = [str(l) for l in removed_labels]
+
+        if human_label_id in removed_str:
             update_customer(phone, human_takeover=False)
             log.info(f"Human label removed for {phone} — bot resumed")
             return {"status": "ok", "action": "bot_resumed"}
+
+        if human_label_id in added_str:
+            update_customer(phone, human_takeover=True)
+            log.info(f"Human label added for {phone} — bot silenced")
+            return {"status": "ok", "action": "bot_silenced"}
 
         return {"status": "ok", "action": "no_change"}
 
