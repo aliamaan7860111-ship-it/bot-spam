@@ -175,26 +175,31 @@ async def handle_webhook(request: Request):
 
 
 @app.post("/webhook/label-change")
+@app.get("/webhook/label-change")
 async def handle_label_change(request: Request):
     """
     Label change webhook — WhatChimp flow hits this when Human label changes.
-    Accepts multiple payload formats:
+    Accepts query params OR JSON body (matches WhatChimp flow patterns).
 
-    Format A (flow with action field):
-      {"chat_id": "971...", "action": "silence_bot"} or {"action": "resume_bot"}
+    Query param format (preferred — matches order confirmation pattern):
+      /webhook/label-change?chat_id=971...&action=silence_bot
 
-    Format B (structured label arrays):
-      {"chat_id": "971...", "added_labels": [294168], "removed_labels": []}
-
-    Format C (WhatChimp subscriber fields):
-      {"phone_number": "971...", "action": "silence_bot"}
+    JSON body format:
+      {"chat_id": "971...", "action": "silence_bot"}
     """
     try:
-        body = await request.json()
-        log.info(f"Label change webhook received: {body}")
+        # Try query params first (WhatChimp flow standard), then JSON body
+        params = dict(request.query_params)
+        if not params:
+            try:
+                params = await request.json()
+            except Exception:
+                params = {}
+
+        log.info(f"Label change webhook received: {params}")
 
         # Extract phone — try multiple field names
-        phone = body.get("chat_id") or body.get("phone_number") or body.get("phone") or ""
+        phone = params.get("chat_id") or params.get("phone_number") or params.get("phone") or ""
         if not phone:
             return {"status": "error", "message": "no phone in payload"}
 
@@ -212,9 +217,9 @@ async def handle_label_change(request: Request):
             return {"status": "ok", "action": "bot_resumed"}
 
         # Fallback: check label arrays
-        added_labels = body.get("added_labels", [])
-        removed_labels = body.get("removed_labels", [])
-        incoming_phone_number_id = body.get("phone_number_id", "")
+        added_labels = params.get("added_labels", [])
+        removed_labels = params.get("removed_labels", [])
+        incoming_phone_number_id = params.get("phone_number_id", "")
 
         store_config = get_store_config(incoming_phone_number_id)
         human_label_id = store_config.get("human_label_id", "294168") if store_config else "294168"
