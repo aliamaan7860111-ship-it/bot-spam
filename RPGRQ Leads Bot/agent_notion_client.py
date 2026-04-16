@@ -48,12 +48,13 @@ def find_chat_by_phone(phone_number: str) -> dict | None:
         log.error(f"Notion query failed for phone {phone_number}: {e}")
         return None
 
-def create_chat(phone_number: str, brand: str) -> str | None:
+def create_chat(phone_number: str, brand: str, created_at: str = None) -> str | None:
     """
     Creates a NEW unassigned chat in Notion.
-    Status = Waiting, Outcome = Pending, Created At = now.
+    Status = Waiting, Outcome = Pending.
+    If created_at is provided (from WhatChimp), uses that instead of now.
     """
-    iso_time = datetime.now(timezone.utc).isoformat()
+    iso_time = created_at if created_at else datetime.now(timezone.utc).isoformat()
     
     properties = {
         "Name": {"title": [{"text": {"content": phone_number}}]},
@@ -83,11 +84,12 @@ def create_chat(phone_number: str, brand: str) -> str | None:
         log.error(f"Notion page creation failed: {e}")
         return None
 
-def update_chat_to_agent(page_id: str, agent_name: str, is_first_reply: bool, response_speed: str = None) -> bool:
+def update_chat_to_agent(page_id: str, agent_name: str, is_first_reply: bool, response_speed: str = None, actioned_at: str = None) -> bool:
     """
     Lock to agent. Sets Outcome to 'No response', updates Actioned At and Speed if first reply.
+    If actioned_at is provided (from WhatChimp), uses that instead of now.
     """
-    iso_time = datetime.now(timezone.utc).isoformat()
+    iso_time = actioned_at if actioned_at else datetime.now(timezone.utc).isoformat()
     properties = {
         "Agent Assigned": {"select": {"name": agent_name}},
         "Outcome": {"select": {"name": "No response"}},

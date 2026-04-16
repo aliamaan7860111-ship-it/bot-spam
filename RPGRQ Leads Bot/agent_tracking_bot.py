@@ -162,8 +162,9 @@ def process_chat(brand: str, phone_number: str, conversation: list, subscriber_i
     
     # ── INBOUND RULE: If there's a customer message and no ticket yet → create one ──
     if latest_user_msg and not existing_ticket:
+        customer_time = latest_user_msg.get("conversation_time", "")
         log.info(f"🆕 [NEW] Customer {phone_number} messaged {brand}. Creating ticket...")
-        notion.create_chat(phone_number, brand)
+        notion.create_chat(phone_number, brand, created_at=customer_time)
         existing_ticket = notion.find_chat_by_phone(phone_number)
     
     # ── PING-PONG RULE: If the MOST RECENT message is from the customer → flip to Pending ──
@@ -204,8 +205,9 @@ def process_chat(brand: str, phone_number: str, conversation: list, subscriber_i
                     created_at_prop = props.get("Created At", {}).get("date", {})
                     created_at_val = created_at_prop.get("start") if created_at_prop else None
                     response_speed = calculate_response_speed(created_at_val)
-                    
-                notion.update_chat_to_agent(ticket_id, latest_agent_name, is_first_reply, response_speed)
+                
+                agent_time = latest_agent_msg.get("conversation_time", "")
+                notion.update_chat_to_agent(ticket_id, latest_agent_name, is_first_reply, response_speed, actioned_at=agent_time)
         return
 
 async def poll_all_channels():
