@@ -3,7 +3,7 @@ import sys
 import time
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import httpx
 from pathlib import Path
@@ -97,18 +97,52 @@ async def get_conversation(client: httpx.AsyncClient, phone_id: str, phone_numbe
     except Exception as e:
         return []
 
-def calculate_response_speed(created_at_str: str) -> str:
-    """Calculates response speed based on Time Delta."""
+def calculate_response_speed(created_at_str: str, actioned_at_str: str = None) -> str:
+    """Calculates response speed based on true Business Hours Elapsed."""
     if not created_at_str:
         return "Medium"
     try:
         created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-        now = datetime.now(created_at.tzinfo)
-        diff_mins = (now - created_at).total_seconds() / 60.0
-        if diff_mins <= 5: return "Fast"
-        elif diff_mins <= 15: return "Medium"
+        
+        # If we have the exact agent action time from WhatChimp, use it. Otherwise use now.
+        if actioned_at_str:
+            actioned_at = datetime.fromisoformat(actioned_at_str.replace("Z", "+00:00"))
+        else:
+            actioned_at = datetime.now(timezone.utc)
+            
+        # Pakistan is UTC+5, shift is 12:00 to 22:00
+        pkt_tz = timezone(timedelta(hours=5))
+        
+        start_dt = created_at.astimezone(pkt_tz)
+        end_dt = actioned_at.astimezone(pkt_tz)
+
+        if end_dt <= start_dt:
+            return "Fast"
+
+        total_seconds = 0.0
+        current = start_dt
+
+        while current < end_dt:
+            shift_start = current.replace(hour=12, minute=0, second=0, microsecond=0)
+            shift_end = current.replace(hour=22, minute=0, second=0, microsecond=0)
+
+            if current < shift_start:
+                current = shift_start
+            elif current >= shift_end:
+                current = (current + timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+            else:
+                chunk_end = min(end_dt, shift_end)
+                total_seconds += (chunk_end - current).total_seconds()
+                current = chunk_end
+
+        diff_mins = total_seconds / 60.0
+        
+        if diff_mins <= 5.0: return "Fast"
+        elif diff_mins <= 15.0: return "Medium"
         else: return "Slow"
-    except Exception:
+        
+    except Exception as e:
+        log.error(f"Error calculating response speed: {e}")
         return "Medium"
 
 def process_chat(brand: str, phone_number: str, conversation: list, subscriber_info: dict, is_first_run: bool = False):
@@ -204,7 +238,8 @@ def process_chat(brand: str, phone_number: str, conversation: list, subscriber_i
                 if is_first_reply:
                     created_at_prop = props.get("Created At", {}).get("date", {})
                     created_at_val = created_at_prop.get("start") if created_at_prop else None
-                    response_speed = calculate_response_speed(created_at_val)
+                    agent_time = latest_agent_msg.get("conversation_time", "")
+                    response_speed = calculate_response_speed(created_at_val, agent_time)
                 
                 agent_time = latest_agent_msg.get("conversation_time", "")
                 notion.update_chat_to_agent(ticket_id, latest_agent_name, is_first_reply, response_speed, actioned_at=agent_time)
