@@ -40,8 +40,12 @@ POLL_INTERVAL_SECONDS = 15
 # Known Human Agents
 AGENTS = ["Ushda", "Amaan", "Nauman", "Ibrahim Taha"]
 
+# The main labels we track from WhatChimp → Notion Status (multi-select)
+TRACKED_LABELS = {"Confirmation", "Dry", "Follow-up", "Cancelled", "Closed"}
+
 # Ensure we don't query same unchanged conversation multiple times
 _last_processed_time = {}
+_last_processed_labels = {}  # Cache labels to avoid redundant Notion updates
 IS_FIRST_RUN = True
 
 async def get_subscriber_list(client: httpx.AsyncClient, phone_id: str):
@@ -245,6 +249,44 @@ def process_chat(brand: str, phone_number: str, conversation: list, subscriber_i
                 notion.update_chat_to_agent(ticket_id, latest_agent_name, is_first_reply, response_speed, actioned_at=agent_time)
         return
 
+def sync_labels(phone_number: str, brand: str, subscriber_info: dict, is_first_run: bool = False):
+    """Sync WhatChimp labels → Notion Status (multi-select)."""
+    if is_first_run:
+        return
+    
+    # Parse the comma-separated label_names string from WhatChimp
+    raw_labels = subscriber_info.get("label_names") or ""
+    if isinstance(raw_labels, str):
+        current_labels = [l.strip() for l in raw_labels.split(",") if l.strip()]
+    else:
+        current_labels = []
+    
+    # Filter to only our tracked labels
+    matched_labels = [l for l in current_labels if l in TRACKED_LABELS]
+    
+    if not matched_labels:
+        return
+    
+    # Dedup — skip if labels haven't changed since last poll
+    dedup_key = f"{phone_number}_{brand}_labels"
+    label_fingerprint = ",".join(sorted(matched_labels))
+    if _last_processed_labels.get(dedup_key) == label_fingerprint:
+        return
+    _last_processed_labels[dedup_key] = label_fingerprint
+    
+    # Find the existing ticket in Notion
+    existing_ticket = notion.find_chat_by_phone(phone_number)
+    if not existing_ticket:
+        return
+    
+    # Compare with current Notion Status values
+    status_prop = existing_ticket.get("properties", {}).get("Status", {}).get("multi_select", [])
+    current_notion_labels = sorted([s.get("name", "") for s in status_prop])
+    
+    if sorted(matched_labels) != current_notion_labels:
+        log.info(f"🏷️ [LABEL SYNC] {phone_number} on {brand}: {matched_labels}")
+        notion.update_chat_status(existing_ticket["id"], matched_labels)
+
 async def poll_all_channels():
     global IS_FIRST_RUN
     async with httpx.AsyncClient(timeout=90.0) as client:
@@ -252,15 +294,19 @@ async def poll_all_channels():
         for phone_id, brand_name in PHONE_BRANDS.items():
             try:
                 subscribers = await get_subscriber_list(client, phone_id)
-                # Check top 5 active to prevent API bloat
-                for sub in subscribers[:5]:
+                # Check top 20 active subscribers per brand
+                for sub in subscribers[:20]:
                     clean_phone = sub.get("chat_id")
                     if not clean_phone: continue
                     
+                    # Sync labels first (lightweight — no conversation fetch needed)
+                    sync_labels(clean_phone, brand_name, sub, IS_FIRST_RUN)
+                    
+                    # Then check conversation for message-based rules
                     conversation = await get_conversation(client, phone_id, clean_phone)
                     process_chat(brand_name, clean_phone, conversation, sub, IS_FIRST_RUN)
                     
-                    await asyncio.sleep(0.5) 
+                    await asyncio.sleep(0.3)
             except Exception as e:
                 import traceback
                 log.error(f"Error polling brand {brand_name}: {e}\n{traceback.format_exc()}")

@@ -60,7 +60,7 @@ def create_chat(phone_number: str, brand: str, created_at: str = None) -> str | 
         "Name": {"title": [{"text": {"content": phone_number}}]},
         "Phone Number": {"rich_text": [{"text": {"content": phone_number}}]},
         "Source (Store)": {"select": {"name": brand}},
-        "Status": {"select": {"name": "Waiting"}},
+        "Status": {"multi_select": [{"name": "Waiting"}]},
         "Outcome": {"select": {"name": "Pending"}},
         "Created At": {"date": {"start": iso_time}},
         "Agent Assigned": {"select": {"name": "Unassigned"}},
@@ -94,7 +94,7 @@ def update_chat_to_agent(page_id: str, agent_name: str, is_first_reply: bool, re
         "Agent Assigned": {"select": {"name": agent_name}},
         "Outcome": {"select": {"name": "No response"}},
         "Last Contact Date": {"date": {"start": iso_time}},
-        "Status": {"select": {"name": "Active"}}
+        "Status": {"multi_select": [{"name": "Active"}]}
     }
     
     if is_first_reply:
@@ -111,10 +111,11 @@ def update_chat_to_pending(page_id: str) -> bool:
     }
     return _update_page(page_id, properties)
 
-def update_chat_status(page_id: str, status: str) -> bool:
-    """Directly update status if label changed in WhatChimp."""
+def update_chat_status(page_id: str, labels: list) -> bool:
+    """Sync WhatChimp labels to Notion Status (multi-select)."""
+    multi_select_values = [{"name": label} for label in labels]
     properties = {
-        "Status": {"select": {"name": status}}
+        "Status": {"multi_select": multi_select_values}
     }
     return _update_page(page_id, properties)
 
