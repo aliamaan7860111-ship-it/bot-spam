@@ -41,7 +41,7 @@ POLL_INTERVAL_SECONDS = 15
 AGENTS = ["Ushda", "Amaan", "Nauman", "Ibrahim Taha"]
 
 # The main labels we track from WhatChimp → Notion Status (multi-select)
-TRACKED_LABELS = {"Confirmation", "Dry", "Follow-up", "Cancelled", "Closed"}
+TRACKED_LABELS = {"Confirmation", "Dry", "Follow-up", "Cancelled", "Closed", "Support"}
 
 # Ensure we don't query same unchanged conversation multiple times
 _last_processed_time = {}
