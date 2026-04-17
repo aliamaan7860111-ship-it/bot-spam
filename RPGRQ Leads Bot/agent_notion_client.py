@@ -93,8 +93,7 @@ def update_chat_to_agent(page_id: str, agent_name: str, is_first_reply: bool, re
     properties = {
         "Agent Assigned": {"select": {"name": agent_name}},
         "Outcome": {"select": {"name": "No response"}},
-        "Last Contact Date": {"date": {"start": iso_time}},
-        "Status": {"multi_select": [{"name": "Active"}]}
+        "Last Contact Date": {"date": {"start": iso_time}}
     }
     
     if is_first_reply:
