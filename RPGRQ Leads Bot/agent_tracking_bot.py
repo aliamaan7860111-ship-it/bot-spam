@@ -38,7 +38,7 @@ API_BASE = "https://app.whatchimp.com/api/v1/whatsapp"
 POLL_INTERVAL_SECONDS = 15
 
 # Known Human Agents
-AGENTS = ["Ushda", "Amaan", "Nauman", "Ibrahim Taha"]
+AGENTS = ["Ushda", "Amaan", "Nauman"]
 
 # The main labels we track from WhatChimp → Notion Status (multi-select)
 TRACKED_LABELS = {"Confirmation", "Dry", "Follow-up", "Cancelled", "Closed", "Support"}
