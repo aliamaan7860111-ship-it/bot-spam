@@ -1,0 +1,17 @@
+[Unit]
+Description=RPGRQ Leads Bot Webhook Server
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_LINUX_USERNAME
+WorkingDirectory=/home/YOUR_LINUX_USERNAME/automation
+ExecStart=/usr/bin/python3 execution/rpgrq_webhook_server.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/YOUR_LINUX_USERNAME/automation/rpgrq_webhook.log
+StandardError=append:/home/YOUR_LINUX_USERNAME/automation/rpgrq_webhook.log
+Environment=RPGRQ_PORT=8082
+
+[Install]
+WantedBy=multi-user.target
