@@ -18,7 +18,6 @@ import signal
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 from urllib.parse import parse_qs
 
 import httpx
@@ -231,7 +230,6 @@ async def handle_incoming(
 
 async def handle_outgoing(
     client: httpx.AsyncClient,
-    rr: RoundRobin,
     payload: dict,
 ):
     phone = str(payload.get("chat_id") or "").strip()
@@ -393,10 +391,18 @@ async def handle_connection(
         if path_only == "/rpgrq/incoming":
             await handle_incoming(http_client, rr, payload)
         elif path_only == "/rpgrq/outgoing":
-            await handle_outgoing(http_client, rr, payload)
+            await handle_outgoing(http_client, payload)
         else:
             log.debug(f"Unknown path: {path_only}")
 
+    except (ConnectionResetError, asyncio.IncompleteReadError, BrokenPipeError, TimeoutError) as e:
+        # Client dropped the connection before we finished reading / responding.
+        # Common for retries, probes, and scanners. Not an error we can act on.
+        log.debug(f"connection dropped: {e}")
+        try:
+            writer.close()
+        except Exception:
+            pass
     except Exception as e:
         import traceback
         log.error(f"connection handler crashed: {e}\n{traceback.format_exc()}")
