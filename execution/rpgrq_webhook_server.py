@@ -265,18 +265,33 @@ async def handle_outgoing(
 
     latest = await wc.get_latest_message(client, pid, phone)
     if not latest:
-        log.debug(f"outgoing: couldn't fetch latest message for {phone}")
+        log.info(f"outgoing: {phone}/{brand} no conversation history returned")
         return
 
-    agent_name = latest.get("agent_name")
+    sender = latest.get("sender")
+    agent_name_raw = latest.get("agent_name")
+    agent_name = (agent_name_raw or "").strip() if isinstance(agent_name_raw, str) else agent_name_raw
     reply_time = latest.get("conversation_time") or utc_iso_now()
 
-    # Filter to active roster names
+    log.info(
+        f"outgoing: {phone}/{brand} latest sender={sender!r} "
+        f"agent_name={agent_name_raw!r} time={reply_time!r}"
+    )
+
+    # Filter to active roster names (case-insensitive match, just in case WhatChimp casing drifts)
     roster = await notion.get_active_roster(client)
     active_names = {a["name"] for a in roster}
-    if not agent_name or agent_name not in active_names:
-        log.debug(f"outgoing: {phone}/{brand} replier={agent_name!r} not a tracked agent; ignoring")
+    active_names_lower = {n.lower() for n in active_names}
+
+    if not agent_name or agent_name.lower() not in active_names_lower:
+        log.info(f"outgoing: replier {agent_name!r} not in active roster {sorted(active_names)}; ignoring")
         return
+
+    # Canonicalize to the exact roster casing so downstream lookup matches
+    for n in active_names:
+        if n.lower() == agent_name.lower():
+            agent_name = n
+            break
 
     # Find the assigned agent to key response-speed on their shift
     assigned_name = notion.ticket_agent_assigned(ticket) or ""
