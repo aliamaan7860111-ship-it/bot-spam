@@ -178,7 +178,7 @@ async def handle_incoming(
         return
 
     # Determine brand (prefer bot name, fall back to bot_id)
-    brand = wc.normalize_brand(bot_name) or wc.phone_id_to_brand(bot_id)
+    brand = wc.bot_id_to_brand(bot_id) or wc.normalize_brand(bot_name) or wc.phone_id_to_brand(bot_id)
     if not brand:
         log.warning(f"incoming: unknown brand bot_name={bot_name!r} bot_id={bot_id!r}")
         return
@@ -242,7 +242,7 @@ async def handle_outgoing(
         log.warning(f"outgoing: missing chat_id, payload={payload}")
         return
 
-    brand = wc.normalize_brand(bot_name) or wc.phone_id_to_brand(bot_id)
+    brand = wc.bot_id_to_brand(bot_id) or wc.normalize_brand(bot_name) or wc.phone_id_to_brand(bot_id)
     if not brand:
         log.warning(f"outgoing: unknown brand bot_name={bot_name!r} bot_id={bot_id!r}")
         return

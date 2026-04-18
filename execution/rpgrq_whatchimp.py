@@ -42,13 +42,32 @@ BRAND_ALIASES = {
     "amara": "AMARA",
     "amaras room": "AMARA",
     "amara's room": "AMARA",
+    "amaras room dubai": "AMARA",
+    "amara's room dubai": "AMARA",
     "virex uae": "VIREX UAE",
     "virex": "VIREX UAE",
     "lune": "LUNE",
     "lune collection": "LUNE",
     "dialo uae": "DIALO UAE",
     "dialo": "DIALO UAE",
+    "customer care": "ELARA",
 }
+
+# Primary brand source of truth: whatsapp_bot_id (stable, unique per brand).
+# Webhook payloads include this as "whatsapp_bot_id".
+WHATCHIMP_BOT_ID_TO_BRAND = {
+    "381990": "VIREX UAE",
+    "382073": "DIALO UAE",
+    "382036": "AMARA",
+    "352261": "ELARA",  # bot name is "Customer Care" in WhatChimp
+    # LUNE bot_id not yet captured; name alias handles it for now.
+}
+
+
+def bot_id_to_brand(bot_id: str) -> Optional[str]:
+    if not bot_id:
+        return None
+    return WHATCHIMP_BOT_ID_TO_BRAND.get(str(bot_id).strip())
 
 
 def normalize_brand(raw: str) -> Optional[str]:
