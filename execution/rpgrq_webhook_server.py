@@ -279,20 +279,41 @@ async def handle_outgoing(
     )
     log.info(f"outgoing: raw msg keys={list(latest.keys())} full={latest!r}")
 
-    # Filter to active roster names (case-insensitive match, just in case WhatChimp casing drifts)
+    # WhatChimp's conversation API returns agent_name in two possible forms:
+    #   - a display name like "Nauman"
+    #   - a numeric user_id like "264412" (different namespace from team_member_id)
+    # Roster columns: Name, Team Member ID, WhatChimp User ID. We match against
+    # all three and canonicalize to the roster Name.
     roster = await notion.get_active_roster(client)
-    active_names = {a["name"] for a in roster}
-    active_names_lower = {n.lower() for n in active_names}
+    matched_agent = None
+    needle = (agent_name or "").strip()
+    needle_int = None
+    if needle.isdigit():
+        try:
+            needle_int = int(needle)
+        except ValueError:
+            needle_int = None
 
-    if not agent_name or agent_name.lower() not in active_names_lower:
-        log.info(f"outgoing: replier {agent_name!r} not in active roster {sorted(active_names)}; ignoring")
+    for a in roster:
+        if needle and a["name"].lower() == needle.lower():
+            matched_agent = a
+            break
+        if needle_int is not None:
+            if a.get("user_id") is not None and int(a["user_id"]) == needle_int:
+                matched_agent = a
+                break
+            if a.get("team_member_id") is not None and int(a["team_member_id"]) == needle_int:
+                matched_agent = a
+                break
+
+    if not matched_agent:
+        log.info(
+            f"outgoing: replier {agent_name!r} not in active roster "
+            f"{[(a['name'], a.get('user_id'), a.get('team_member_id')) for a in roster]}; ignoring"
+        )
         return
 
-    # Canonicalize to the exact roster casing so downstream lookup matches
-    for n in active_names:
-        if n.lower() == agent_name.lower():
-            agent_name = n
-            break
+    agent_name = matched_agent["name"]
 
     # Find the assigned agent to key response-speed on their shift
     assigned_name = notion.ticket_agent_assigned(ticket) or ""

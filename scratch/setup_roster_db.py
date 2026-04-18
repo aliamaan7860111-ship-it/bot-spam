@@ -56,11 +56,12 @@ AGENTS = [
 
 # Required columns keyed by their display name
 REQUIRED_COLUMNS = {
-    "Name":             {"title": {}},
-    "Team Member ID":   {"number": {"format": "number"}},
-    "Active":           {"checkbox": {}},
-    "Shift Start Hour": {"number": {"format": "number"}},
-    "Shift End Hour":   {"number": {"format": "number"}},
+    "Name":               {"title": {}},
+    "Team Member ID":     {"number": {"format": "number"}},
+    "WhatChimp User ID":  {"number": {"format": "number"}},
+    "Active":             {"checkbox": {}},
+    "Shift Start Hour":   {"number": {"format": "number"}},
+    "Shift End Hour":     {"number": {"format": "number"}},
 }
 
 

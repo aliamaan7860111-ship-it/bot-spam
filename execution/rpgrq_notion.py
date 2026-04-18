@@ -13,7 +13,6 @@ All functions are async and use a shared httpx.AsyncClient.
 import os
 import logging
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import httpx
@@ -77,6 +76,7 @@ async def get_active_roster(client: httpx.AsyncClient, force_refresh: bool = Fal
         roster.append({
             "name": name,
             "team_member_id": p.get("Team Member ID", {}).get("number"),
+            "user_id": p.get("WhatChimp User ID", {}).get("number"),
             "shift_start": p.get("Shift Start Hour", {}).get("number"),
             "shift_end": p.get("Shift End Hour", {}).get("number"),
         })
