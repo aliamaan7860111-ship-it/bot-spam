@@ -277,6 +277,7 @@ async def handle_outgoing(
         f"outgoing: {phone}/{brand} latest sender={sender!r} "
         f"agent_name={agent_name_raw!r} time={reply_time!r}"
     )
+    log.info(f"outgoing: raw msg keys={list(latest.keys())} full={latest!r}")
 
     # Filter to active roster names (case-insensitive match, just in case WhatChimp casing drifts)
     roster = await notion.get_active_roster(client)
