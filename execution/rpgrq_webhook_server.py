@@ -279,41 +279,15 @@ async def handle_outgoing(
     )
     log.info(f"outgoing: raw msg keys={list(latest.keys())} full={latest!r}")
 
-    # WhatChimp's conversation API returns agent_name in two possible forms:
-    #   - a display name like "Nauman"
-    #   - a numeric user_id like "264412" (different namespace from team_member_id)
-    # Roster columns: Name, Team Member ID, WhatChimp User ID. We match against
-    # all three and canonicalize to the roster Name.
-    roster = await notion.get_active_roster(client)
-    matched_agent = None
-    needle = (agent_name or "").strip()
-    needle_int = None
-    if needle.isdigit():
-        try:
-            needle_int = int(needle)
-        except ValueError:
-            needle_int = None
-
-    for a in roster:
-        if needle and a["name"].lower() == needle.lower():
-            matched_agent = a
-            break
-        if needle_int is not None:
-            if a.get("user_id") is not None and int(a["user_id"]) == needle_int:
-                matched_agent = a
-                break
-            if a.get("team_member_id") is not None and int(a["team_member_id"]) == needle_int:
-                matched_agent = a
-                break
-
-    if not matched_agent:
-        log.info(
-            f"outgoing: replier {agent_name!r} not in active roster "
-            f"{[(a['name'], a.get('user_id'), a.get('team_member_id')) for a in roster]}; ignoring"
-        )
+    # Filter: any non-empty agent_name = human reply. Empty/None = automation (bot flows,
+    # confirmation bot, etc.) which we ignore. All 3 agents share the same session id in
+    # WhatChimp today, so per-agent distinction isn't possible — we credit the stamp to
+    # whoever was round-robin'd as Agent Assigned.
+    needle = (agent_name or "").strip() if isinstance(agent_name, str) else ""
+    if not needle:
+        log.info(f"outgoing: {phone}/{brand} agent_name empty/None -> automation; ignoring")
         return
-
-    agent_name = matched_agent["name"]
+    roster = await notion.get_active_roster(client)
 
     # Find the assigned agent to key response-speed on their shift
     assigned_name = notion.ticket_agent_assigned(ticket) or ""
@@ -339,7 +313,10 @@ async def handle_outgoing(
     )
     if ok:
         suffix = f" ({response_speed})" if response_speed else ""
-        log.info(f"✍️  {agent_name} replied on {brand} / {phone}{suffix}")
+        log.info(
+            f"✍️  human reply (uid={needle}) on {brand} / {phone} — "
+            f"credited to {assigned_name or 'Unassigned'}{suffix}"
+        )
 
 
 # ────────────────────────────────────────────────────────────
