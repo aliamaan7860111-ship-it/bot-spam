@@ -280,13 +280,22 @@ async def handle_outgoing(
     )
     log.info(f"outgoing: raw msg keys={list(latest.keys())} full={latest!r}")
 
-    # Filter: any non-empty agent_name = human reply. Empty/None = automation (bot flows,
-    # confirmation bot, etc.) which we ignore. All 3 agents share the same session id in
-    # WhatChimp today, so per-agent distinction isn't possible — we credit the stamp to
-    # whoever was round-robin'd as Agent Assigned.
+    # Filter: only stamp when this is genuinely a human agent reply.
+    #   - Human reply:        sender='bot',    agent_name='<numeric user_id>'  -> accept
+    #   - Automation reply:   sender='bot',    agent_name=None/empty           -> reject
+    #   - Label/system ghost: sender='system', agent_name='bot' or other       -> reject
+    # We require sender=='bot' AND agent_name to be a digit string. All 3 agents
+    # share the same session id (currently '264412') so we credit whoever was
+    # round-robin'd as Agent Assigned.
     needle = (agent_name or "").strip() if isinstance(agent_name, str) else ""
+    if sender != "bot":
+        log.info(f"outgoing: {phone}/{brand} sender={sender!r} not 'bot' -> system/ghost event; ignoring")
+        return
     if not needle:
         log.info(f"outgoing: {phone}/{brand} agent_name empty/None -> automation; ignoring")
+        return
+    if not needle.isdigit():
+        log.info(f"outgoing: {phone}/{brand} agent_name={needle!r} not numeric -> not a real agent; ignoring")
         return
     roster = await notion.get_active_roster(client)
 
