@@ -224,6 +224,7 @@ async def handle_incoming(
 
     # Active ticket — ping-pong
     await notion.set_pending(client, ticket["id"])
+    await notion.stamp_customer_message(client, ticket["id"], now_iso)
     log.info(f"🔄 ping-pong {brand} / {phone}")
     await sync_labels_side_effect(client, ticket["id"], label_names_raw)
 

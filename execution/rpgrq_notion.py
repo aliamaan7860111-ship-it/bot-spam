@@ -161,13 +161,14 @@ async def create_ticket(
 ) -> Optional[str]:
     """Create a fresh ticket. Returns the new page id or None."""
     properties = {
-        "Name":            {"title": [{"text": {"content": phone}}]},
-        "Phone Number":    {"rich_text": [{"text": {"content": phone}}]},
-        "Source (Store)":  {"select": {"name": brand}},
-        "Status":          {"multi_select": [{"name": "Waiting"}]},
-        "Outcome":         {"select": {"name": "Pending"}},
-        "Created At":      {"date": {"start": created_at_iso}},
-        "Agent Assigned":  {"select": {"name": agent_name}},
+        "Name":                   {"title": [{"text": {"content": phone}}]},
+        "Phone Number":           {"rich_text": [{"text": {"content": phone}}]},
+        "Source (Store)":         {"select": {"name": brand}},
+        "Status":                 {"multi_select": [{"name": "Waiting"}]},
+        "Outcome":                {"select": {"name": "Pending"}},
+        "Created At":             {"date": {"start": created_at_iso}},
+        "Last Customer Message":  {"date": {"start": created_at_iso}},
+        "Agent Assigned":         {"select": {"name": agent_name}},
     }
     payload = {"parent": {"database_id": LEADS_DB_ID}, "properties": properties}
     try:
@@ -196,12 +197,13 @@ async def reopen_ticket(
       - clear Actioned At / Response Speed so the new response-speed clock can run
     """
     properties = {
-        "Created At":      {"date": {"start": reopened_at_iso}},
-        "Status":           {"multi_select": [{"name": "Active"}]},
-        "Outcome":          {"select": {"name": "Pending"}},
-        "Agent Assigned":   {"select": {"name": agent_name}},
-        "Actioned At":      {"date": None},
-        "Response Speed":   {"select": None},
+        "Created At":            {"date": {"start": reopened_at_iso}},
+        "Last Customer Message": {"date": {"start": reopened_at_iso}},
+        "Status":                {"multi_select": [{"name": "Active"}]},
+        "Outcome":               {"select": {"name": "Pending"}},
+        "Agent Assigned":        {"select": {"name": agent_name}},
+        "Actioned At":           {"date": None},
+        "Response Speed":        {"select": None},
     }
     return await _update_page(client, page_id, properties)
 
@@ -222,20 +224,31 @@ async def stamp_agent_reply(
 ) -> bool:
     """
     A real agent replied. Stamp:
-      - Last Contact Date (always)
+      - Last Agent Reply (always)
       - Outcome = No Response (always)
       - Actioned At + Response Speed (only on first reply)
     Never changes Agent Assigned.
     """
     properties = {
-        "Last Contact Date": {"date": {"start": reply_time_iso}},
-        "Outcome":           {"select": {"name": "No Response"}},
+        "Last Agent Reply": {"date": {"start": reply_time_iso}},
+        "Outcome":          {"select": {"name": "No Response"}},
     }
     if is_first_reply:
         properties["Actioned At"] = {"date": {"start": reply_time_iso}}
         if response_speed:
             properties["Response Speed"] = {"select": {"name": response_speed}}
     return await _update_page(client, page_id, properties)
+
+
+async def stamp_customer_message(
+    client: httpx.AsyncClient,
+    page_id: str,
+    message_time_iso: str,
+) -> bool:
+    """Stamp Last Customer Message on every inbound event."""
+    return await _update_page(
+        client, page_id, {"Last Customer Message": {"date": {"start": message_time_iso}}}
+    )
 
 
 async def update_status_labels(

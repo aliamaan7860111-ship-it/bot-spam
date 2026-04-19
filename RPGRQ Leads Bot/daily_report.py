@@ -108,17 +108,17 @@ def count_closed_today(agent: str, day_start: str, day_end: str) -> int:
     """
     Total Closed: Leads where Agent Assigned = agent
     AND Status multi-select contains 'Closed'.
-    We check Actioned At within today OR Last Contact Date within today
+    We check Actioned At within today OR Last Agent Reply within today
     to capture leads that were worked on today.
     """
     # We count any lead assigned to this agent that currently has "Closed" label
-    # AND was contacted today (Last Contact Date within today)
+    # AND was contacted today (Last Agent Reply within today)
     filter_payload = {
         "and": [
             {"property": "Agent Assigned", "select": {"equals": agent}},
             {"property": "Status", "multi_select": {"contains": "Closed"}},
-            {"property": "Last Contact Date", "date": {"on_or_after": day_start}},
-            {"property": "Last Contact Date", "date": {"on_or_before": day_end}},
+            {"property": "Last Agent Reply", "date": {"on_or_after": day_start}},
+            {"property": "Last Agent Reply", "date": {"on_or_before": day_end}},
         ]
     }
     results = _query_leads_db(filter_payload)
