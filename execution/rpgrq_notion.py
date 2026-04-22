@@ -182,32 +182,6 @@ async def create_ticket(
         return None
 
 
-async def reopen_ticket(
-    client: httpx.AsyncClient,
-    page_id: str,
-    agent_name: str,
-    reopened_at_iso: str,
-) -> bool:
-    """
-    Revive a Closed ticket:
-      - overwrite Created At with new message time
-      - Status -> [Active]
-      - Outcome -> Pending
-      - Agent Assigned -> fresh round-robin
-      - clear Actioned At / Response Speed so the new response-speed clock can run
-    """
-    properties = {
-        "Created At":            {"date": {"start": reopened_at_iso}},
-        "Last Customer Message": {"date": {"start": reopened_at_iso}},
-        "Status":                {"multi_select": [{"name": "Active"}]},
-        "Outcome":               {"select": {"name": "Pending"}},
-        "Agent Assigned":        {"select": {"name": agent_name}},
-        "Actioned At":           {"date": None},
-        "Response Speed":        {"select": None},
-    }
-    return await _update_page(client, page_id, properties)
-
-
 async def set_pending(client: httpx.AsyncClient, page_id: str) -> bool:
     """Ping-pong: customer replied, flip Outcome back to Pending."""
     return await _update_page(
@@ -280,12 +254,6 @@ async def _update_page(client: httpx.AsyncClient, page_id: str, properties: dict
     except Exception as e:
         log.error(f"_update_page({page_id}) failed: {e}")
         return False
-
-
-def ticket_has_closed(ticket: dict) -> bool:
-    """True if the ticket's Status multi-select contains 'Closed'."""
-    status_arr = ticket.get("properties", {}).get("Status", {}).get("multi_select", [])
-    return any(s.get("name") == "Closed" for s in status_arr)
 
 
 def ticket_actioned_at(ticket: dict) -> Optional[str]:

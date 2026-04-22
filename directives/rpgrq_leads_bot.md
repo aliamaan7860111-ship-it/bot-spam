@@ -38,8 +38,7 @@ Always normalize via a mapping dictionary before writing to Notion.
 - Idempotency: dedup on `wa_message_id` (in-memory set, bounded).
 - Look up Leads DB for a ticket matching **(phone, brand)**.
   - No ticket → **create** with `Status=Waiting`, `Outcome=Pending`, `Created At=now`, `Agent Assigned=<next round-robin>`. Also call WhatChimp `assign-to-team-member` for the assigned agent.
-  - Active ticket → **ping-pong**: set `Outcome=Pending`. No assignment change.
-  - Closed ticket (Status contains `Closed`) → **reopen**: overwrite `Created At = now`, set `Status` to `[Active]`, `Outcome=Pending`, reassign to a new agent via round-robin. Also call WhatChimp `assign-to-team-member`.
+  - Existing ticket → **ping-pong**: stamp `Last Customer Message=now`, flip `Outcome=Pending`. No assignment change, no status change. Closed is just a label — it doesn't alter behavior.
 - As a side-effect, sync labels (see Rule 4).
 
 ### Rule 2: Outgoing (our side replied)

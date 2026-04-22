@@ -209,20 +209,9 @@ async def handle_incoming(
             await sync_labels_side_effect(client, new_id, label_names_raw)
         return
 
-    # Ticket exists. Closed?
-    if notion.ticket_has_closed(ticket):
-        agent = await rr.next_agent(client)
-        agent_name = agent["name"] if agent else "Unassigned"
-        ok = await notion.reopen_ticket(client, ticket["id"], agent_name, now_iso)
-        if ok:
-            log.info(f"♻️  reopened {brand} / {phone} → {agent_name}")
-            pid = wc.brand_to_phone_id(brand)
-            if agent and pid and agent.get("team_member_id"):
-                await wc.assign_to_team_member(client, pid, phone, int(agent["team_member_id"]))
-        await sync_labels_side_effect(client, ticket["id"], label_names_raw)
-        return
-
-    # Active ticket — ping-pong
+    # Any existing ticket — ping-pong. Closed is just a label, not special state:
+    # a customer message still flips Outcome to Pending, stamps Last Customer
+    # Message, and leaves the ticket's labels/agent assignment intact.
     await notion.set_pending(client, ticket["id"])
     await notion.stamp_customer_message(client, ticket["id"], now_iso)
     log.info(f"🔄 ping-pong {brand} / {phone}")
