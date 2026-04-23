@@ -15,42 +15,110 @@ log.setLevel(logging.INFO)
 
 # Config from .env
 WHATCHIMP_API_TOKEN = os.getenv("WHATCHIMP_API_TOKEN", "")
-WHATCHIMP_PHONE_NUMBER_ID = os.getenv("WHATCHIMP_PHONE_NUMBER_ID", "1031340813395459")
-WHATCHIMP_TEMPLATE_ID = "340859" # 🏆 Verified Template ID from screenshot
 
 API_BASE = "https://app.whatchimp.com/api/v1/whatsapp"
 
+# Per-brand WhatChimp routing. Key = 2-char order_id prefix.
+# phone_number_id / template_id / confirm_button_qr come from the WhatChimp dashboard.
+# brand_display is rendered into templateVariable-brand-2 (shown inside the message body).
+BRAND_CONFIG = {
+    "PT": {  # Elara (legacy PrettyByShd number)
+        "phone_number_id":   "1031340813395459",
+        "template_id":       "340859",
+        "confirm_button_qr": "Nop_RZOKKksN72n",
+        "brand_display":     "Elara",
+    },
+    "Di": {  # Dialo UAE
+        "phone_number_id":   "1002123586328400",
+        "template_id":       "354662",
+        "confirm_button_qr": "c6GBqbMceC17Rud",
+        "brand_display":     "Dialo UAE",
+    },
+    "LU": {  # Lune Collection
+        "phone_number_id":   "1138942462625909",
+        "template_id":       "355333",
+        "confirm_button_qr": "FC4cJLqFUsE8gi5",
+        "brand_display":     "Lune Collection",
+    },
+    "VX": {  # Virex UAE
+        "phone_number_id":   "1073890042476443",
+        "template_id":       "354663",
+        "confirm_button_qr": "kZICJ4ZHWVcSDOC",
+        "brand_display":     "Virex UAE",
+    },
+    "AM": {  # Amara's Room
+        "phone_number_id":   "1045332455333591",
+        "template_id":       "354661",
+        "confirm_button_qr": "t4Y_y-k2p1uOeMB",
+        "brand_display":     "Amara's Room",
+    },
+}
+
+# Fallback for legacy call paths (Elara is the original sender number).
+DEFAULT_PHONE_NUMBER_ID = BRAND_CONFIG["PT"]["phone_number_id"]
+
+def get_brand_config(order_id_or_prefix: str) -> dict:
+    """Look up the brand config from an order_id or its 2-char prefix. Defaults to PT (Elara)."""
+    prefix = (order_id_or_prefix or "")[:2]
+    return BRAND_CONFIG.get(prefix, BRAND_CONFIG["PT"])
+
 def clean_phone_number(phone: str) -> str:
     """
-    Cleans a phone number for the WhatsApp API.
+    Normalize any UAE phone input to canonical `971XXXXXXXXX` (12 digits).
+    Handles +971…, 00971…, 971…, 05XXXXXXXX, 0XXXXXXXXX, 5XXXXXXXX and any
+    spaces/dashes/parens. Returns the raw digits unchanged if the shape is
+    unrecognized so the caller can detect and skip.
     """
-    if not phone: return ""
-    cleaned = ''.join(c for c in str(phone) if c.isdigit())
-    if cleaned.startswith("05") and len(cleaned) == 10:
-        cleaned = "971" + cleaned[1:]
-    return cleaned
+    if not phone:
+        return ""
+    digits = ''.join(c for c in str(phone) if c.isdigit())
+    if not digits:
+        return ""
+    # 00971… → 971…
+    if digits.startswith("00"):
+        digits = digits[2:]
+    # Already canonical
+    if digits.startswith("971") and len(digits) == 12:
+        return digits
+    # Local UAE format with leading 0 (e.g. 0521234567 or 0501234567)
+    if digits.startswith("0") and len(digits) == 10:
+        return "971" + digits[1:]
+    # Local UAE format without the leading 0 (e.g. 521234567)
+    if len(digits) == 9 and digits.startswith("5"):
+        return "971" + digits
+    # Unknown shape — return raw digits so caller can log & skip
+    return digits
 
-def create_or_update_subscriber(phone_number: str, name: str, order_id: str = "", brand: str = "") -> bool:
+def create_or_update_subscriber(
+    phone_number: str,
+    name: str,
+    order_id: str = "",
+    brand: str = "",
+    phone_number_id: str = DEFAULT_PHONE_NUMBER_ID,
+) -> bool:
     """
-    Ensures a subscriber exists in WhatChimp and correctly assigns custom fields.
-    This follows the 'assign-custom-fields' blueprint from the WhatChimp SKILL.md.
+    Ensures a subscriber exists in WhatChimp and assigns custom fields so
+    flow merge tags like #order_id# resolve when the customer taps a button.
+
+    Subscriber records are scoped per `phone_number_id` — the caller must pass
+    the brand's own number so pre-sync lands on the correct subscriber list.
     """
     cleaned_phone = clean_phone_number(phone_number)
-    
-    # 1. Ensure subscriber exists (uses camelCase)
+
+    # 1. Ensure subscriber exists (camelCase)
     create_url = f"{API_BASE}/subscriber/create"
     create_payload = {
         "apiToken": WHATCHIMP_API_TOKEN,
-        "phoneNumberID": WHATCHIMP_PHONE_NUMBER_ID,
+        "phoneNumberID": phone_number_id,
         "name": name,
         "phoneNumber": cleaned_phone
     }
-    
+
     try:
-        # We don't strictly check status here because 'already exists' returns status 0
+        # 'already exists' returns status 0, so we don't gate on this response
         requests.post(create_url, data=create_payload, timeout=10)
-        
-        # 2. Assign Custom Fields (uses snake_case and JSON string for custom_fields)
+
+        # 2. Assign custom fields (snake_case; custom_fields is a JSON string)
         assign_url = f"{API_BASE}/subscriber/chat/assign-custom-fields"
         custom_fields = {
             "order_id": order_id,
@@ -58,15 +126,15 @@ def create_or_update_subscriber(phone_number: str, name: str, order_id: str = ""
         }
         assign_payload = {
             "apiToken": WHATCHIMP_API_TOKEN,
-            "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
+            "phone_number_id": phone_number_id,
             "phone_number": cleaned_phone,
             "custom_fields": json.dumps(custom_fields)
         }
-        
+
         resp = requests.post(assign_url, data=assign_payload, timeout=10)
         data = resp.json()
         if str(data.get("status")) == "1":
-            log.info(f"  ✓ Subscriber metadata synced: {custom_fields}")
+            log.info(f"  ✓ Subscriber metadata synced on {phone_number_id}: {custom_fields}")
             return True
         else:
             log.warning(f"  ⚠️ Custom field sync warning: {data.get('message')}")
@@ -75,89 +143,134 @@ def create_or_update_subscriber(phone_number: str, name: str, order_id: str = ""
         log.error(f"  ✗ Subscriber sync failed: {str(e)}")
         return False
 
-def send_template_message(phone_number: str, customer_name: str, order_id: str, total: str, brand_name: str = "PrettyByShd") -> bool:
+def send_template_message(
+    phone_number: str,
+    customer_name: str,
+    order_id: str,
+    total: str = "",
+    brand_name: str = "",
+    brand_prefix: str = "",
+) -> bool:
     """
-    Sends the WhatsApp confirmation using the DEFINITIVE 'templateVariable' format.
-    Also ensures the subscriber has the latest Order ID and Brand for Flow variables.
+    Sends the WhatsApp confirmation template. Routes sender number, template ID,
+    and confirm-button QR per brand via BRAND_CONFIG (keyed by order_id prefix).
+
+    Always pre-syncs the subscriber's custom fields against the brand's own
+    phone_number_id so the flow's `#order_id#` merge tag resolves on click.
     """
-    if not WHATCHIMP_API_TOKEN or not WHATCHIMP_PHONE_NUMBER_ID:
-        log.error("Missing WhatChimp credentials (token or phone_id) in .env")
+    if not WHATCHIMP_API_TOKEN:
+        log.error("Missing WHATCHIMP_API_TOKEN in .env")
         return False
 
+    # Pick brand from explicit prefix arg, else infer from order_id
+    prefix = (brand_prefix or order_id or "")[:2]
+    cfg = BRAND_CONFIG.get(prefix)
+    if not cfg:
+        log.error(f"No BRAND_CONFIG entry for prefix '{prefix}' (order_id={order_id}) — skipping")
+        return False
+
+    phone_number_id   = cfg["phone_number_id"]
+    template_id       = cfg["template_id"]
+    confirm_button_qr = cfg["confirm_button_qr"]
+    display_brand     = brand_name or cfg["brand_display"]
+
+    # Normalize phone and guard on UAE shape — prevents sending to wrong number
     cleaned_phone = clean_phone_number(phone_number)
-    
-    # Update subscriber profile first so #order_id# is available in the flow
-    create_or_update_subscriber(phone_number, customer_name, order_id, brand_name)
-    
-    # URL exactly as per official documentation
+    if not cleaned_phone.startswith("971") or len(cleaned_phone) != 12:
+        log.error(
+            f"Phone '{phone_number}' failed UAE normalization "
+            f"(got '{cleaned_phone}') — skipping {order_id}"
+        )
+        return False
+
+    # Pre-sync so flow webhook can resolve #order_id#
+    create_or_update_subscriber(
+        phone_number, customer_name, order_id, display_brand, phone_number_id
+    )
+
     url = f"{API_BASE}/send/template"
-    
-    # Payload using the custom 'templateVariable' labels identified in your screenshot
     payload = {
-        "apiToken": WHATCHIMP_API_TOKEN,
-        "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
-        "template_id": WHATCHIMP_TEMPLATE_ID,
-        "phone_number": cleaned_phone,
-        
-        # dynamic variable mapping for template 340859
-        "templateVariable-brand-2": brand_name,
-        "templateVariable-id-3": order_id,
-        "templateVariable-name-1": customer_name, # Standard pattern for first variable
-        
-        # Button values as a JSON string (no spaces after comma for WhatChimp API compatibility)
-        "template_quick_reply_button_values": json.dumps(["YES_START_CHAT_WITH_HUMAN", "Nop_RZOKKksN72n"], separators=(',', ':'))
+        "apiToken":        WHATCHIMP_API_TOKEN,
+        "phone_number_id": phone_number_id,
+        "template_id":     template_id,
+        "phone_number":    cleaned_phone,
+
+        # Template body variables (safe to pass even if a template doesn't use name-1)
+        "templateVariable-brand-2": display_brand,
+        "templateVariable-id-3":    order_id,
+        "templateVariable-name-1":  customer_name,
+
+        # Button values — no spaces after comma per WhatChimp API
+        "template_quick_reply_button_values": json.dumps(
+            ["YES_START_CHAT_WITH_HUMAN", confirm_button_qr], separators=(',', ':')
+        ),
     }
 
     try:
-        log.info(f"🚀 [Verified Send] Template {WHATCHIMP_TEMPLATE_ID} to {cleaned_phone} (Brand: {brand_name})...")
-        # Use data=payload for application/x-www-form-urlencoded (standard curl -d behavior)
+        log.info(
+            f"🚀 Send template {template_id} → {cleaned_phone} via {phone_number_id} "
+            f"({display_brand}, order {order_id})"
+        )
         resp = requests.post(url, data=payload, timeout=15)
         data = resp.json()
-        
+
         if str(data.get("status")) == "1":
-            log.info(f"✅ SUCCESS: Template delivered instantly!")
+            log.info(f"✅ SUCCESS: {order_id} confirmation delivered")
             return True
         else:
-            log.error(f"❌ API Rejected: {data.get('message', data)}")
+            log.error(f"❌ API Rejected ({display_brand}): {data.get('message', data)}")
             return False
     except Exception as e:
         log.error(f"Request failed: {e}")
         return False
 
-def get_subscriber_custom_fields(phone_number: str) -> dict:
+def get_subscriber_custom_fields(
+    phone_number: str,
+    phone_number_id: str = None,
+) -> dict:
     """
-    Retrieves all custom fields for a subscriber from WhatChimp.
-    Uses the confirmed endpoint: /subscriber/get
-    Response custom_fields format: "brand_name:PrettyByShd,order_id:PT1793"
+    Retrieves a subscriber's custom fields from WhatChimp.
+
+    Subscribers are scoped per phone_number_id. If no id is passed, we sweep
+    all 5 brand numbers and return the first hit — useful for the webhook
+    fallback when we don't yet know which brand the chat_id belongs to.
+    Response custom_fields format: "brand_name:Elara,order_id:PT1793"
     """
     cleaned_phone = clean_phone_number(phone_number)
-    url = f"https://app.whatchimp.com/api/v1/whatsapp/subscriber/get"
-    payload = {
-        "apiToken": WHATCHIMP_API_TOKEN,
-        "phone_number_id": WHATCHIMP_PHONE_NUMBER_ID,
-        "phone_number": cleaned_phone,
-        "phoneNumberID": WHATCHIMP_PHONE_NUMBER_ID,
-        "phoneNumber": cleaned_phone
-    }
-    
-    try:
-        resp = requests.post(url, data=payload, timeout=10)
-        data = resp.json()
-        if str(data.get("status")) == "1" and data.get("message"):
-            subscribers = data["message"]
-            if isinstance(subscribers, list) and len(subscribers) > 0:
-                custom_fields_str = subscribers[0].get("custom_fields", "")
-                # Parse "key1:value1,key2:value2" format
-                result = {}
-                for item in custom_fields_str.split(","):
-                    if ":" in item:
-                        k, v = item.split(":", 1)
-                        result[k.strip()] = v.strip()
-                return result
-        return {}
-    except Exception as e:
-        log.warning(f"  WhatChimp subscriber lookup error: {e}")
-        return {}
+    url = f"{API_BASE}/subscriber/get"
+
+    # If caller knows the brand, use that single number; otherwise try all 5
+    ids_to_try = (
+        [phone_number_id]
+        if phone_number_id
+        else [cfg["phone_number_id"] for cfg in BRAND_CONFIG.values()]
+    )
+
+    for pnid in ids_to_try:
+        payload = {
+            "apiToken":        WHATCHIMP_API_TOKEN,
+            "phone_number_id": pnid,
+            "phone_number":    cleaned_phone,
+            "phoneNumberID":   pnid,
+            "phoneNumber":     cleaned_phone,
+        }
+        try:
+            resp = requests.post(url, data=payload, timeout=10)
+            data = resp.json()
+            if str(data.get("status")) == "1" and data.get("message"):
+                subscribers = data["message"]
+                if isinstance(subscribers, list) and len(subscribers) > 0:
+                    custom_fields_str = subscribers[0].get("custom_fields", "") or ""
+                    result = {}
+                    for item in custom_fields_str.split(","):
+                        if ":" in item:
+                            k, v = item.split(":", 1)
+                            result[k.strip()] = v.strip()
+                    if result:
+                        return result
+        except Exception as e:
+            log.warning(f"  WhatChimp subscriber lookup error on {pnid}: {e}")
+    return {}
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

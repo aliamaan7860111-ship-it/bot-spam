@@ -53,7 +53,7 @@ from telegram.ext import Application
 # Multi-Brand Configuration
 # ---------------------------------------------------------------------------
 BRAND_MAP = {
-    "PT": "PrettyByShd",
+    "PT": "Elara",
     "AM": "Amara's Room",
     "VX": "Virex UAE",
     "Di": "Dialo UAE",
@@ -63,9 +63,9 @@ BRAND_MAP = {
 def get_brand_from_order_id(order_id: str) -> str:
     """Extracts the brand name from the order ID prefix."""
     if not isinstance(order_id, str):
-        return "PrettyByShd"
+        return "Elara"
     prefix = order_id[:2]
-    return BRAND_MAP.get(prefix, "PrettyByShd")
+    return BRAND_MAP.get(prefix, "Elara")
 
 # ---------------------------------------------------------------------------
 # Logging

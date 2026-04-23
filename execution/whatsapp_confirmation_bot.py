@@ -73,12 +73,14 @@ async def poll_whatsapp_once() -> int:
         if not phone:
             continue
             
+        order_id = order.get("order_id", "")
         success = wc.send_template_message(
             phone_number=phone,
             customer_name=order.get("customer_name", "Customer"),
-            order_id=order.get("order_id", ""),
+            order_id=order_id,
             total=str(order.get("total_aed") or "0"),
-            brand_name=order.get("brand_name", "PrettyByShd")
+            brand_name=order.get("brand_name", ""),
+            brand_prefix=order_id[:2],
         )
         if success:
             notion.mark_whatsapp_sent(order["page_id"])
