@@ -10,7 +10,6 @@ import sys
 import logging
 import httpx
 import time
-import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -31,10 +30,9 @@ log = logging.getLogger("daily_report")
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "")
 LEADS_DB_ID     = "344c320eba59800a90a6e804a575d272"
 REPORT_DB_ID    = "345c320eba59814590abed11ff301bcf"
+ROSTER_DB_ID    = "346c320eba598175969dd15472249081"
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION  = "2022-06-28"
-
-AGENTS = ["Ushda", "Amaan", "Nauman"]
 PKT = timezone(timedelta(hours=5))
 
 # ── Target run time: 11:20 PM PKT daily ──
@@ -78,6 +76,29 @@ def _query_leads_db(filter_payload: dict) -> list:
             break
 
     return all_results
+
+
+def fetch_active_agent_names() -> list[str]:
+    """Read the Agent Roster DB and return active agent names, alphabetical."""
+    url = f"{NOTION_API_BASE}/databases/{ROSTER_DB_ID}/query"
+    payload = {"filter": {"property": "Active", "checkbox": {"equals": True}}}
+    try:
+        with httpx.Client(timeout=15) as client:
+            resp = client.post(url, headers=_headers(), json=payload)
+            resp.raise_for_status()
+            rows = resp.json().get("results", [])
+    except Exception as e:
+        log.error(f"Roster fetch failed: {e}")
+        return []
+
+    names = []
+    for row in rows:
+        title_arr = row.get("properties", {}).get("Name", {}).get("title", [])
+        name = title_arr[0].get("plain_text", "").strip() if title_arr else ""
+        if name:
+            names.append(name)
+    names.sort()
+    return names
 
 
 def get_today_range_iso() -> tuple[str, str]:
@@ -186,7 +207,13 @@ def generate_daily_report():
     log.info(f"📊 Generating Daily Report for {now_pkt.strftime('%Y-%m-%d')}")
     log.info(f"   Day range: {day_start} → {day_end}")
 
-    for agent in AGENTS:
+    agents = fetch_active_agent_names()
+    if not agents:
+        log.error("No active agents in Roster DB — aborting report.")
+        return
+    log.info(f"   Active agents: {agents}")
+
+    for agent in agents:
         responded = count_responded_today(agent, day_start, day_end)
         closed = count_closed_today(agent, day_start, day_end)
         pending = count_pending(agent)
