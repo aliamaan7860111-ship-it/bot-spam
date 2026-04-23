@@ -62,7 +62,7 @@ Always normalize via a mapping dictionary before writing to Notion.
     - ≤ 5 min → `Fast`
     - ≤ 15 min → `Medium`
     - \> 15 min → `Slow`
-- **Never mutate `Agent Assigned`.** Even if a different agent replies, the ticket stays owned by whoever was originally round-robin'd.
+- **Dynamic reassignment:** if the replier is a different active roster member (matched by Team Member ID against `agent_name` from `/get/conversation`), move `Agent Assigned` to them AND call WhatChimp `assign-to-team-member`. If the replier isn't in the active roster (e.g. a shared admin session), leave `Agent Assigned` alone.
 
 ### Rule 4: Label sync
 

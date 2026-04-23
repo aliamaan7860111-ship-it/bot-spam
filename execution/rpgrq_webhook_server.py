@@ -273,9 +273,7 @@ async def handle_outgoing(
     #   - Human reply:        sender='bot',    agent_name='<numeric user_id>'  -> accept
     #   - Automation reply:   sender='bot',    agent_name=None/empty           -> reject
     #   - Label/system ghost: sender='system', agent_name='bot' or other       -> reject
-    # We require sender=='bot' AND agent_name to be a digit string. All 3 agents
-    # share the same session id (currently '264412') so we credit whoever was
-    # round-robin'd as Agent Assigned.
+    # We require sender=='bot' AND agent_name to be a digit string.
     needle = (agent_name or "").strip() if isinstance(agent_name, str) else ""
     if sender != "bot":
         log.info(f"outgoing: {phone}/{brand} sender={sender!r} not 'bot' -> system/ghost event; ignoring")
@@ -286,14 +284,46 @@ async def handle_outgoing(
     if not needle.isdigit():
         log.info(f"outgoing: {phone}/{brand} agent_name={needle!r} not numeric -> not a real agent; ignoring")
         return
+
+    needle_int = int(needle)
     roster = await notion.get_active_roster(client)
 
-    # Find the assigned agent to key response-speed on their shift
-    assigned_name = notion.ticket_agent_assigned(ticket) or ""
+    # Identify the replier by matching agent_name against each roster member's
+    # Team Member ID (and WhatChimp User ID as a secondary key).
+    replier = None
+    for a in roster:
+        if a.get("team_member_id") is not None and int(a["team_member_id"]) == needle_int:
+            replier = a
+            break
+        if a.get("user_id") is not None and int(a["user_id"]) == needle_int:
+            replier = a
+            break
+
+    current_assigned = notion.ticket_agent_assigned(ticket) or ""
+
+    # Dynamic reassignment: if the replier is a different active roster member
+    # than the current assignee, move ownership to them (both Notion + WhatChimp).
+    # If the replier isn't in the active roster (e.g. shared admin session),
+    # leave Agent Assigned alone.
+    if replier and replier["name"] != current_assigned:
+        ok = await notion.reassign_agent(client, ticket["id"], replier["name"])
+        if ok:
+            log.info(
+                f"🔀 reassigned {brand} / {phone}: "
+                f"{current_assigned or 'Unassigned'} -> {replier['name']}"
+            )
+            pid = wc.brand_to_phone_id(brand)
+            if pid and replier.get("team_member_id"):
+                await wc.assign_to_team_member(
+                    client, pid, phone, int(replier["team_member_id"])
+                )
+            current_assigned = replier["name"]
+
+    # Look up the current assignee's shift for response-speed calculation.
     assigned_shift_start = 12
     assigned_shift_end = 20
     for a in roster:
-        if a["name"] == assigned_name:
+        if a["name"] == current_assigned:
             assigned_shift_start = a["shift_start"] if a["shift_start"] is not None else 12
             assigned_shift_end   = a["shift_end"]   if a["shift_end"]   is not None else 20
             break
@@ -312,9 +342,10 @@ async def handle_outgoing(
     )
     if ok:
         suffix = f" ({response_speed})" if response_speed else ""
+        replier_label = replier["name"] if replier else f"uid={needle}"
         log.info(
-            f"✍️  human reply (uid={needle}) on {brand} / {phone} — "
-            f"credited to {assigned_name or 'Unassigned'}{suffix}"
+            f"✍️  reply by {replier_label} on {brand} / {phone} — "
+            f"owner={current_assigned or 'Unassigned'}{suffix}"
         )
 
 

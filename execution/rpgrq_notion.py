@@ -225,6 +225,17 @@ async def stamp_customer_message(
     )
 
 
+async def reassign_agent(
+    client: httpx.AsyncClient,
+    page_id: str,
+    agent_name: str,
+) -> bool:
+    """Update Agent Assigned to a new agent name."""
+    return await _update_page(
+        client, page_id, {"Agent Assigned": {"select": {"name": agent_name}}}
+    )
+
+
 async def update_status_labels(
     client: httpx.AsyncClient,
     page_id: str,
