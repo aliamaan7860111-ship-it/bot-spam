@@ -319,19 +319,47 @@ async def start_health_server():
                 order_id = params.get("order_id")
                 action = params.get("action")
                 chat_id = params.get("chat_id") # Phone number from WhatChimp POST body
-                
-                # --- Fallback: If order_id is missing but we have chat_id, look it up in WhatChimp ---
+
+                # WhatChimp's `#order_id#` merge tag resolves to empty in flow webhook URLs
+                # (the URL query arrives as `order_id=`), so the fallback below is the
+                # primary resolution path for every button click. We identify the brand
+                # from the payload's `postbackid` (unique per confirm button) or sender
+                # phone, then scope the lookup to that brand's subscriber list only.
                 if not order_id and chat_id:
-                    log.info(f"  🔍 Order ID missing in webhook. Attempting fallback lookup for {chat_id}...")
-                    try:
-                        custom_fields = wc.get_subscriber_custom_fields(chat_id)
-                        order_id = custom_fields.get("order_id")
-                        if order_id:
-                            log.info(f"    ✓ Found Order ID in WhatChimp profile: {order_id}")
-                        else:
-                            log.warning(f"    ✗ No order_id found in WhatChimp profile for {chat_id}")
-                    except Exception as e:
-                        log.error(f"    ✗ WhatChimp fallback lookup failed: {e}")
+                    brand_prefix = wc.identify_brand_from_webhook(params)
+                    if brand_prefix:
+                        cfg = wc.BRAND_CONFIG[brand_prefix]
+                        log.info(
+                            f"  🔍 order_id missing — identified brand as {cfg['brand_display']} "
+                            f"({brand_prefix}) via postbackid/sender. Looking up {chat_id} on "
+                            f"phone_number_id {cfg['phone_number_id']}..."
+                        )
+                        try:
+                            custom_fields = wc.get_subscriber_custom_fields(
+                                chat_id, phone_number_id=cfg["phone_number_id"]
+                            )
+                            order_id = custom_fields.get("order_id")
+                            if order_id:
+                                log.info(f"    ✓ Recovered order_id from {brand_prefix} subscriber: {order_id}")
+                            else:
+                                log.warning(f"    ✗ {brand_prefix} subscriber has no order_id for {chat_id}")
+                        except Exception as e:
+                            log.error(f"    ✗ {brand_prefix} subscriber lookup failed: {e}")
+                    else:
+                        # Couldn't identify the brand — sweep all 5 as last resort
+                        log.warning(
+                            f"  ⚠️ Could not identify brand from webhook payload "
+                            f"(postbackid={params.get('postbackid')!r}, "
+                            f"bot={params.get('whatsapp_bot_username')!r}). "
+                            f"Falling back to cross-brand sweep."
+                        )
+                        try:
+                            custom_fields = wc.get_subscriber_custom_fields(chat_id)
+                            order_id = custom_fields.get("order_id")
+                            if order_id:
+                                log.warning(f"    ⚠️ Cross-brand sweep returned: {order_id} (may be wrong brand!)")
+                        except Exception as e:
+                            log.error(f"    ✗ Cross-brand lookup failed: {e}")
 
                 if order_id and (action in ("confirm", "process") or not action):
                     # Default action to 'process' if missing but we found an order_id

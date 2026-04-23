@@ -27,40 +27,72 @@ BRAND_CONFIG = {
         "template_id":       "340859",
         "confirm_button_qr": "Nop_RZOKKksN72n",
         "brand_display":     "Elara",
+        "sender_phone":      "971521179533",
     },
     "Di": {  # Dialo UAE
         "phone_number_id":   "1002123586328400",
         "template_id":       "354662",
         "confirm_button_qr": "c6GBqbMceC17Rud",
         "brand_display":     "Dialo UAE",
+        "sender_phone":      "971524205211",
     },
     "LU": {  # Lune Collection
         "phone_number_id":   "1138942462625909",
         "template_id":       "355333",
         "confirm_button_qr": "FC4cJLqFUsE8gi5",
         "brand_display":     "Lune Collection",
+        "sender_phone":      "971523349770",
     },
     "VX": {  # Virex UAE
         "phone_number_id":   "1073890042476443",
         "template_id":       "354663",
         "confirm_button_qr": "kZICJ4ZHWVcSDOC",
         "brand_display":     "Virex UAE",
+        "sender_phone":      "971521539779",
     },
     "AM": {  # Amara's Room
         "phone_number_id":   "1045332455333591",
         "template_id":       "354661",
         "confirm_button_qr": "t4Y_y-k2p1uOeMB",
         "brand_display":     "Amara's Room",
+        "sender_phone":      "971564898669",
     },
 }
 
 # Fallback for legacy call paths (Elara is the original sender number).
 DEFAULT_PHONE_NUMBER_ID = BRAND_CONFIG["PT"]["phone_number_id"]
 
+# Reverse lookup tables for identifying brand from a webhook payload
+POSTBACK_TO_PREFIX    = {cfg["confirm_button_qr"]: prefix for prefix, cfg in BRAND_CONFIG.items()}
+SENDER_PHONE_TO_PREFIX = {cfg["sender_phone"]:     prefix for prefix, cfg in BRAND_CONFIG.items()}
+
+
 def get_brand_config(order_id_or_prefix: str) -> dict:
     """Look up the brand config from an order_id or its 2-char prefix. Defaults to PT (Elara)."""
     prefix = (order_id_or_prefix or "")[:2]
     return BRAND_CONFIG.get(prefix, BRAND_CONFIG["PT"])
+
+
+def identify_brand_from_webhook(params: dict) -> str:
+    """
+    Identify which of the 5 brands a webhook postback came from, using the
+    payload WhatChimp actually sends for flow-triggered webhooks.
+
+    Primary signal: `postbackid` — unique per template's confirm button.
+    Fallback signal: `whatsapp_bot_username` — the sender phone (digits only).
+
+    Returns the 2-char brand prefix (e.g. "Di") or "" if unidentifiable.
+    """
+    postback = (params.get("postbackid") or "").strip()
+    if postback and postback in POSTBACK_TO_PREFIX:
+        return POSTBACK_TO_PREFIX[postback]
+
+    bot_username = params.get("whatsapp_bot_username") or ""
+    bot_digits = ''.join(c for c in str(bot_username) if c.isdigit())
+    if bot_digits and bot_digits in SENDER_PHONE_TO_PREFIX:
+        return SENDER_PHONE_TO_PREFIX[bot_digits]
+
+    return ""
 
 def clean_phone_number(phone: str) -> str:
     """
