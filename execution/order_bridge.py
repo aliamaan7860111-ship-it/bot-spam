@@ -252,7 +252,8 @@ async def start_health_server():
             
             # --- Webhook Handling ---
             if "/whatchimp_webhook" in path:
-                log.info(f"🔔 Incoming Webhook: {path}")
+                log.info(f"🔔 Incoming Webhook ({method}): {path}")
+                log.info(f"  📦 RAW REQUEST:\n{request_text[:2000]}")
                 
                 # 1. Capture Query Parameters from URL
                 params = {}
@@ -313,7 +314,7 @@ async def start_health_server():
                     except Exception as e:
                         log.debug(f"  Error reading POST body: {e}")
                 
-                log.debug(f"  Parameters captured: {params}")
+                log.info(f"  🔑 Parsed params: {params}")
                 
                 order_id = params.get("order_id")
                 action = params.get("action")
