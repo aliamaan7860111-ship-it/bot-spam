@@ -146,6 +146,26 @@ def _get_url(props: dict, field: str) -> str:
         return ""
 
 
+def _get_files(props: dict, field: str) -> list[str]:
+    """Extract URLs from a files & media property (external or uploaded)."""
+    try:
+        files = props[field]["files"]
+    except (KeyError, TypeError):
+        return []
+    urls = []
+    for f in files or []:
+        ftype = f.get("type")
+        if ftype == "external":
+            url = f.get("external", {}).get("url")
+        elif ftype == "file":
+            url = f.get("file", {}).get("url")
+        else:
+            url = None
+        if url:
+            urls.append(url)
+    return urls
+
+
 def _get_checkbox(props: dict, field: str) -> bool:
     """Extract value from a checkbox property."""
     try:
@@ -188,19 +208,8 @@ def parse_order(page: dict) -> dict:
     """
     props = page["properties"]
 
-    # Image URL is a text/URL field — may contain multiple URLs separated by
-    # commas, newlines, or spaces. We normalize to a list.
-    raw_image_url = _get_rich_text(props, FIELD_IMAGE_URL)
-    if not raw_image_url:
-        raw_image_url = _get_url(props, FIELD_IMAGE_URL)
-
-    image_urls = []
-    if raw_image_url:
-        # Split on commas, newlines, or whitespace
-        for part in raw_image_url.replace(",", "\n").replace(" ", "\n").split("\n"):
-            url = part.strip()
-            if url and (url.startswith("http://") or url.startswith("https://")):
-                image_urls.append(url)
+    # IMAGE URL is a Files & Media property. Used as fallback to GraphQL.
+    image_urls = _get_files(props, FIELD_IMAGE_URL)
 
     return {
         "page_id": page["id"],

@@ -368,14 +368,17 @@ async def send_order_to_group(
         log.error(f"Invalid Telegram group ID: {group_id}")
         return False
 
-    # Always call GraphQL to get line_items (sizes/variants), even if we have image URLs
+    # Primary: ORDER SOURCE URL -> GraphQL. Fallback: Notion IMAGE URL (files).
     checkout_url = order.get("order_source_url", "")
+    notion_image_urls = order.get("image_urls", [])
     if checkout_url and not order.get("line_items"):
         log.info("  Fetching line items (sizes) via GraphQL...")
         graphql_images = fetch_order_images_graphql(checkout_url, order)
-        # Use GraphQL images only if we don't already have IMAGE URLs from Notion
-        if not order.get("image_urls"):
+        if graphql_images:
             order["image_urls"] = graphql_images
+        elif notion_image_urls:
+            log.info(f"  GraphQL returned no images; falling back to {len(notion_image_urls)} from Notion IMAGE URL")
+            order["image_urls"] = notion_image_urls
 
     image_urls = order.get("image_urls", [])
 
