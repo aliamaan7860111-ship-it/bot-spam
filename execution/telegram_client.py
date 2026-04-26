@@ -563,6 +563,91 @@ async def _send_separator(bot: Bot, group_id: int) -> None:
         log.warning(f"Could not send separator: {e}")
 
 
+async def send_order_via_file_ids(
+    bot: Bot,
+    group_id: str | int,
+    order: dict,
+    header: str = "✅ READY FOR FULFILLMENT",
+) -> SendOrderResult:
+    """
+    Send an order to a Telegram group by REUSING file_ids saved during Stage 1.
+    No GraphQL fetch, no image download — Telegram clones from cache.
+
+    Returns a SendOrderResult. If file_ids fail (extremely rare), success=False
+    and the caller should fall back to send_order_to_group (GraphQL refetch path).
+    """
+    result: SendOrderResult = {
+        "success": False,
+        "file_ids": [],
+        "image_count": 0,
+        "expected_count": parse_item_count(order.get("item_qty", "")),
+    }
+    try:
+        group_id = int(group_id)
+    except (ValueError, TypeError):
+        log.error(f"Invalid Telegram group ID: {group_id}")
+        return result
+
+    file_ids = order.get("telegram_file_ids", [])
+    if not file_ids:
+        log.warning(f"  send_order_via_file_ids: no file_ids on order {order.get('order_id', '?')}")
+        return result
+
+    caption_full = format_order_message(order, header)
+    short_caption, overflow_text = truncate_caption_with_overflow(caption_full)
+
+    album_chunks = chunk_for_albums(file_ids)
+    last_idx = len(album_chunks) - 1
+
+    last_message_id: int | None = None
+    try:
+        for i, chunk in enumerate(album_chunks):
+            media: list[InputMediaPhoto] = []
+            for j, fid in enumerate(chunk):
+                if i == last_idx and j == 0:
+                    media.append(InputMediaPhoto(media=fid, caption=short_caption,
+                                                  parse_mode="Markdown"))
+                else:
+                    media.append(InputMediaPhoto(media=fid))
+
+            if len(media) == 1:
+                first = media[0]
+                photo_msg = await bot.send_photo(
+                    chat_id=group_id, photo=first.media,
+                    caption=getattr(first, "caption", None),
+                    parse_mode="Markdown" if getattr(first, "caption", None) else None,
+                    read_timeout=60, write_timeout=60,
+                )
+                last_message_id = photo_msg.message_id
+            else:
+                msgs = await bot.send_media_group(
+                    chat_id=group_id, media=media,
+                    read_timeout=60, write_timeout=60,
+                )
+                last_message_id = msgs[-1].message_id
+
+        if overflow_text and last_message_id is not None:
+            try:
+                await bot.send_message(
+                    chat_id=group_id, text=overflow_text,
+                    reply_to_message_id=last_message_id,
+                    parse_mode="Markdown",
+                    read_timeout=60, write_timeout=60,
+                )
+            except Exception as e:
+                log.warning(f"Failed to send overflow reply: {e}")
+
+        await _send_separator(bot, group_id)
+        result["success"] = True
+        result["image_count"] = len(file_ids)
+        result["file_ids"] = file_ids
+
+    except Exception as e:
+        log.error(f"  Failed to send album via file_ids: {e}", exc_info=True)
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Command Handlers (called by the bot when messages arrive)
 # ---------------------------------------------------------------------------
@@ -635,12 +720,34 @@ def create_command_handlers(notion_module):
                         fail_count += 1
                         continue
 
-                    # Forward to fulfillment group
+                    # Choose fast path (saved file_ids) vs fallback (GraphQL refetch).
+                    sent_ok = False
                     if fulfillment_group:
-                        await send_order_to_group(
-                            bot, fulfillment_group, order,
-                            header="✅ READY FOR FULFILLMENT"
-                        )
+                        if order.get("file_ids_saved") and order.get("telegram_file_ids"):
+                            res = await send_order_via_file_ids(
+                                bot, fulfillment_group, order,
+                                header="✅ READY FOR FULFILLMENT",
+                            )
+                            sent_ok = res["success"]
+                            if not sent_ok:
+                                log.warning(f"  fast path failed for {oid}, falling back to GraphQL")
+                        if not sent_ok:
+                            res = await send_order_to_group(
+                                bot, fulfillment_group, order,
+                                header="✅ READY FOR FULFILLMENT",
+                            )
+                            sent_ok = res["success"]
+                            if sent_ok and not order.get("file_ids_saved"):
+                                try:
+                                    await bot.send_message(
+                                        chat_id=fulfillment_group,
+                                        text=f"⚠️ {oid}: no file IDs were saved, resorted to fallback fetch",
+                                    )
+                                except Exception:
+                                    pass
+                    if not sent_ok:
+                        fail_count += 1
+                        continue
                     sent_count += 1
                     # Track fulfillment send
                     notion_module.mark_fulfillment_notified(order["page_id"])
@@ -683,10 +790,43 @@ def create_command_handlers(notion_module):
             return
 
         if fulfillment_group:
-            await send_order_to_group(
-                bot, fulfillment_group, order,
-                header="✅ READY FOR FULFILLMENT"
-            )
+            sent_ok = False
+            if order.get("file_ids_saved") and order.get("telegram_file_ids"):
+                res = await send_order_via_file_ids(
+                    bot, fulfillment_group, order,
+                    header="✅ READY FOR FULFILLMENT",
+                )
+                sent_ok = res["success"]
+                if not sent_ok:
+                    log.warning(f"  fast path failed for {order_id}, falling back to GraphQL")
+                    res = await send_order_to_group(
+                        bot, fulfillment_group, order,
+                        header="✅ READY FOR FULFILLMENT",
+                    )
+                    sent_ok = res["success"]
+                    if sent_ok:
+                        try:
+                            await bot.send_message(
+                                chat_id=fulfillment_group,
+                                text=f"⚠️ {order_id}: no file IDs (fast path failed), resorted to fallback fetch",
+                            )
+                        except Exception:
+                            pass
+            else:
+                res = await send_order_to_group(
+                    bot, fulfillment_group, order,
+                    header="✅ READY FOR FULFILLMENT",
+                )
+                sent_ok = res["success"]
+                if sent_ok and not order.get("file_ids_saved"):
+                    try:
+                        await bot.send_message(
+                            chat_id=fulfillment_group,
+                            text=f"⚠️ {order_id}: no file IDs were saved, resorted to fallback fetch",
+                        )
+                    except Exception:
+                        pass
+
             log.info(f"  ✓ Order {order_id} forwarded to fulfillment group")
             notion_module.mark_fulfillment_notified(order["page_id"])
 
