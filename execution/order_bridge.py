@@ -67,6 +67,37 @@ def get_brand_from_order_id(order_id: str) -> str:
     prefix = order_id[:2]
     return BRAND_MAP.get(prefix, "Elara")
 
+
+async def notion_write_with_retry(
+    write_fn,
+    *args,
+    attempts: int = 3,
+    base_delay: float = 1.0,
+    description: str = "Notion write",
+) -> bool:
+    """
+    Call a synchronous Notion write function with exponential backoff.
+    Returns True on success, False if all attempts fail.
+
+    Delays between attempts: base_delay, base_delay*2, base_delay*4
+    (so 1s, 2s, 4s by default).
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            ok = write_fn(*args)
+            if ok:
+                return True
+            log.warning(f"  {description}: attempt {attempt} returned False")
+        except Exception as e:
+            log.warning(f"  {description}: attempt {attempt} raised {e!r}")
+
+        if attempt < attempts:
+            delay = base_delay * (2 ** (attempt - 1))
+            await asyncio.sleep(delay)
+
+    log.error(f"  {description}: all {attempts} attempts failed")
+    return False
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -169,14 +200,53 @@ async def poll_notion_once(bot: Bot) -> int:
         log.info(f"📤 Sending order {order_id} to sourcing group...")
 
         # Send to Telegram
-        success = await tg.send_order_to_group(
+        send_result = await tg.send_order_to_group(
             bot, sourcing_group, order,
             header="📦 NEW ORDER FOR SOURCING"
         )
+        success = send_result["success"]
 
         if success:
             log.info(f"  ✓ Order {order_id} sent, status → SOURCING")
-            
+
+            # Save file_ids returned from Stage 1 send. 3 retries with backoff.
+            file_ids = send_result.get("file_ids", [])
+            if file_ids:
+                ok = await notion_write_with_retry(
+                    notion.update_telegram_file_ids,
+                    order["page_id"], file_ids,
+                    description=f"file_ids write for {order_id}",
+                )
+                if ok:
+                    await notion_write_with_retry(
+                        notion.mark_file_ids_saved,
+                        order["page_id"], True,
+                        description=f"FILE IDS SAVED checkbox for {order_id}",
+                    )
+                else:
+                    # Couldn't save file_ids; warn in the chat. Stage 2 will use
+                    # GraphQL fallback automatically when FILE IDS SAVED is false.
+                    try:
+                        await bot.send_message(
+                            chat_id=sourcing_group,
+                            text=f"⚠️ {order_id}: file IDs not saved after 3 retries, manual fulfillment may be needed",
+                        )
+                    except Exception as e:
+                        log.error(f"  Failed to post file_id warning: {e}")
+
+            # Image count vs items count mismatch warning.
+            delivered = send_result.get("image_count", 0)
+            expected = send_result.get("expected_count", 0)
+            if expected > 0 and delivered < expected:
+                missing = expected - delivered
+                try:
+                    await bot.send_message(
+                        chat_id=sourcing_group,
+                        text=f"⚠️ {order_id}: {delivered} of {expected} images sent, {missing} missing",
+                    )
+                except Exception as e:
+                    log.error(f"  Failed to post image-count warning: {e}")
+
             processed += 1
         else:
             # Revert Notion status and tracking so it retries on next cycle
