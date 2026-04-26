@@ -97,6 +97,8 @@ FIELD_SOURCING_NOTIFIED = "SOURCING NOTIFIED"
 FIELD_FULFILLMENT_NOTIFIED = "FULFILLMENT NOTIFIED"
 FIELD_WHATSAPP_SENT = "Confirmation Sent"
 STATUS_CONFIRMATION_SENT = "Confirmation Sent"
+FIELD_TELEGRAM_FILE_IDS = "TELEGRAM FILE IDS"
+FIELD_FILE_IDS_SAVED = "FILE IDS SAVED"
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +168,13 @@ def _get_files(props: dict, field: str) -> list[str]:
     return urls
 
 
+def _parse_telegram_file_ids(raw: str) -> list[str]:
+    """Split a comma-separated string of Telegram file_ids into a clean list."""
+    if not raw:
+        return []
+    return [fid.strip() for fid in raw.split(",") if fid.strip()]
+
+
 def _get_checkbox(props: dict, field: str) -> bool:
     """Extract value from a checkbox property."""
     try:
@@ -232,6 +241,8 @@ def parse_order(page: dict) -> dict:
         "sourcing_notified": _get_checkbox(props, FIELD_SOURCING_NOTIFIED),
         "fulfillment_notified": _get_checkbox(props, FIELD_FULFILLMENT_NOTIFIED),
         "whatsapp_sent": _get_checkbox(props, FIELD_WHATSAPP_SENT),
+        "telegram_file_ids": _parse_telegram_file_ids(_get_rich_text(props, FIELD_TELEGRAM_FILE_IDS)),
+        "file_ids_saved": _get_checkbox(props, FIELD_FILE_IDS_SAVED),
     }
 
 
@@ -541,6 +552,21 @@ def mark_sourcing_notified(page_id: str) -> bool:
     """Check the SOURCING NOTIFIED box in Notion."""
     return _update_page(page_id, {
         FIELD_SOURCING_NOTIFIED: {"checkbox": True},
+    })
+
+
+def update_telegram_file_ids(page_id: str, file_ids: list[str]) -> bool:
+    """Save the comma-separated Telegram file_ids to the order page."""
+    joined = ",".join(file_ids)
+    return _update_page(page_id, {
+        FIELD_TELEGRAM_FILE_IDS: {"rich_text": [{"text": {"content": joined}}]},
+    })
+
+
+def mark_file_ids_saved(page_id: str, value: bool = True) -> bool:
+    """Set the FILE IDS SAVED checkbox to value."""
+    return _update_page(page_id, {
+        FIELD_FILE_IDS_SAVED: {"checkbox": value},
     })
 
 
