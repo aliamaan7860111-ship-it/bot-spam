@@ -169,14 +169,15 @@ async def poll_notion_once(bot: Bot) -> int:
         log.info(f"📤 Sending order {order_id} to sourcing group...")
 
         # Send to Telegram
-        success = await tg.send_order_to_group(
+        send_result = await tg.send_order_to_group(
             bot, sourcing_group, order,
             header="📦 NEW ORDER FOR SOURCING"
         )
+        success = send_result["success"]
 
         if success:
             log.info(f"  ✓ Order {order_id} sent, status → SOURCING")
-            
+
             processed += 1
         else:
             # Revert Notion status and tracking so it retries on next cycle

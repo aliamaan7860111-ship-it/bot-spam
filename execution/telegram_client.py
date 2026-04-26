@@ -19,6 +19,14 @@ import json
 import asyncio
 import logging
 from pathlib import Path
+from typing import TypedDict
+
+
+class SendOrderResult(TypedDict):
+    success: bool
+    file_ids: list[str]
+    image_count: int        # actually delivered
+    expected_count: int     # from items in Notion
 
 # Separator image for visual divider between orders
 SEPARATOR_PATH = Path(__file__).parent / "assets" / "separator.png"
@@ -393,19 +401,27 @@ async def send_order_to_group(
     group_id: str | int,
     order: dict,
     header: str = "📦 NEW ORDER FOR SOURCING",
-) -> bool:
+) -> SendOrderResult:
     """
-    Send order images FIRST, then text details, then separator.
-    Uses GraphQL to fetch images + variant/size data if needed.
-    Returns True on success.
+    Send order as ONE atomic media group (or multiple if >10 images), with the
+    order caption on the LAST album's first image, then send the separator.
+
+    Returns a SendOrderResult dict with success, file_ids, image_count, expected_count.
     """
+    result: SendOrderResult = {
+        "success": False,
+        "file_ids": [],
+        "image_count": 0,
+        "expected_count": parse_item_count(order.get("item_qty", "")),
+    }
+
     try:
         group_id = int(group_id)
     except (ValueError, TypeError):
         log.error(f"Invalid Telegram group ID: {group_id}")
-        return False
+        return result
 
-    # Primary: ORDER SOURCE URL -> GraphQL. Fallback: Notion IMAGE URL (files).
+    # Image priority: GraphQL primary, Notion files fallback (already implemented).
     checkout_url = order.get("order_source_url", "")
     notion_image_urls = order.get("image_urls", [])
     if checkout_url and not order.get("line_items"):
@@ -419,87 +435,132 @@ async def send_order_to_group(
 
     image_urls = order.get("image_urls", [])
 
-    # --- STEP 1: Send images FIRST ---
-    if image_urls:
-        downloaded = []
-        for url in image_urls:
-            img_bytes = download_image(url)
-            if img_bytes:
-                downloaded.append((url, img_bytes))
-            else:
-                log.warning(f"  Skipped image: {url}")
+    # Download all images upfront so we know the actual delivered count.
+    downloaded: list[bytes] = []
+    for url in image_urls:
+        img_bytes = download_image(url)
+        if img_bytes:
+            downloaded.append(img_bytes)
+        else:
+            log.warning(f"  Skipped image: {url}")
 
-        if downloaded:
-            try:
-                for i in range(0, len(downloaded), 10):
-                    batch = downloaded[i:i + 10]
-                    if len(batch) == 1:
-                        # Telegram API ValueError if media group has < 2 items
-                        url, img_bytes = batch[0]
-                        await bot.send_photo(
-                            chat_id=group_id, 
-                            photo=io.BytesIO(img_bytes),
-                            read_timeout=60, 
-                            write_timeout=60
-                        )
-                    else:
-                        media_group = []
-                        for url, img_bytes in batch:
-                            media_group.append(
-                                InputMediaPhoto(media=io.BytesIO(img_bytes))
-                            )
-                        await bot.send_media_group(
-                            chat_id=group_id, 
-                            media=media_group,
-                            read_timeout=60,
-                            write_timeout=60
-                        )
-                log.info(f"  ✓ Sent {len(downloaded)} image(s) to group {group_id}")
-            except Exception as e:
-                log.error(f"Failed to send images to Telegram: {e}", exc_info=True)
-                try:
-                    await bot.send_message(
-                        chat_id=group_id,
-                        text="⚠️ Could not send images. URLs:\n" + "\n".join(image_urls),
-                    )
-                except Exception:
-                    pass
+    caption_full = format_order_message(order, header)
 
-    # --- STEP 2: Send order text ---
-    message_text = format_order_message(order, header)
+    if not downloaded:
+        # No images to send. Still send the text + separator so the order is visible.
+        log.warning(f"  No images downloaded for {order.get('order_id', '?')}, sending text-only")
+        try:
+            await bot.send_message(
+                chat_id=group_id, text=caption_full, parse_mode="Markdown",
+                read_timeout=60, write_timeout=60,
+            )
+            await _send_separator(bot, group_id)
+            result["success"] = True
+        except Exception as e:
+            log.error(f"Failed to send text-only order: {e}")
+        return result
+
+    short_caption, overflow_text = truncate_caption_with_overflow(caption_full)
+
+    # Chunk the downloaded image bytes into albums of <=10. Caption goes on
+    # the FIRST image of the LAST album.
+    album_chunks = chunk_for_albums(downloaded)
+    last_idx = len(album_chunks) - 1
+
+    all_file_ids: list[str] = []
+    last_message_id: int | None = None
     try:
-        await bot.send_message(
-            chat_id=group_id,
-            text=message_text,
-            parse_mode="Markdown",
-            read_timeout=60,
-            write_timeout=60
-        )
-    except Exception as e:
-        log.error(f"Failed to send order message to Telegram: {e}")
-        return False
+        for i, chunk in enumerate(album_chunks):
+            media: list[InputMediaPhoto] = []
+            for j, img_bytes in enumerate(chunk):
+                if i == last_idx and j == 0:
+                    # Caption on first image of last album
+                    media.append(InputMediaPhoto(
+                        media=io.BytesIO(img_bytes),
+                        caption=short_caption,
+                        parse_mode="Markdown",
+                    ))
+                else:
+                    media.append(InputMediaPhoto(media=io.BytesIO(img_bytes)))
 
-    # --- STEP 3: Send separator image ---
+            if len(media) == 1:
+                # send_media_group requires >=2 items. Use send_photo with caption.
+                first = media[0]
+                photo_msg = await bot.send_photo(
+                    chat_id=group_id,
+                    photo=first.media,
+                    caption=getattr(first, "caption", None),
+                    parse_mode="Markdown" if getattr(first, "caption", None) else None,
+                    read_timeout=60, write_timeout=60,
+                )
+                fid = photo_msg.photo[-1].file_id if photo_msg.photo else None
+                if fid:
+                    all_file_ids.append(fid)
+                last_message_id = photo_msg.message_id
+            else:
+                msgs = await bot.send_media_group(
+                    chat_id=group_id, media=media,
+                    read_timeout=60, write_timeout=60,
+                )
+                for m in msgs:
+                    if m.photo:
+                        all_file_ids.append(m.photo[-1].file_id)
+                last_message_id = msgs[-1].message_id
+
+        # If caption overflowed, send the overflow as a reply to the LAST sent message.
+        if overflow_text and last_message_id is not None:
+            try:
+                await bot.send_message(
+                    chat_id=group_id,
+                    text=overflow_text,
+                    reply_to_message_id=last_message_id,
+                    parse_mode="Markdown",
+                    read_timeout=60, write_timeout=60,
+                )
+            except Exception as e:
+                log.warning(f"Failed to send overflow reply: {e}")
+
+        log.info(f"  ✓ Sent {len(downloaded)} image(s) in {len(album_chunks)} album(s) to group {group_id}")
+        result["image_count"] = len(downloaded)
+        result["file_ids"] = all_file_ids
+
+    except Exception as e:
+        log.error(f"Failed to send album to Telegram: {e}", exc_info=True)
+        # Best-effort fallback: send raw URLs as text so operator still sees the order.
+        try:
+            await bot.send_message(
+                chat_id=group_id,
+                text=f"⚠️ Could not send album. URLs:\n" + "\n".join(image_urls) + f"\n\n{caption_full}",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+        return result
+
+    # Send separator
+    await _send_separator(bot, group_id)
+
+    result["success"] = True
+    return result
+
+
+async def _send_separator(bot: Bot, group_id: int) -> None:
+    """Send the black separator image. Best-effort; logs but does not raise."""
     try:
         if SEPARATOR_PATH.exists():
             with open(SEPARATOR_PATH, "rb") as f:
                 await bot.send_photo(
-                    chat_id=group_id, 
-                    photo=f,
-                    read_timeout=60,
-                    write_timeout=60
+                    chat_id=group_id, photo=f,
+                    read_timeout=60, write_timeout=60,
                 )
         else:
             await bot.send_message(
-                chat_id=group_id, 
+                chat_id=group_id,
                 text="━━━━━━━━━━━━━━━━━━━━",
-                read_timeout=60,
-                write_timeout=60
+                read_timeout=60, write_timeout=60,
             )
     except Exception as e:
         log.warning(f"Could not send separator: {e}")
-
-    return True
 
 
 # ---------------------------------------------------------------------------
