@@ -234,6 +234,19 @@ async def poll_notion_once(bot: Bot) -> int:
                     except Exception as e:
                         log.error(f"  Failed to post file_id warning: {e}")
 
+            # Image count vs items count mismatch warning.
+            delivered = send_result.get("image_count", 0)
+            expected = send_result.get("expected_count", 0)
+            if expected > 0 and delivered < expected:
+                missing = expected - delivered
+                try:
+                    await bot.send_message(
+                        chat_id=sourcing_group,
+                        text=f"⚠️ {order_id}: {delivered} of {expected} images sent, {missing} missing",
+                    )
+                except Exception as e:
+                    log.error(f"  Failed to post image-count warning: {e}")
+
             processed += 1
         else:
             # Revert Notion status and tracking so it retries on next cycle
