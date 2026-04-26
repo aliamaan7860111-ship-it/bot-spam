@@ -273,6 +273,43 @@ def safe_markdown(val) -> str:
         text = text.replace(char, '')
     return text.strip()
 
+# ---------------------------------------------------------------------------
+# Album / caption helpers
+# ---------------------------------------------------------------------------
+
+TELEGRAM_MEDIA_GROUP_MAX = 10
+TELEGRAM_CAPTION_MAX = 1024
+
+
+def chunk_for_albums(items: list, chunk_size: int = TELEGRAM_MEDIA_GROUP_MAX) -> list[list]:
+    """Split a list into chunks of up to chunk_size for Telegram media groups."""
+    if not items:
+        return []
+    return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+
+def parse_item_count(item_qty_field: str) -> int:
+    """Count distinct items in the Notion 'ITEM | QTY' field.
+
+    Each item is on its own line; quantity is always 1 in this system,
+    so the line count equals the item count. Blank lines are ignored.
+    """
+    if not item_qty_field:
+        return 0
+    return sum(1 for line in item_qty_field.splitlines() if line.strip())
+
+
+def truncate_caption_with_overflow(caption: str, max_length: int = TELEGRAM_CAPTION_MAX) -> tuple[str, str]:
+    """Split a caption at max_length. Returns (short_caption, overflow_text).
+
+    If caption fits, overflow is empty string. The caller decides what to do
+    with the overflow (typically: send as a reply to the album).
+    """
+    if len(caption) <= max_length:
+        return caption, ""
+    return caption[:max_length], caption[max_length:]
+
+
 def format_sourcing_message(order: dict) -> str:
     """
     Minimal message for the sourcing group.
