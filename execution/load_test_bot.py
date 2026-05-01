@@ -1284,75 +1284,86 @@ async def run_woocommerce_checkout_flow(context, customer, target_url):
             except:
                 log.warning("[WC] variation_id did not populate; attempting add-to-cart anyway")
 
-        # 3. Click Add to Cart
+        # 3. Extract product ID up front for URL fallback (always works on standard WC)
+        product_id = await page.evaluate("""() => {
+            const btn = document.querySelector('form.cart button[name="add-to-cart"]');
+            if (btn && btn.value) return btn.value;
+            const inp = document.querySelector('form.cart input[name="add-to-cart"]');
+            if (inp && inp.value) return inp.value;
+            const dataEl = document.querySelector('form.cart [data-product_id], .product [data-product_id]');
+            if (dataEl) return dataEl.getAttribute('data-product_id');
+            const generic = document.querySelector('button[name="add-to-cart"]');
+            return (generic && generic.value) ? generic.value : null;
+        }""")
+        log.info(f"[WC] Detected product_id: {product_id}")
+
+        # 4. Click Add to Cart - with progressive fallback to URL trick
         clicked_add = False
         wc_atc_selectors = [
+            "form.cart button.single_add_to_cart_button",
             "button.single_add_to_cart_button",
-            "button[name='add-to-cart']:not([type='hidden'])",
+            "form.cart button[name='add-to-cart']",
+            "form.variations_form button[name='add-to-cart']",
             "form.cart button[type='submit']",
-            "form.variations_form button[type='submit']",
             ".product .single_add_to_cart_button",
         ]
         for sel in wc_atc_selectors:
             try:
+                count = await page.locator(sel).count()
+                if count == 0:
+                    continue
                 loc = page.locator(sel).first
-                if await loc.count() == 0:
-                    continue
-                if not await loc.is_visible():
-                    continue
-                # Force-enable if disabled (some themes disable until variation chosen)
+                # Force-enable disabled buttons before clicking
                 await page.evaluate(f"""() => {{
-                    document.querySelectorAll('{sel}').forEach(b => {{
+                    document.querySelectorAll({sel!r}).forEach(b => {{
                         b.disabled = false;
                         b.removeAttribute('disabled');
                         b.classList.remove('disabled');
                     }});
                 }}""")
-                await loc.click()
+                await loc.scroll_into_view_if_needed(timeout=5000)
+                await asyncio.sleep(0.5)
+                # Use force=True to bypass actionability checks (overlays, animations)
+                await loc.click(timeout=10000, force=True)
                 clicked_add = True
                 log.info(f"[WC] Clicked add-to-cart via: {sel}")
                 break
             except Exception as e:
-                log.debug(f"[WC] Selector {sel} failed: {e}")
+                log.debug(f"[WC] Selector {sel} failed: {str(e)[:80]}")
                 continue
 
         if not clicked_add:
-            # Fallback: submit form directly
-            log.info("[WC] Selectors failed — submitting form.cart via JS")
+            # JS form submit fallback
+            log.info("[WC] Click selectors failed — JS form submit fallback")
             submitted = await page.evaluate("""() => {
                 const form = document.querySelector('form.cart, form.variations_form');
-                if (!form) return false;
-                const btn = form.querySelector('button[type="submit"], button.single_add_to_cart_button');
+                if (!form) return null;
+                const btn = form.querySelector('button[name="add-to-cart"], button.single_add_to_cart_button, button[type="submit"]');
                 if (btn) {
                     btn.disabled = false;
+                    btn.removeAttribute('disabled');
                     btn.click();
-                    return 'clicked';
+                    return 'clicked:' + (btn.value || '?');
                 }
                 form.submit();
                 return 'submitted';
             }""")
             if submitted:
                 clicked_add = True
-                log.info(f"[WC] Form fallback result: {submitted}")
+                log.info(f"[WC] JS form fallback: {submitted}")
 
-        if not clicked_add:
-            # Final fallback: ?add-to-cart=PRODUCT_ID URL trick
+        if not clicked_add and product_id:
+            # URL fallback: GET to product URL with ?add-to-cart=ID
+            from urllib.parse import urlparse as _u
+            parsed = _u(target_url)
+            base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            add_url = f"{base}?add-to-cart={product_id}"
+            log.info(f"[WC] URL fallback: {add_url}")
             try:
-                product_id = await page.evaluate("""() => {
-                    const btn = document.querySelector('button[name="add-to-cart"]');
-                    if (btn && btn.value) return btn.value;
-                    const inp = document.querySelector('input[name="add-to-cart"]');
-                    if (inp && inp.value) return inp.value;
-                    const meta = document.querySelector('[data-product_id]');
-                    return meta ? meta.getAttribute('data-product_id') : null;
-                }""")
-                if product_id:
-                    add_url = f"{target_url}?add-to-cart={product_id}"
-                    log.info(f"[WC] URL fallback: {add_url}")
-                    await page.goto(add_url, wait_until="domcontentloaded", timeout=60000)
-                    clicked_add = True
+                await page.goto(add_url, wait_until="domcontentloaded", timeout=60000)
+                clicked_add = True
             except Exception as e:
-                log.warning(f"[WC] URL add-to-cart failed: {e}")
+                log.warning(f"[WC] URL fallback failed: {e}")
 
         if not clicked_add:
             log.error("[WC] Could not add to cart by any method")
@@ -1362,42 +1373,88 @@ async def run_woocommerce_checkout_flow(context, customer, target_url):
                 pass
             return False
 
-        # Wait for cart fragment / mini-cart update
+        # Wait for AJAX add-to-cart to settle
         await asyncio.sleep(random.uniform(3, 5))
 
-        # 4. Navigate to checkout
-        # Some WC sites use cart-skipping plugins (CartFlows etc.) and redirect direct.
-        if "/checkout" not in page.url and "order-pay" not in page.url:
-            checkout_url = f"{store_origin}/checkout/"
-            log.info(f"[WC] Navigating directly to {checkout_url}")
-            try:
-                await page.goto(checkout_url, wait_until="domcontentloaded", timeout=60000)
-            except Exception as e:
-                log.warning(f"[WC] /checkout/ direct nav failed: {e} — trying /cart/")
-                await page.goto(f"{store_origin}/cart/", wait_until="domcontentloaded", timeout=60000)
-                # Click checkout button on cart page
-                cart_chk = [
-                    "a.checkout-button",
-                    ".wc-proceed-to-checkout a",
-                    "a:has-text('Proceed to checkout')",
-                    "a:has-text('Checkout')",
-                ]
-                for s in cart_chk:
-                    try:
-                        loc = page.locator(s).first
-                        if await loc.is_visible(timeout=3000):
-                            await loc.click()
-                            log.info(f"[WC] Clicked checkout via {s}")
-                            break
-                    except:
-                        continue
+        # 4. Verify cart actually has items by visiting /cart/
+        # If empty, retry via URL trick (handles cases where button click was
+        # intercepted by JS but the server-side cart never updated)
+        cart_url = f"{store_origin}/cart/"
+        log.info(f"[WC] Verifying cart at {cart_url}")
+        await page.goto(cart_url, wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(2)
 
-        # Verify we're on checkout
+        cart_has_items = await page.evaluate("""() => {
+            // Standard WooCommerce: items live in tr.cart_item or .woocommerce-cart-form
+            const items = document.querySelectorAll('tr.cart_item, .cart_item, .woocommerce-cart-form .product-name');
+            if (items.length > 0) return items.length;
+            // Empty-cart message
+            const empty = document.querySelector('.cart-empty, .wc-empty-cart-message');
+            return empty ? 0 : -1;  // -1 = inconclusive
+        }""")
+        log.info(f"[WC] Cart item count: {cart_has_items}")
+
+        if cart_has_items == 0 and product_id:
+            # Retry with URL trick (most reliable WC add-to-cart)
+            from urllib.parse import urlparse as _u
+            parsed = _u(target_url)
+            base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            add_url = f"{base}?add-to-cart={product_id}"
+            log.info(f"[WC] Cart empty — retrying with URL: {add_url}")
+            await page.goto(add_url, wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(3)
+            await page.goto(cart_url, wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(2)
+            cart_has_items = await page.evaluate("""() => {
+                const items = document.querySelectorAll('tr.cart_item, .cart_item, .woocommerce-cart-form .product-name');
+                return items.length;
+            }""")
+            log.info(f"[WC] Cart item count after URL retry: {cart_has_items}")
+
+        if not cart_has_items or cart_has_items <= 0:
+            log.error("[WC] Cart is empty after add-to-cart attempts")
+            try:
+                await page.screenshot(path=f".tmp/wc_empty_cart_{int(time.time())}.png")
+            except:
+                pass
+            return False
+
+        # 5. Click "Proceed to Checkout" from cart page
+        clicked_checkout = False
+        cart_checkout_selectors = [
+            "a.checkout-button",
+            ".wc-proceed-to-checkout a.button",
+            ".wc-proceed-to-checkout a",
+            "a.wc-forward",
+            "a:has-text('Proceed to checkout')",
+            "a:has-text('Proceed to Checkout')",
+            "a:has-text('Checkout')",
+        ]
+        for s in cart_checkout_selectors:
+            try:
+                loc = page.locator(s).first
+                if await loc.count() == 0:
+                    continue
+                await loc.scroll_into_view_if_needed(timeout=3000)
+                await loc.click(timeout=10000, force=True)
+                clicked_checkout = True
+                log.info(f"[WC] Clicked checkout button via: {s}")
+                break
+            except Exception as e:
+                log.debug(f"[WC] Cart checkout selector {s} failed: {str(e)[:80]}")
+                continue
+
+        if not clicked_checkout:
+            log.warning("[WC] No checkout button clicked — direct nav to /checkout/")
+            await page.goto(f"{store_origin}/checkout/", wait_until="domcontentloaded", timeout=60000)
+
+        # Wait for checkout form to render
         try:
             await page.wait_for_selector(
-                "form.checkout, form[name='checkout'], #place_order, input[name='billing_first_name']",
+                "form.checkout, form[name='checkout'], #place_order, input[name='billing_first_name'], input#billing_first_name",
                 timeout=30000
             )
+            log.info(f"[WC] Checkout form detected at {page.url}")
         except:
             log.warning(f"[WC] Checkout form not detected. URL: {page.url}")
 
