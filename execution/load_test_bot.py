@@ -1244,10 +1244,13 @@ async def run_woocommerce_checkout_flow(context, customer, target_url):
         try:
             await page.wait_for_selector(
                 "form.cart, button.single_add_to_cart_button, button[name='add-to-cart']",
-                timeout=20000
+                timeout=25000
             )
+            # Extra settle time so JS event handlers bind (matters on bundled Chromium)
+            await asyncio.sleep(2)
         except:
-            await asyncio.sleep(3)
+            log.warning("[WC] Cart form selector wait timed out — continuing anyway")
+            await asyncio.sleep(5)
 
         # Humanize
         log.info("[WC] Humanizing: scroll + hover")
@@ -1284,16 +1287,38 @@ async def run_woocommerce_checkout_flow(context, customer, target_url):
             except:
                 log.warning("[WC] variation_id did not populate; attempting add-to-cart anyway")
 
-        # 3. Extract product ID up front for URL fallback (always works on standard WC)
+        # 3. Extract product ID up front for URL fallback. WordPress always adds
+        # `postid-XXXX` to the body class on single-product pages, so that's our
+        # bulletproof signal even if the cart form is slow to render.
         product_id = await page.evaluate("""() => {
-            const btn = document.querySelector('form.cart button[name="add-to-cart"]');
-            if (btn && btn.value) return btn.value;
-            const inp = document.querySelector('form.cart input[name="add-to-cart"]');
-            if (inp && inp.value) return inp.value;
-            const dataEl = document.querySelector('form.cart [data-product_id], .product [data-product_id]');
-            if (dataEl) return dataEl.getAttribute('data-product_id');
-            const generic = document.querySelector('button[name="add-to-cart"]');
-            return (generic && generic.value) ? generic.value : null;
+            const cleanId = (v) => {
+                if (!v) return null;
+                const m = String(v).match(/\\d{2,}/);
+                return m ? m[0] : null;
+            };
+            // 1. form.cart button (simple products)
+            let btn = document.querySelector('form.cart button[name="add-to-cart"]');
+            if (btn && btn.value) return cleanId(btn.value);
+            // 2. form.cart hidden input (some themes)
+            let inp = document.querySelector('form.cart input[name="add-to-cart"]');
+            if (inp && inp.value) return cleanId(inp.value);
+            // 3. variation form data-product_id (variable products)
+            let varForm = document.querySelector('form.variations_form');
+            if (varForm) {
+                const v = varForm.getAttribute('data-product_id');
+                if (v) return cleanId(v);
+            }
+            // 4. .product .single_add_to_cart_button (any product type)
+            let single = document.querySelector('.product .single_add_to_cart_button, .product button[name="add-to-cart"]');
+            if (single && single.value) return cleanId(single.value);
+            // 5. body class postid-XXXX (WordPress canonical)
+            const bodyClass = document.body.className || '';
+            const m = bodyClass.match(/postid-(\\d+)/);
+            if (m) return m[1];
+            // 6. last resort: any data-product_id on the main product container
+            const dataEl = document.querySelector('.product[data-product_id], main [data-product_id]');
+            if (dataEl) return cleanId(dataEl.getAttribute('data-product_id'));
+            return null;
         }""")
         log.info(f"[WC] Detected product_id: {product_id}")
 
@@ -1820,8 +1845,11 @@ async def run_bot(headless=True, visible=False, count=0):
                     else:
                         target_url = await get_random_product_url(temp_page, base_url=base_url)
                     await temp_page.close()
-            else:
-                platform = detect_platform(PRODUCT_URL)
+
+            # Re-detect platform from the FINAL target URL — handles the case
+            # where TEST_PRODUCT_URL points to a different platform than STORE_URLS
+            if target_url:
+                platform = detect_platform(target_url)
 
             success = False
             if target_url:
