@@ -1501,7 +1501,21 @@ async def run_woocommerce_checkout_flow(context, customer, target_url):
 async def enter_woocommerce_checkout_info(context, customer, page):
     """Fills out WooCommerce checkout form and places the order."""
     try:
-        await page.wait_for_load_state("load", timeout=90000)
+        # `load` waits for every iframe + 3rd-party script to finish - WC checkout
+        # pages often never fire it because of long-polling chat widgets etc.
+        # `domcontentloaded` is enough for the billing form to be in the DOM.
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=20000)
+        except:
+            pass
+        # Wait for the actual form to appear, not the full page load
+        try:
+            await page.wait_for_selector(
+                "input[name='billing_first_name'], input#billing_first_name, form.checkout",
+                timeout=20000
+            )
+        except:
+            log.warning(f"[WC] billing form selector not found within 20s; proceeding optimistically")
 
         # Extra delay for protected stores
         if is_protected_store(page.url):
