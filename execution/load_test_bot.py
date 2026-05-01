@@ -1627,20 +1627,72 @@ async def enter_woocommerce_checkout_info(context, customer, page):
             }""")
             log.info(f"[WC] Place order JS fallback: {placed}")
 
-        # Wait for order-received confirmation
+        # Wait for order-received confirmation OR a WC error notice
         for i in range(15):
             await asyncio.sleep(2)
             url_l = page.url.lower()
             if any(x in url_l for x in ["order-received", "thank", "order-pay", "checkout/order"]):
-                log.info(f"[WC] Order placed! Confirmation URL: {page.url}")
+                # Extract order number — WC typically puts it in the URL path
+                # (/order-received/<ID>/) and on the page as .order strong / .woocommerce-order-overview__order
+                import re as _re
+                order_id = None
+                m = _re.search(r"/order-received/(\d+)", page.url)
+                if m:
+                    order_id = m.group(1)
+                if not order_id:
+                    try:
+                        order_id = await page.evaluate("""() => {
+                            const sels = [
+                                '.woocommerce-order-overview__order strong',
+                                '.order strong',
+                                'li.woocommerce-order-overview__order',
+                                '.woocommerce-thankyou-order-received'
+                            ];
+                            for (const s of sels) {
+                                const el = document.querySelector(s);
+                                if (el) {
+                                    const m = (el.textContent || '').match(/\\d{3,}/);
+                                    if (m) return m[0];
+                                }
+                            }
+                            return null;
+                        }""")
+                    except:
+                        pass
+                if order_id:
+                    log.info(f"[WC] Order placed! Order #{order_id}  URL: {page.url}")
+                else:
+                    log.info(f"[WC] Order placed! URL: {page.url}")
                 return True
+
+            # Check for inline WC validation/error messages
+            try:
+                wc_errors = await page.evaluate("""() => {
+                    const sel = '.woocommerce-error li, .woocommerce-NoticeGroup-checkout li, ul.woocommerce-error, .wc-block-components-notice-banner';
+                    return Array.from(document.querySelectorAll(sel))
+                        .map(el => (el.textContent || '').trim())
+                        .filter(t => t.length > 0)
+                        .slice(0, 5);
+                }""")
+                if wc_errors:
+                    log.error(f"[WC] Checkout rejected with errors: {wc_errors}")
+                    try:
+                        await page.screenshot(path=f".tmp/wc_checkout_error_{int(time.time())}.png")
+                    except:
+                        pass
+                    return False
+            except:
+                pass
 
         log.warning(f"[WC] Did not detect order confirmation. Final URL: {page.url}")
         try:
             await page.screenshot(path=f".tmp/wc_no_confirm_{int(time.time())}.png")
+            html = await page.content()
+            with open(f".tmp/wc_no_confirm_{int(time.time())}.html", "w", encoding="utf-8") as f:
+                f.write(html[:200000])
         except:
             pass
-        return placed is not False
+        return False
 
     except Exception as e:
         log.error(f"[WC] Error in enter_woocommerce_checkout_info: {e}")
