@@ -90,7 +90,57 @@ DEMOGRAPHICS = {
     }
 }
 
-DOMAINS = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.ae", "icloud.com"]
+DOMAINS = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "outlook.ae", "icloud.com", "me.com", "live.com", "proton.me"]
+
+
+def generate_realistic_email(first_name, last_name):
+    """Build a believable, format-valid email from a person's name.
+
+    Patterns mirror how real people pick handles: full name with dot/underscore,
+    first + last, initial + last, name + birth-year-ish number, etc.
+    Output is always a syntactically valid local-part."""
+    import re as _re
+    first = _re.sub(r"[^a-zA-Z]", "", (first_name or "user")).lower() or "user"
+    last = _re.sub(r"[^a-zA-Z]", "", (last_name or "")).lower()
+    if not last:
+        last = "x" + str(random.randint(10, 99))
+
+    # Number flavours that look human-picked (not random 8-digit blobs)
+    num_choices = [
+        "",
+        str(random.randint(1, 99)),
+        str(random.randint(70, 99)),       # birth year-ish
+        str(random.choice([2000, 2001, 2002, 2003, 1995, 1996, 1997, 1998, 1999])),
+        str(random.randint(1, 9)),
+        f"{random.randint(0, 9)}{random.randint(0, 9)}",
+    ]
+    num = random.choice(num_choices)
+
+    sep_choices = [".", "_", "", "-"]
+    sep = random.choice(sep_choices)
+
+    patterns = [
+        lambda: f"{first}{sep}{last}{num}",
+        lambda: f"{first}{last}{num}",
+        lambda: f"{first[0]}{sep}{last}{num}" if last else f"{first}{num}",
+        lambda: f"{first}{sep}{last[0]}{num}" if last else f"{first}{num}",
+        lambda: f"{last}{sep}{first}{num}",
+        lambda: f"{first}{num}",
+        lambda: f"{first}{sep}{last}",
+        lambda: f"{first[0]}{last}{num}",
+        lambda: f"the{first}{num}",
+        lambda: f"{first}.{last}{num}",
+    ]
+    local = random.choice(patterns)()
+
+    # Hard cleanup: collapse repeated separators, strip leading/trailing punctuation
+    local = _re.sub(r"[._-]{2,}", lambda m: m.group(0)[0], local)
+    local = local.strip("._-")
+    if not local:
+        local = first
+
+    domain = random.choice(DOMAINS)
+    return f"{local}@{domain}"
 LANDMARKS = ["near Mosque", "opp. Petrol Station", "behind Supermarket", "next to Pharmacy", "close to Metro", "near Park", "beside Mall", "near School"]
 
 # Rotating User-Agent Pool (modern Chrome/Edge on Win10/Win11/Mac)
@@ -389,9 +439,10 @@ def get_random_customer():
         # 05 with spaces
         phone = f"0{prefix} {base_num[:3]} {base_num[3:]}"
     
-    # User requested both phone and email fields to be the exact same string
-    email = phone
-    
+    # Realistic email derived from name (Shopify accepts phone-as-identity, but
+    # WooCommerce requires a syntactically valid email)
+    email = generate_realistic_email(first, last_base)
+
     return {
         "email": email,
         "first_name": first_name,
