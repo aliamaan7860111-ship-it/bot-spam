@@ -106,7 +106,28 @@ USER_AGENTS = [
 ]
 
 # Stores with advanced bot protection (disable resource blocking, extra humanization)
-PROTECTED_STORES = [s.strip() for s in os.getenv("PROTECTED_STORES", "meowtiqueofficial.com").split(",") if s.strip()]
+PROTECTED_STORES = [s.strip() for s in os.getenv("PROTECTED_STORES", "meowtiqueofficial.com,mandarerabrands.com,luxurytrunkdubai.com").split(",") if s.strip()]
+
+# Per-domain platform overrides (avoids the platform-detection round-trip)
+# Format: "domain1.com=woocommerce,domain2.com=shopify"
+_platform_env = os.getenv("PLATFORM_OVERRIDES", "mandarerabrands.com=woocommerce,luxurytrunkdubai.com=woocommerce")
+PLATFORM_OVERRIDES = {}
+for entry in _platform_env.split(","):
+    entry = entry.strip()
+    if "=" in entry:
+        d, p = entry.split("=", 1)
+        PLATFORM_OVERRIDES[d.strip().lower()] = p.strip().lower()
+
+
+def detect_platform(url):
+    """Returns 'woocommerce' or 'shopify' based on URL domain. Defaults to 'shopify'."""
+    if not url:
+        return "shopify"
+    url_l = url.lower()
+    for domain, platform in PLATFORM_OVERRIDES.items():
+        if domain in url_l:
+            return platform
+    return "shopify"
 
 
 async def safe_fill(page, selector, value, label="field"):
@@ -1099,6 +1120,430 @@ async def enter_checkout_info(context, customer, page):
             pass
         return False
 
+
+# ============================================================================
+# WooCommerce flow (separate from Shopify because URL/selectors/checkout differ)
+# ============================================================================
+
+async def get_random_woocommerce_product_url(page, base_url):
+    """WooCommerce: navigate to /shop/ and pick a random /product/ link."""
+    from urllib.parse import urlparse
+    parsed = urlparse(base_url)
+    store_origin = f"{parsed.scheme}://{parsed.netloc}"
+
+    if HAS_STEALTH:
+        await Stealth().apply_stealth_async(page)
+
+    candidate_paths = ["/shop/", "/shop", "/store/", "/all-products/", "/?post_type=product"]
+    for path in candidate_paths:
+        shop_url = store_origin + path
+        log.info(f"Navigating to {shop_url} to find products...")
+        try:
+            await page.goto(shop_url, wait_until="domcontentloaded", timeout=90000)
+            try:
+                await page.wait_for_selector("a[href*='/product/']", timeout=15000)
+            except:
+                await asyncio.sleep(3)
+
+            product_links = await page.locator("a[href*='/product/']").all()
+            valid_urls = []
+            for link in product_links:
+                href = await link.get_attribute("href")
+                if not href:
+                    continue
+                if "/product/" not in href:
+                    continue
+                if "/product-category/" in href or "/product-tag/" in href:
+                    continue
+                full_url = href if href.startswith("http") else f"{store_origin}{href}"
+                valid_urls.append(full_url)
+
+            valid_urls = list(set(valid_urls))
+            if valid_urls:
+                chosen = random.choice(valid_urls)
+                log.info(f"Found {len(valid_urls)} WooCommerce products. Picked: {chosen}")
+                return chosen
+        except Exception as e:
+            log.warning(f"WooCommerce shop path '{path}' failed: {e}")
+            continue
+
+    log.error(f"Could not find any /product/ links across shop paths on {store_origin}")
+    try:
+        os.makedirs(".tmp", exist_ok=True)
+        await page.screenshot(path=".tmp/wc_failed_product_fetch.png")
+    except:
+        pass
+    return None
+
+
+async def run_woocommerce_checkout_flow(context, customer, target_url):
+    """Executes the WooCommerce Add to Cart and Checkout flow."""
+    page = context.pages[0] if context.pages else await context.new_page()
+    from urllib.parse import urlparse
+    parsed = urlparse(target_url)
+    store_origin = f"{parsed.scheme}://{parsed.netloc}"
+
+    try:
+        if HAS_STEALTH:
+            await Stealth().apply_stealth_async(page)
+
+        # 1. Product page
+        log.info(f"[WC] Navigating to product page: {target_url}")
+        await page.goto(target_url, wait_until="domcontentloaded", timeout=90000)
+        try:
+            await page.wait_for_selector(
+                "form.cart, button.single_add_to_cart_button, button[name='add-to-cart']",
+                timeout=20000
+            )
+        except:
+            await asyncio.sleep(3)
+
+        # Humanize
+        log.info("[WC] Humanizing: scroll + hover")
+        await page.mouse.wheel(0, 400)
+        await asyncio.sleep(random.uniform(2, 4))
+
+        # 2. Handle variations (variable products require attribute selection)
+        has_variations = await page.locator("table.variations, form.variations_form").count() > 0
+        if has_variations:
+            log.info("[WC] Variable product detected — selecting first available variation")
+            try:
+                selects = await page.locator("table.variations select, form.variations_form select").all()
+                for sel in selects:
+                    options = await sel.locator("option").all()
+                    for opt in options:
+                        val = await opt.get_attribute("value")
+                        if val and val.strip():
+                            await sel.select_option(value=val)
+                            await asyncio.sleep(0.8)
+                            break
+            except Exception as e:
+                log.warning(f"[WC] Variation selection error: {e}")
+
+            # Wait for variation_id input to populate
+            try:
+                await page.wait_for_function(
+                    """() => {
+                        const v = document.querySelector('input[name="variation_id"]');
+                        return v && v.value && v.value !== '0';
+                    }""",
+                    timeout=8000
+                )
+                log.info("[WC] Variation ID populated")
+            except:
+                log.warning("[WC] variation_id did not populate; attempting add-to-cart anyway")
+
+        # 3. Click Add to Cart
+        clicked_add = False
+        wc_atc_selectors = [
+            "button.single_add_to_cart_button",
+            "button[name='add-to-cart']:not([type='hidden'])",
+            "form.cart button[type='submit']",
+            "form.variations_form button[type='submit']",
+            ".product .single_add_to_cart_button",
+        ]
+        for sel in wc_atc_selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() == 0:
+                    continue
+                if not await loc.is_visible():
+                    continue
+                # Force-enable if disabled (some themes disable until variation chosen)
+                await page.evaluate(f"""() => {{
+                    document.querySelectorAll('{sel}').forEach(b => {{
+                        b.disabled = false;
+                        b.removeAttribute('disabled');
+                        b.classList.remove('disabled');
+                    }});
+                }}""")
+                await loc.click()
+                clicked_add = True
+                log.info(f"[WC] Clicked add-to-cart via: {sel}")
+                break
+            except Exception as e:
+                log.debug(f"[WC] Selector {sel} failed: {e}")
+                continue
+
+        if not clicked_add:
+            # Fallback: submit form directly
+            log.info("[WC] Selectors failed — submitting form.cart via JS")
+            submitted = await page.evaluate("""() => {
+                const form = document.querySelector('form.cart, form.variations_form');
+                if (!form) return false;
+                const btn = form.querySelector('button[type="submit"], button.single_add_to_cart_button');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.click();
+                    return 'clicked';
+                }
+                form.submit();
+                return 'submitted';
+            }""")
+            if submitted:
+                clicked_add = True
+                log.info(f"[WC] Form fallback result: {submitted}")
+
+        if not clicked_add:
+            # Final fallback: ?add-to-cart=PRODUCT_ID URL trick
+            try:
+                product_id = await page.evaluate("""() => {
+                    const btn = document.querySelector('button[name="add-to-cart"]');
+                    if (btn && btn.value) return btn.value;
+                    const inp = document.querySelector('input[name="add-to-cart"]');
+                    if (inp && inp.value) return inp.value;
+                    const meta = document.querySelector('[data-product_id]');
+                    return meta ? meta.getAttribute('data-product_id') : null;
+                }""")
+                if product_id:
+                    add_url = f"{target_url}?add-to-cart={product_id}"
+                    log.info(f"[WC] URL fallback: {add_url}")
+                    await page.goto(add_url, wait_until="domcontentloaded", timeout=60000)
+                    clicked_add = True
+            except Exception as e:
+                log.warning(f"[WC] URL add-to-cart failed: {e}")
+
+        if not clicked_add:
+            log.error("[WC] Could not add to cart by any method")
+            try:
+                await page.screenshot(path=f".tmp/wc_no_atc_{int(time.time())}.png")
+            except:
+                pass
+            return False
+
+        # Wait for cart fragment / mini-cart update
+        await asyncio.sleep(random.uniform(3, 5))
+
+        # 4. Navigate to checkout
+        # Some WC sites use cart-skipping plugins (CartFlows etc.) and redirect direct.
+        if "/checkout" not in page.url and "order-pay" not in page.url:
+            checkout_url = f"{store_origin}/checkout/"
+            log.info(f"[WC] Navigating directly to {checkout_url}")
+            try:
+                await page.goto(checkout_url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as e:
+                log.warning(f"[WC] /checkout/ direct nav failed: {e} — trying /cart/")
+                await page.goto(f"{store_origin}/cart/", wait_until="domcontentloaded", timeout=60000)
+                # Click checkout button on cart page
+                cart_chk = [
+                    "a.checkout-button",
+                    ".wc-proceed-to-checkout a",
+                    "a:has-text('Proceed to checkout')",
+                    "a:has-text('Checkout')",
+                ]
+                for s in cart_chk:
+                    try:
+                        loc = page.locator(s).first
+                        if await loc.is_visible(timeout=3000):
+                            await loc.click()
+                            log.info(f"[WC] Clicked checkout via {s}")
+                            break
+                    except:
+                        continue
+
+        # Verify we're on checkout
+        try:
+            await page.wait_for_selector(
+                "form.checkout, form[name='checkout'], #place_order, input[name='billing_first_name']",
+                timeout=30000
+            )
+        except:
+            log.warning(f"[WC] Checkout form not detected. URL: {page.url}")
+
+        return await enter_woocommerce_checkout_info(context, customer, page)
+
+    except Exception as e:
+        log.error(f"[WC] Error during checkout flow: {e}")
+        try:
+            os.makedirs(".tmp", exist_ok=True)
+            await page.screenshot(path=f".tmp/wc_error_{int(time.time())}.png")
+        except:
+            pass
+        return False
+
+
+async def enter_woocommerce_checkout_info(context, customer, page):
+    """Fills out WooCommerce checkout form and places the order."""
+    try:
+        await page.wait_for_load_state("load", timeout=90000)
+
+        # Extra delay for protected stores
+        if is_protected_store(page.url):
+            delay = random.uniform(4, 8)
+            log.info(f"[WC] Protected store — {delay:.1f}s human delay before filling")
+            await asyncio.sleep(delay)
+            await page.mouse.move(random.randint(200, 600), random.randint(200, 400))
+            await page.mouse.wheel(0, random.randint(100, 300))
+            await asyncio.sleep(random.uniform(1, 3))
+        else:
+            await asyncio.sleep(4)
+
+        log.info(f"[WC] Filling customer info for: {customer['email']}")
+
+        # Country first — required before state dropdown populates
+        country_select = page.locator("select#billing_country, select[name='billing_country']").first
+        if await country_select.count() > 0:
+            try:
+                target_country = customer.get("country_code", "AE")
+                await country_select.select_option(value=target_country)
+                log.info(f"[WC] Selected country: {target_country}")
+                await asyncio.sleep(2)  # let state dropdown rebuild via AJAX
+            except Exception as e:
+                log.warning(f"[WC] Country select failed: {e}")
+
+        # Standard WC billing fields
+        billing_fields = {
+            "billing_first_name": customer["first_name"],
+            "billing_last_name": customer["last_name"],
+            "billing_address_1": customer["address"],
+            "billing_city": customer["city"],
+            "billing_postcode": customer.get("zip", "00000"),
+            "billing_phone": customer["phone"],
+            "billing_email": customer["email"],
+            "billing_company": "",
+        }
+        for name, value in billing_fields.items():
+            if value == "":
+                continue
+            await safe_fill(page, f"input[name='{name}'], input#{name}", value, name)
+
+        # Billing state (UAE emirate)
+        try:
+            state_select = page.locator("select#billing_state, select[name='billing_state']").first
+            if await state_select.count() > 0 and await state_select.is_visible():
+                target_code = customer.get("state_code", "").upper()
+                options = await state_select.locator("option").all()
+                option_values = []
+                for opt in options:
+                    v = await opt.get_attribute("value")
+                    t = (await opt.text_content()) or ""
+                    if v and v.strip():
+                        option_values.append((v, t.strip()))
+
+                chosen = None
+                if target_code:
+                    for v, t in option_values:
+                        if v.upper() == target_code:
+                            chosen = v
+                            break
+                if not chosen:
+                    target_city = customer.get("city", "").lower()
+                    for v, t in option_values:
+                        if target_city and target_city in t.lower():
+                            chosen = v
+                            break
+                if not chosen and option_values:
+                    chosen = option_values[0][0]
+
+                if chosen:
+                    await state_select.select_option(value=chosen)
+                    log.info(f"[WC] Selected billing_state: {chosen}")
+        except Exception as e:
+            log.warning(f"[WC] State select failed: {e}")
+
+        # Wait for AJAX checkout update_order_review to settle
+        await asyncio.sleep(3)
+        try:
+            await page.wait_for_selector(".blockUI.blockOverlay", state="detached", timeout=15000)
+        except:
+            pass
+
+        # Select COD payment method
+        log.info("[WC] Selecting COD payment method")
+        cod_selected = await page.evaluate("""() => {
+            const radios = Array.from(document.querySelectorAll('input[name="payment_method"]'));
+            // Prefer COD by id/value
+            let target = radios.find(r =>
+                /cod|cash[-_ ]?on[-_ ]?delivery|cash/i.test((r.value || '') + ' ' + (r.id || ''))
+            );
+            // Fallback: first available radio
+            if (!target && radios.length) target = radios[0];
+            if (!target) return 'no_payment_radio';
+
+            const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'checked'
+            ).set;
+            setter.call(target, true);
+            target.dispatchEvent(new Event('change', {bubbles: true}));
+            target.dispatchEvent(new Event('click', {bubbles: true}));
+            const label = document.querySelector('label[for="' + target.id + '"]');
+            if (label) label.click();
+            return 'selected:' + target.value;
+        }""")
+        log.info(f"[WC] COD selection: {cod_selected}")
+        await asyncio.sleep(2)
+
+        # Tick required terms checkbox if present
+        try:
+            terms = page.locator("input[name='terms']").first
+            if await terms.count() > 0 and not await terms.is_checked():
+                await terms.check(force=True)
+                log.info("[WC] Checked terms checkbox")
+        except:
+            pass
+
+        # Wait for any remaining AJAX overlay
+        await asyncio.sleep(2)
+        try:
+            await page.wait_for_selector(".blockUI.blockOverlay", state="detached", timeout=10000)
+        except:
+            pass
+
+        # Place order
+        log.info("[WC] Clicking Place Order")
+        placed = False
+        for sel in ["#place_order", "button#place_order", "button[name='woocommerce_checkout_place_order']", "button.place-order"]:
+            try:
+                btn = page.locator(sel).first
+                if await btn.count() == 0:
+                    continue
+                if await btn.is_visible():
+                    await btn.scroll_into_view_if_needed()
+                    await asyncio.sleep(1)
+                    await btn.click()
+                    placed = True
+                    log.info(f"[WC] Place Order clicked via: {sel}")
+                    break
+            except Exception as e:
+                log.debug(f"[WC] Place order selector {sel} failed: {e}")
+
+        if not placed:
+            # JS form submit fallback
+            placed = await page.evaluate("""() => {
+                const form = document.querySelector('form.checkout, form[name="checkout"]');
+                if (!form) return false;
+                const btn = form.querySelector('#place_order, button[type="submit"]');
+                if (btn) { btn.click(); return 'clicked'; }
+                form.submit();
+                return 'submitted';
+            }""")
+            log.info(f"[WC] Place order JS fallback: {placed}")
+
+        # Wait for order-received confirmation
+        for i in range(15):
+            await asyncio.sleep(2)
+            url_l = page.url.lower()
+            if any(x in url_l for x in ["order-received", "thank", "order-pay", "checkout/order"]):
+                log.info(f"[WC] Order placed! Confirmation URL: {page.url}")
+                return True
+
+        log.warning(f"[WC] Did not detect order confirmation. Final URL: {page.url}")
+        try:
+            await page.screenshot(path=f".tmp/wc_no_confirm_{int(time.time())}.png")
+        except:
+            pass
+        return placed is not False
+
+    except Exception as e:
+        log.error(f"[WC] Error in enter_woocommerce_checkout_info: {e}")
+        try:
+            os.makedirs(".tmp", exist_ok=True)
+            await page.screenshot(path=f".tmp/wc_info_fail_{int(time.time())}.png")
+        except:
+            pass
+        return False
+
+
 async def run_bot(headless=True, visible=False, count=0):
     """Main loop to run the bot indefinitely or for a specific count."""
     if not STORE_URLS and not PRODUCT_URL:
@@ -1197,25 +1642,34 @@ async def run_bot(headless=True, visible=False, count=0):
 
             # Fetch random product if needed
             target_url = PRODUCT_URL
+            platform = "shopify"
             if STORE_URLS:
                 # Cycle through URLs based on order count
                 base_url = STORE_URLS[order_count % len(STORE_URLS)]
-                log.info(f"Targeting Store: {base_url}")
-                
+                platform = detect_platform(base_url)
+                log.info(f"Targeting Store: {base_url} (platform: {platform})")
+
                 # If the URL is already a product page, use it directly
                 if "/products/" in base_url or "/product/" in base_url:
                     target_url = base_url
                 else:
                     # Otherwise, navigate to find a random product
                     temp_page = await context.new_page()
-                    target_url = await get_random_product_url(temp_page, base_url=base_url)
+                    if platform == "woocommerce":
+                        target_url = await get_random_woocommerce_product_url(temp_page, base_url=base_url)
+                    else:
+                        target_url = await get_random_product_url(temp_page, base_url=base_url)
                     await temp_page.close()
+            else:
+                platform = detect_platform(PRODUCT_URL)
 
             success = False
             if target_url:
                 customer = get_random_customer()
-                # Run the checkout flow within the context
-                success = await run_checkout_flow(context, customer, target_url)
+                if platform == "woocommerce":
+                    success = await run_woocommerce_checkout_flow(context, customer, target_url)
+                else:
+                    success = await run_checkout_flow(context, customer, target_url)
                 if success:
                     log.info("Order completion suspected successfully.")
 
