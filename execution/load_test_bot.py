@@ -1190,7 +1190,10 @@ async def get_random_woocommerce_product_url(page, base_url):
         shop_url = store_origin + path
         log.info(f"Navigating to {shop_url} to find products...")
         try:
-            await page.goto(shop_url, wait_until="domcontentloaded", timeout=90000)
+            # Shorter per-path timeout: if the proxy IP is dead, fail fast across
+            # paths instead of burning ~90s each. Total budget across 5 paths
+            # capped at ~2.5 min instead of 7.5 min.
+            await page.goto(shop_url, wait_until="domcontentloaded", timeout=30000)
             try:
                 await page.wait_for_selector("a[href*='/product/']", timeout=15000)
             except:
