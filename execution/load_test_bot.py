@@ -1669,8 +1669,11 @@ async def enter_woocommerce_checkout_info(context, customer, page):
             }""")
             log.info(f"[WC] Place order JS fallback: {placed}")
 
-        # Wait for order-received confirmation OR a WC error notice
-        for i in range(15):
+        # Wait for order-received confirmation OR a WC error notice.
+        # On slow proxies the WC checkout AJAX can take 30-60s — give it 90s
+        # before assuming failure. We exit early on either success URL or
+        # explicit WC error, so this only adds latency to truly stuck rounds.
+        for i in range(45):
             await asyncio.sleep(2)
             url_l = page.url.lower()
             if any(x in url_l for x in ["order-received", "thank", "order-pay", "checkout/order"]):
