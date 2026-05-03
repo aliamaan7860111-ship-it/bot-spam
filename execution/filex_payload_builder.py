@@ -50,11 +50,21 @@ def build_payload(order: dict) -> dict:
     if not city:
         raise ValidationError(f"could not extract city from address: {address[:50]}")
 
-    # parse_order exposes the total as `total_aed`; accept legacy `total` too.
-    total = order.get("total_aed") if order.get("total_aed") is not None else order.get("total")
-    if total is None or not isinstance(total, (int, float)):
-        raise ValidationError(f"invalid total: {total!r}")
-    total_str = f"{float(total):.2f}"
+    # Total can come from Notion as a number OR a formatted string like "AED299.00"
+    total_raw = order.get("total_aed") if order.get("total_aed") is not None else order.get("total")
+    total: float | None = None
+    if isinstance(total_raw, (int, float)):
+        total = float(total_raw)
+    elif isinstance(total_raw, str):
+        # Strip AED prefix, currency symbols, commas, whitespace
+        cleaned = total_raw.strip().upper().removeprefix("AED").replace(",", "").strip()
+        try:
+            total = float(cleaned)
+        except ValueError:
+            total = None
+    if total is None:
+        raise ValidationError(f"invalid total: {total_raw!r}")
+    total_str = f"{total:.2f}"
 
     pieces = parse_pieces(order.get("item_qty") or "")
     desc = (order.get("item_qty") or "").replace("\n", " + ").strip() or "Item"

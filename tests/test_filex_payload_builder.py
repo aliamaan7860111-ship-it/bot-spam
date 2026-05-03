@@ -75,5 +75,43 @@ class TestBuildPayload(unittest.TestCase):
         result = build_payload(order)
         self.assertEqual(result["TotalCOG"], "295.00")
 
+    def test_total_as_string_with_aed_prefix(self):
+        order = self._full_order()
+        order["total"] = "AED299.00"
+        result = build_payload(order)
+        self.assertEqual(result["TotalCOG"], "299.00")
+
+    def test_total_as_string_with_aed_space(self):
+        order = self._full_order()
+        order["total"] = "AED 299.00"
+        result = build_payload(order)
+        self.assertEqual(result["TotalCOG"], "299.00")
+
+    def test_total_as_plain_string(self):
+        order = self._full_order()
+        order["total"] = "210"
+        result = build_payload(order)
+        self.assertEqual(result["TotalCOG"], "210.00")
+
+    def test_total_as_string_with_comma(self):
+        order = self._full_order()
+        order["total"] = "AED1,299.00"
+        result = build_payload(order)
+        self.assertEqual(result["TotalCOG"], "1299.00")
+
+    def test_total_aed_string_takes_precedence_over_total(self):
+        order = self._full_order()
+        order["total"] = 999  # ignored
+        order["total_aed"] = "AED 295.00"
+        result = build_payload(order)
+        self.assertEqual(result["TotalCOG"], "295.00")
+
+    def test_total_garbage_string_raises(self):
+        order = self._full_order()
+        order["total"] = "not a number"
+        with self.assertRaises(ValidationError) as ctx:
+            build_payload(order)
+        self.assertIn("total", str(ctx.exception).lower())
+
 if __name__ == "__main__":
     unittest.main()

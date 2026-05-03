@@ -68,9 +68,28 @@ def _parse_filex_dt(dt_str: str):
 
 from telegram import Bot
 from telegram.ext import Application, CommandHandler
+from telegram.error import TimedOut, TelegramError
 
 from filex_client import FilexClient
 from filex_payload_builder import build_payload, ValidationError
+
+
+async def _safe_send_message(bot, chat_id: int, text: str) -> None:
+    """Send a Telegram message, log timeouts/errors instead of crashing."""
+    try:
+        await bot.send_message(chat_id, text)
+    except (TimedOut, TelegramError) as e:
+        log.warning("Telegram send_message failed: %s | text=%s", e, text[:100])
+
+
+async def _safe_send_document(bot, chat_id: int, document: bytes, filename: str) -> bool:
+    """Send a Telegram document, log timeouts/errors instead of crashing. Returns True on success."""
+    try:
+        await bot.send_document(chat_id, document=document, filename=filename)
+        return True
+    except (TimedOut, TelegramError) as e:
+        log.error("Telegram send_document failed: %s | filename=%s", e, filename)
+        return False
 
 # ---------------------------------------------------------------------------
 # Multi-Brand Configuration
@@ -781,7 +800,7 @@ async def cmd_print_all(update, context):
 
     # Restrict to fulfillment group only
     if FULFILLMENT_GROUP_ID and chat_id != FULFILLMENT_GROUP_ID:
-        await bot.send_message(chat_id, "/print is only available in the fulfillment group.")
+        await _safe_send_message(bot, chat_id, "/print is only available in the fulfillment group.")
         return
 
     user_id = update.effective_user.id if update.effective_user else "?"
@@ -790,7 +809,7 @@ async def cmd_print_all(update, context):
     # 1. Query eligible orders from Notion
     eligible = nc.query_filex_eligible()
     if not eligible:
-        await bot.send_message(chat_id, "No orders eligible for /print all right now.")
+        await _safe_send_message(bot, chat_id, "No orders eligible for /print all right now.")
         return
 
     # 2. Build payloads with validation
@@ -800,7 +819,8 @@ async def cmd_print_all(update, context):
         try:
             payload = build_payload(order)
         except ValidationError as e:
-            await bot.send_message(
+            await _safe_send_message(
+                bot,
                 chat_id,
                 f"⚠️ Skipped {order.get('order_id', '?')}: {e}",
             )
@@ -809,7 +829,7 @@ async def cmd_print_all(update, context):
         page_id_by_ref[payload["ShipperRef"]] = order.get("page_id") or order.get("id")
 
     if not payloads:
-        await bot.send_message(chat_id, "No valid orders after validation.")
+        await _safe_send_message(bot, chat_id, "No valid orders after validation.")
         return
 
     # 3. Lock orders BEFORE the API call (prevents double-submit on retry)
@@ -824,7 +844,7 @@ async def cmd_print_all(update, context):
         # Revert locks on failure so a retry can re-submit
         for ref, page_id in page_id_by_ref.items():
             nc.mark_filex_submitted(page_id, False)
-        await bot.send_message(chat_id, f"⚠️ Filex submission failed: {e}")
+        await _safe_send_message(bot, chat_id, f"⚠️ Filex submission failed: {e}")
         log.error("filex placebulk failed", exc_info=True)
         return
 
@@ -848,7 +868,8 @@ async def cmd_print_all(update, context):
     try:
         pdf_bytes = client.get_label_pdf(tracking_numbers)
     except Exception as e:
-        await bot.send_message(
+        await _safe_send_message(
+            bot,
             chat_id,
             f"✅ Placed {len(tracking_numbers)} orders, but label PDF fetch failed: {e}\n"
             f"Retry the print manually.",
@@ -859,7 +880,8 @@ async def cmd_print_all(update, context):
     # 7. Send PDF as document attachment
     today = datetime.now().strftime("%Y-%m-%d")
     filename = f"filex_labels_{today}_{len(tracking_numbers)}.pdf"
-    await bot.send_document(
+    await _safe_send_document(
+        bot,
         chat_id,
         document=pdf_bytes,
         filename=filename,
