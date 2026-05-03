@@ -140,5 +140,45 @@ class TestLabelPdf(unittest.TestCase):
             client.get_label_pdf([])
 
 
+class TestParsePieces(unittest.TestCase):
+    def test_single_item(self):
+        from filex_client import parse_pieces
+        self.assertEqual(parse_pieces("Louis Vuitton Bag | Nano Speedy Monogram  1"), 1)
+
+    def test_multiple_items_qty_one(self):
+        from filex_client import parse_pieces
+        text = "Hermès Bag | Birkin Pink  1\nBvlgari Jewelry | Set  1"
+        self.assertEqual(parse_pieces(text), 2)
+
+    def test_quantity_greater_than_one(self):
+        from filex_client import parse_pieces
+        self.assertEqual(parse_pieces("Amouage Perfume | Purpose 50 100Ml  4"), 4)
+
+    def test_seven_watches(self):
+        from filex_client import parse_pieces
+        text = "\n".join([
+            "Richard Mille Watch | Rafael Nadal    | 1",
+            "AP Watch | Royal Oak    | 1",
+            "Patek Watch | Nautilus    | 1",
+            "Patek Watch | Cubitus    | 1",
+            "RM Watch | RM 11-03 Ti    | 1",
+            "RM Watch | RM 67-02    | 1",
+            "RM Watch | RM 67-02 Ogier    | 1",
+        ])
+        self.assertEqual(parse_pieces(text), 7)
+
+    def test_empty_input_defaults_to_one(self):
+        from filex_client import parse_pieces
+        self.assertEqual(parse_pieces(""), 1)
+
+    def test_no_quantity_defaults_to_one(self):
+        from filex_client import parse_pieces
+        self.assertEqual(parse_pieces("Mystery item without quantity"), 1)
+
+    def test_none_input_defaults_to_one(self):
+        from filex_client import parse_pieces
+        self.assertEqual(parse_pieces(None), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,24 @@ from pypdf import PdfReader, PdfWriter
 log = logging.getLogger("filex_client")
 
 
+def parse_pieces(item_qty_field: str | None) -> int:
+    """
+    Parse the Notion 'ITEM | QTY' field into a NumberOfPieces total.
+
+    Format: each item is on its own line; the trailing integer at end
+    of each line is the quantity for that item. Sum across all lines.
+    Defaults to 1 if parsing yields 0, the field is empty, or input is None.
+    """
+    if not item_qty_field or not item_qty_field.strip():
+        return 1
+    total = 0
+    for line in item_qty_field.splitlines():
+        m = re.search(r"(\d+)\s*$", line.strip())
+        if m:
+            total += int(m.group(1))
+    return total if total > 0 else 1
+
+
 class FilexClient:
     """
     Thin client for Filex's REST API.
