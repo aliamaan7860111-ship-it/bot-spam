@@ -67,7 +67,10 @@ def _parse_filex_dt(dt_str: str):
         return None
 
 from telegram import Bot
-from telegram.ext import Application
+from telegram.ext import Application, CommandHandler
+
+from filex_client import FilexClient
+from filex_payload_builder import build_payload, ValidationError
 
 # ---------------------------------------------------------------------------
 # Multi-Brand Configuration
@@ -739,6 +742,136 @@ async def start_health_server():
 
 
 # ---------------------------------------------------------------------------
+# Filex /print all command
+# ---------------------------------------------------------------------------
+
+FILEX_USERNAME       = os.getenv("FILEX_USERNAME")
+FILEX_PASSWORD       = os.getenv("FILEX_PASSWORD")
+FILEX_ACCOUNT_NUMBER = os.getenv("FILEX_ACCOUNT_NUMBER")
+FILEX_API_BASE       = os.getenv("FILEX_API_BASE", "https://filex-shipperapi.dispatchex.com")
+FILEX_TRACKING_BASE  = os.getenv("FILEX_TRACKING_BASE_URL", "https://www.filexexpress.ae/track?awb=")
+
+# tg.TELEGRAM_FULFILLMENT_GROUP_ID is a string; coerce here for chat-id compares.
+try:
+    FULFILLMENT_GROUP_ID = int(tg.TELEGRAM_FULFILLMENT_GROUP_ID) if tg.TELEGRAM_FULFILLMENT_GROUP_ID else 0
+except (TypeError, ValueError):
+    FULFILLMENT_GROUP_ID = 0
+
+# Single shared Filex client (token cached across calls)
+_filex_client: FilexClient | None = None
+
+
+def get_filex_client() -> FilexClient:
+    """Lazy-init a singleton FilexClient so its auth token is reused."""
+    global _filex_client
+    if _filex_client is None:
+        _filex_client = FilexClient(
+            FILEX_USERNAME, FILEX_PASSWORD, FILEX_ACCOUNT_NUMBER, FILEX_API_BASE,
+        )
+    return _filex_client
+
+
+async def cmd_print_all(update, context):
+    """
+    /print all  — place all eligible Notion orders in Filex, write back
+    tracking info, send the combined airway-bill PDF to the fulfillment group.
+    """
+    chat_id = update.effective_chat.id
+    bot = context.bot
+
+    # Restrict to fulfillment group only
+    if FULFILLMENT_GROUP_ID and chat_id != FULFILLMENT_GROUP_ID:
+        await bot.send_message(chat_id, "/print is only available in the fulfillment group.")
+        return
+
+    user_id = update.effective_user.id if update.effective_user else "?"
+    log.info("/print all triggered by %s in chat %s", user_id, chat_id)
+
+    # 1. Query eligible orders from Notion
+    eligible = nc.query_filex_eligible()
+    if not eligible:
+        await bot.send_message(chat_id, "No orders eligible for /print all right now.")
+        return
+
+    # 2. Build payloads with validation
+    payloads: list[dict] = []
+    page_id_by_ref: dict[str, str] = {}
+    for order in eligible:
+        try:
+            payload = build_payload(order)
+        except ValidationError as e:
+            await bot.send_message(
+                chat_id,
+                f"⚠️ Skipped {order.get('order_id', '?')}: {e}",
+            )
+            continue
+        payloads.append(payload)
+        page_id_by_ref[payload["ShipperRef"]] = order.get("page_id") or order.get("id")
+
+    if not payloads:
+        await bot.send_message(chat_id, "No valid orders after validation.")
+        return
+
+    # 3. Lock orders BEFORE the API call (prevents double-submit on retry)
+    for ref, page_id in page_id_by_ref.items():
+        nc.mark_filex_submitted(page_id, True)
+
+    # 4. Place orders via Filex
+    client = get_filex_client()
+    try:
+        result = client.place_orders(payloads)
+    except Exception as e:
+        # Revert locks on failure so a retry can re-submit
+        for ref, page_id in page_id_by_ref.items():
+            nc.mark_filex_submitted(page_id, False)
+        await bot.send_message(chat_id, f"⚠️ Filex submission failed: {e}")
+        log.error("filex placebulk failed", exc_info=True)
+        return
+
+    # 5. Update Notion with tracking info
+    now_iso = datetime.now(timezone.utc).isoformat()
+    tracking_pairs = result.get("trackingnos", [])
+    for entry in tracking_pairs:
+        ref = entry.get("barcode")
+        tn = entry.get("tracking_no")
+        page_id = page_id_by_ref.get(ref)
+        if not page_id:
+            log.warning("Returned ref %s not in our locked set", ref)
+            continue
+        nc.set_tracking_info(page_id, tn, FILEX_TRACKING_BASE + tn)
+        nc.set_filex_status(page_id, "Label Created")
+        nc.set_dispatched_at(page_id, now_iso)
+        nc.set_last_update(page_id, now_iso)
+
+    # 6. Fetch combined PDF
+    tracking_numbers = [e["tracking_no"] for e in tracking_pairs if e.get("tracking_no")]
+    try:
+        pdf_bytes = client.get_label_pdf(tracking_numbers)
+    except Exception as e:
+        await bot.send_message(
+            chat_id,
+            f"✅ Placed {len(tracking_numbers)} orders, but label PDF fetch failed: {e}\n"
+            f"Retry the print manually.",
+        )
+        log.error("filex label pdf fetch failed", exc_info=True)
+        return
+
+    # 7. Send PDF as document attachment
+    today = datetime.now().strftime("%Y-%m-%d")
+    filename = f"filex_labels_{today}_{len(tracking_numbers)}.pdf"
+    await bot.send_document(
+        chat_id,
+        document=pdf_bytes,
+        filename=filename,
+    )
+    log.info(
+        "/print all completed: %d orders, PDF %d bytes",
+        len(tracking_numbers),
+        len(pdf_bytes),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -757,6 +890,9 @@ async def run_bridge():
     handlers = tg.create_command_handlers(notion)
     for handler in handlers:
         app.add_handler(handler)
+
+    # Filex /print command (fulfillment group only — guarded inside the handler)
+    app.add_handler(CommandHandler("print", cmd_print_all))
 
     # Initialize the application and get bot
     await app.initialize()
