@@ -68,9 +68,28 @@ def _parse_filex_dt(dt_str: str):
 
 from telegram import Bot
 from telegram.ext import Application, CommandHandler
+from telegram.error import TimedOut, TelegramError
 
 from filex_client import FilexClient
-from filex_payload_builder import build_payload, ValidationError
+from filex_payload_builder import build_payload, build_merged_payload, ValidationError
+
+
+async def _safe_send_message(bot, chat_id: int, text: str) -> None:
+    """Send a Telegram message, log timeouts/errors instead of crashing."""
+    try:
+        await bot.send_message(chat_id, text)
+    except (TimedOut, TelegramError) as e:
+        log.warning("Telegram send_message failed: %s | text=%s", e, text[:100])
+
+
+async def _safe_send_document(bot, chat_id: int, document: bytes, filename: str) -> bool:
+    """Send a Telegram document, log timeouts/errors instead of crashing. Returns True on success."""
+    try:
+        await bot.send_document(chat_id, document=document, filename=filename)
+        return True
+    except (TimedOut, TelegramError) as e:
+        log.error("Telegram send_document failed: %s | filename=%s", e, filename)
+        return False
 
 # ---------------------------------------------------------------------------
 # Multi-Brand Configuration
@@ -521,23 +540,48 @@ async def start_health_server():
                             # malformed stored date — proceed with update
                             pass
 
-                    # 6. Map status and update Notion
+                    # 6. Find all linked rows (orders sharing the same tracking number — merged shipments)
+                    incoming_tn = (payload.get("TrackingNo") or payload.get("Track_id") or "").strip()
+                    all_orders_to_update = [order]
+                    if incoming_tn:
+                        try:
+                            linked = nc.query_orders_by_tracking(incoming_tn)
+                        except Exception as e:
+                            log.error(
+                                f"  filex_webhook: tracking lookup failed for {incoming_tn}: {e}"
+                            )
+                            linked = []
+                        for o in linked:
+                            if o["page_id"] != order["page_id"]:
+                                all_orders_to_update.append(o)
+                        if len(all_orders_to_update) > 1:
+                            log.info(
+                                f"  ↳ Fanout: {len(all_orders_to_update)} linked rows share "
+                                f"tracking {incoming_tn} (refs: "
+                                f"{[o.get('order_id') for o in all_orders_to_update]})"
+                            )
+
+                    # 7. Map status and update Notion (across all linked rows)
                     current_filex_status = order.get("filex_status")
                     new_status = filex_status_mapper.map_status(status_text, current_filex_status)
-                    page_id = order["page_id"]
 
-                    try:
-                        if new_status:
-                            nc.set_filex_status(page_id, new_status)
-                        nc.set_filex_notes(page_id, notes)
-                        if incoming_dt:
-                            nc.set_last_update(page_id, incoming_dt.isoformat())
-                        log.info(
-                            f"  ✓ Notion updated for {shipper_ref}: "
-                            f"FILEX STATUS → {new_status!r}"
-                        )
-                    except Exception as e:
-                        log.error(f"  filex_webhook: Notion write failed for {shipper_ref}: {e}")
+                    for target in all_orders_to_update:
+                        page_id = target["page_id"]
+                        target_ref = target.get("order_id") or shipper_ref
+                        try:
+                            if new_status:
+                                nc.set_filex_status(page_id, new_status)
+                            nc.set_filex_notes(page_id, notes)
+                            if incoming_dt:
+                                nc.set_last_update(page_id, incoming_dt.isoformat())
+                            log.info(
+                                f"  ✓ Notion updated for {target_ref}: "
+                                f"FILEX STATUS → {new_status!r}"
+                            )
+                        except Exception as e:
+                            log.error(
+                                f"  filex_webhook: Notion write failed for {target_ref}: {e}"
+                            )
 
                     body = json.dumps({
                         "code": 200,
@@ -781,7 +825,7 @@ async def cmd_print_all(update, context):
 
     # Restrict to fulfillment group only
     if FULFILLMENT_GROUP_ID and chat_id != FULFILLMENT_GROUP_ID:
-        await bot.send_message(chat_id, "/print is only available in the fulfillment group.")
+        await _safe_send_message(bot, chat_id, "/print is only available in the fulfillment group.")
         return
 
     user_id = update.effective_user.id if update.effective_user else "?"
@@ -790,65 +834,128 @@ async def cmd_print_all(update, context):
     # 1. Query eligible orders from Notion
     eligible = nc.query_filex_eligible()
     if not eligible:
-        await bot.send_message(chat_id, "No orders eligible for /print all right now.")
+        await _safe_send_message(bot, chat_id, "No orders eligible for /print all right now.")
         return
 
-    # 2. Build payloads with validation
-    payloads: list[dict] = []
-    page_id_by_ref: dict[str, str] = {}
+    # 2. Group eligible orders by normalized phone — same customer = merged shipment
+    from collections import defaultdict
+    from whatchimp_client import clean_phone_number
+
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    orphans: list[dict] = []  # orders missing phone — handled individually
     for order in eligible:
+        raw_phone = order.get("phone", "") or ""
+        if not raw_phone:
+            orphans.append(order)
+            continue
+        normalized = clean_phone_number(raw_phone)
+        if not normalized:
+            orphans.append(order)
+            continue
+        grouped[normalized].append(order)
+
+    # 3. Build payloads — one per group (merged when group has >1 order)
+    payloads: list[dict] = []
+    page_ids_by_ref: dict[str, list[str]] = {}  # ref -> list of page_ids (multiple if merged)
+
+    def _register(ref: str, page_ids: list[str], payload: dict) -> None:
+        payloads.append(payload)
+        page_ids_by_ref[ref] = page_ids
+
+    for phone, group in grouped.items():
+        if len(group) == 1:
+            order = group[0]
+            try:
+                payload = build_payload(order)
+            except ValidationError as e:
+                await _safe_send_message(
+                    bot,
+                    chat_id,
+                    f"⚠️ Skipped {order.get('order_id', '?')}: {e}",
+                )
+                continue
+            _register(payload["ShipperRef"], [order["page_id"]], payload)
+        else:
+            try:
+                merged_payload = build_merged_payload(group)
+            except ValidationError as e:
+                order_ids = [o.get("order_id", "?") for o in group]
+                await _safe_send_message(
+                    bot,
+                    chat_id,
+                    f"⚠️ Skipped merged group {order_ids}: {e}",
+                )
+                continue
+            _register(
+                merged_payload["ShipperRef"],
+                [o["page_id"] for o in group],
+                merged_payload,
+            )
+            log.info(
+                f"  ↳ Merging {len(group)} orders for phone {phone}: "
+                f"{[o.get('order_id') for o in group]}"
+            )
+
+    # Phone-less orders are processed individually (no merging possible)
+    for order in orphans:
         try:
             payload = build_payload(order)
         except ValidationError as e:
-            await bot.send_message(
+            await _safe_send_message(
+                bot,
                 chat_id,
                 f"⚠️ Skipped {order.get('order_id', '?')}: {e}",
             )
             continue
-        payloads.append(payload)
-        page_id_by_ref[payload["ShipperRef"]] = order.get("page_id") or order.get("id")
+        _register(payload["ShipperRef"], [order["page_id"]], payload)
 
     if not payloads:
-        await bot.send_message(chat_id, "No valid orders after validation.")
+        await _safe_send_message(bot, chat_id, "No valid orders after validation.")
         return
 
-    # 3. Lock orders BEFORE the API call (prevents double-submit on retry)
-    for ref, page_id in page_id_by_ref.items():
-        nc.mark_filex_submitted(page_id, True)
+    # 4. Lock orders BEFORE the API call (prevents double-submit on retry)
+    for ref, page_ids in page_ids_by_ref.items():
+        for page_id in page_ids:
+            nc.mark_filex_submitted(page_id, True)
 
-    # 4. Place orders via Filex
+    # 5. Place orders via Filex
     client = get_filex_client()
     try:
         result = client.place_orders(payloads)
     except Exception as e:
         # Revert locks on failure so a retry can re-submit
-        for ref, page_id in page_id_by_ref.items():
-            nc.mark_filex_submitted(page_id, False)
-        await bot.send_message(chat_id, f"⚠️ Filex submission failed: {e}")
+        for ref, page_ids in page_ids_by_ref.items():
+            for page_id in page_ids:
+                nc.mark_filex_submitted(page_id, False)
+        await _safe_send_message(bot, chat_id, f"⚠️ Filex submission failed: {e}")
         log.error("filex placebulk failed", exc_info=True)
         return
 
-    # 5. Update Notion with tracking info
+    # 6. Update Notion with tracking info — fan out across all linked rows for merged shipments
     now_iso = datetime.now(timezone.utc).isoformat()
     tracking_pairs = result.get("trackingnos", [])
     for entry in tracking_pairs:
         ref = entry.get("barcode")
         tn = entry.get("tracking_no")
-        page_id = page_id_by_ref.get(ref)
-        if not page_id:
+        page_ids = page_ids_by_ref.get(ref, [])
+        if not page_ids:
             log.warning("Returned ref %s not in our locked set", ref)
             continue
-        nc.set_tracking_info(page_id, tn, FILEX_TRACKING_BASE + tn)
-        nc.set_filex_status(page_id, "Label Created")
-        nc.set_dispatched_at(page_id, now_iso)
-        nc.set_last_update(page_id, now_iso)
+        for page_id in page_ids:
+            nc.set_tracking_info(page_id, tn, FILEX_TRACKING_BASE + tn)
+            nc.set_filex_status(page_id, "Label Created")
+            nc.set_dispatched_at(page_id, now_iso)
+            nc.set_last_update(page_id, now_iso)
+        if len(page_ids) > 1:
+            log.info(f"  ↳ Wrote tracking {tn} to {len(page_ids)} merged Notion rows ({ref})")
 
     # 6. Fetch combined PDF
     tracking_numbers = [e["tracking_no"] for e in tracking_pairs if e.get("tracking_no")]
     try:
         pdf_bytes = client.get_label_pdf(tracking_numbers)
     except Exception as e:
-        await bot.send_message(
+        await _safe_send_message(
+            bot,
             chat_id,
             f"✅ Placed {len(tracking_numbers)} orders, but label PDF fetch failed: {e}\n"
             f"Retry the print manually.",
@@ -859,7 +966,8 @@ async def cmd_print_all(update, context):
     # 7. Send PDF as document attachment
     today = datetime.now().strftime("%Y-%m-%d")
     filename = f"filex_labels_{today}_{len(tracking_numbers)}.pdf"
-    await bot.send_document(
+    await _safe_send_document(
+        bot,
         chat_id,
         document=pdf_bytes,
         filename=filename,

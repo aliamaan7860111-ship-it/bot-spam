@@ -808,6 +808,14 @@ def _run_query(payload: dict) -> list[dict]:
         return orders
 
 
+def query_orders_by_tracking(tracking_no: str) -> list[dict]:
+    """Find all Notion orders that have this Tracking Number."""
+    if not tracking_no:
+        return []
+    filter_ = {"property": FIELD_TRACKING_NUMBER, "rich_text": {"equals": tracking_no}}
+    return _run_query({"filter": filter_})
+
+
 def query_filex_eligible() -> list[dict]:
     """
     Orders ready to be submitted to Filex via /print all:
