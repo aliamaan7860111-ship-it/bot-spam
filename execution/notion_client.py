@@ -100,6 +100,15 @@ STATUS_CONFIRMATION_SENT = "Confirmation Sent"
 FIELD_TELEGRAM_FILE_IDS = "TELEGRAM FILE IDS"
 FIELD_FILE_IDS_SAVED = "FILE IDS SAVED"
 
+# Filex-related fields (added in Task 1 setup_notion_fields.py)
+FIELD_TRACKING_NUMBER = "Tracking Number"
+FIELD_TRACKING_LINK = "Tracking Link"
+FIELD_FILEX_STATUS = "FILEX STATUS"
+FIELD_FILEX_NOTES = "FILEX NOTES"
+FIELD_FILEX_SUBMITTED = "Filex Submitted"
+FIELD_DISPATCHED_AT = "Dispatched At"
+FIELD_LAST_UPDATE = "Last Update"
+
 
 # ---------------------------------------------------------------------------
 # Helpers to extract property values
@@ -243,6 +252,10 @@ def parse_order(page: dict) -> dict:
         "whatsapp_sent": _get_checkbox(props, FIELD_WHATSAPP_SENT),
         "telegram_file_ids": _parse_telegram_file_ids(_get_rich_text(props, FIELD_TELEGRAM_FILE_IDS)),
         "file_ids_saved": _get_checkbox(props, FIELD_FILE_IDS_SAVED),
+        "filex_status": _get_select(props, FIELD_FILEX_STATUS),
+        "last_update": _get_date(props, FIELD_LAST_UPDATE),
+        "tracking_number": _get_rich_text(props, FIELD_TRACKING_NUMBER),
+        "filex_submitted": _get_checkbox(props, FIELD_FILEX_SUBMITTED),
     }
 
 
@@ -693,3 +706,160 @@ def mark_whatsapp_sent(page_id: str) -> bool:
         FIELD_WHATSAPP_SENT: {"checkbox": True},
         FIELD_ORDER_STATUS: {"select": {"name": STATUS_CONFIRMATION_SENT}}
     })
+
+
+# ---------------------------------------------------------------------------
+# Filex setters
+# ---------------------------------------------------------------------------
+
+def set_tracking_info(page_id: str, tracking_number: str, tracking_link: str) -> bool:
+    """Write Tracking Number + Tracking Link in one PATCH."""
+    return _update_page(page_id, {
+        FIELD_TRACKING_NUMBER: {"rich_text": [{"text": {"content": tracking_number}}]},
+        FIELD_TRACKING_LINK: {"url": tracking_link},
+    })
+
+
+def set_filex_status(page_id: str, status: str) -> bool:
+    """Update FILEX STATUS select. Notion auto-creates new options on write."""
+    return _update_page(page_id, {
+        FIELD_FILEX_STATUS: {"select": {"name": status}},
+    })
+
+
+def set_filex_notes(page_id: str, notes: str) -> bool:
+    """Update FILEX NOTES rich_text. Skip if notes is empty."""
+    if not notes:
+        return True
+    return _update_page(page_id, {
+        FIELD_FILEX_NOTES: {"rich_text": [{"text": {"content": notes}}]},
+    })
+
+
+def set_dispatched_at(page_id: str, dt_iso: str) -> bool:
+    """Set Dispatched At date to ISO timestamp string."""
+    return _update_page(page_id, {
+        FIELD_DISPATCHED_AT: {"date": {"start": dt_iso}},
+    })
+
+
+def set_last_update(page_id: str, dt_iso: str) -> bool:
+    """Set Last Update date to ISO timestamp string."""
+    return _update_page(page_id, {
+        FIELD_LAST_UPDATE: {"date": {"start": dt_iso}},
+    })
+
+
+def mark_filex_submitted(page_id: str, submitted: bool = True) -> bool:
+    """Toggle the Filex Submitted checkbox."""
+    return _update_page(page_id, {
+        FIELD_FILEX_SUBMITTED: {"checkbox": submitted},
+    })
+
+
+def find_order_by_shipper_ref(shipper_ref: str) -> dict | None:
+    """
+    Look up a Notion order by its ORDER ID (which equals Filex's ShipperRef).
+    Returns parsed order dict or None.
+    """
+    return find_order_by_id(shipper_ref)
+
+
+# ---------------------------------------------------------------------------
+# Filex queries
+# ---------------------------------------------------------------------------
+
+def _run_query(payload: dict) -> list[dict]:
+    """Helper: run a paginated data_source query and return parsed orders."""
+    orders: list[dict] = []
+    has_more = True
+    start_cursor = None
+
+    try:
+        with httpx.Client(timeout=30) as client:
+            while has_more:
+                if start_cursor:
+                    payload["start_cursor"] = start_cursor
+
+                resp = client.post(
+                    f"{NOTION_API_BASE}/data_sources/{_get_data_source_id()}/query",
+                    headers=_headers(),
+                    json=payload,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                for page in data.get("results", []):
+                    try:
+                        orders.append(parse_order(page))
+                    except Exception as e:
+                        log.warning(f"Failed to parse order page {page.get('id', '?')}: {e}")
+
+                has_more = data.get("has_more", False)
+                start_cursor = data.get("next_cursor")
+
+        return orders
+
+    except httpx.HTTPStatusError as e:
+        log.error(f"Notion API error: {e.response.status_code} — {e.response.text}")
+        return orders
+    except Exception as e:
+        log.error(f"Notion query failed: {e}")
+        return orders
+
+
+def query_filex_eligible() -> list[dict]:
+    """
+    Orders ready to be submitted to Filex via /print all:
+      ORDER STATUS == "Processed"
+      AND SOURCING NOTIFIED == true
+      AND FULFILLMENT NOTIFIED == true
+      AND Filex Submitted == false
+    """
+    payload = {
+        "filter": {"and": [
+            {"property": FIELD_ORDER_STATUS,         "select":   {"equals": "Processed"}},
+            {"property": FIELD_SOURCING_NOTIFIED,    "checkbox": {"equals": True}},
+            {"property": FIELD_FULFILLMENT_NOTIFIED, "checkbox": {"equals": True}},
+            {"property": FIELD_FILEX_SUBMITTED,      "checkbox": {"equals": False}},
+        ]},
+    }
+    return _run_query(payload)
+
+
+def query_filex_active(within_days: int = 14) -> list[dict]:
+    """
+    Orders dispatched within the last N days that haven't reached terminal:
+      Filex Submitted == true
+      AND FILEX STATUS != "Return to Origin"
+      AND Dispatched At >= now - N days
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=within_days)).isoformat()
+    payload = {
+        "filter": {"and": [
+            {"property": FIELD_FILEX_SUBMITTED, "checkbox": {"equals": True}},
+            {"property": FIELD_FILEX_STATUS,    "select":   {"does_not_equal": "Return to Origin"}},
+            {"property": FIELD_DISPATCHED_AT,   "date":     {"on_or_after": cutoff}},
+        ]},
+    }
+    return _run_query(payload)
+
+
+def query_filex_stuck(hours: int = 24) -> list[dict]:
+    """
+    Orders stuck at 'Label Created' for more than N hours.
+      Filex Submitted == true
+      AND FILEX STATUS == "Label Created"
+      AND Dispatched At < now - N hours
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    payload = {
+        "filter": {"and": [
+            {"property": FIELD_FILEX_SUBMITTED, "checkbox": {"equals": True}},
+            {"property": FIELD_FILEX_STATUS,    "select":   {"equals": "Label Created"}},
+            {"property": FIELD_DISPATCHED_AT,   "date":     {"before": cutoff}},
+        ]},
+    }
+    return _run_query(payload)
