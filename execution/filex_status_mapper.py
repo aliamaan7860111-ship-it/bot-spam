@@ -24,15 +24,30 @@ IN_OPS_COMPOUND = {
 }
 
 
-def map_status(filex_status: str, current_notion_status: str | None) -> str:
+def map_status(filex_status: str | None, current_notion_status: str | None) -> str:
     """
     Convert a Filex webhook status text into the Notion FILEX STATUS value.
 
-    For 'In OPS': the result depends on the current Notion status (e.g.
-    'MNA' + 'In OPS' → 'MNA-OPS'). For everything else, uses DIRECT_MAP
-    or passes through unknown values.
+    Inputs:
+        filex_status: status text from the webhook payload. None or empty
+                      string returns "".
+        current_notion_status: the order's current FILEX STATUS in Notion,
+                               used only to compute compound 'In OPS'
+                               variants (e.g. MNA + In OPS = MNA-OPS).
+
+    Behavior:
+        - Whitespace around `filex_status` is stripped before matching.
+        - Matching is exact-case. Filex's API has been consistent so far;
+          if vendor casing ever drifts (e.g. 'DELIVERED'), the unknown
+          value is passed through and Notion auto-creates the option.
+        - Unknown statuses pass through unchanged so Notion can record
+          them; we add them to DIRECT_MAP later.
     """
+    if not filex_status:
+        return ""
     s = filex_status.strip()
+    if not s:
+        return ""
     if s == "In OPS":
         return IN_OPS_COMPOUND.get(current_notion_status, "In OPS")
     return DIRECT_MAP.get(s, s)

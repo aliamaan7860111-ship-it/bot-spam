@@ -39,5 +39,28 @@ class TestStatusMapper(unittest.TestCase):
             "Receiver Cancelled With Money",
         )
 
+    def test_in_ops_after_lc(self):
+        self.assertEqual(map_status("In OPS", "LC"), "LC-OPS")
+
+    def test_in_ops_after_fd(self):
+        self.assertEqual(map_status("In OPS", "FD"), "FD-OPS")
+
+    def test_in_ops_with_none_current_status(self):
+        self.assertEqual(map_status("In OPS", None), "In OPS")
+
+    def test_empty_string_input_returns_empty(self):
+        self.assertEqual(map_status("", None), "")
+
+    def test_none_input_returns_empty(self):
+        self.assertEqual(map_status(None, None), "")
+
+    def test_trailing_whitespace_on_direct_map_key(self):
+        self.assertEqual(map_status("Delivered ", None), "Delivered")
+
+    def test_case_sensitive_unknown_passes_through(self):
+        # Documents current behavior: lowercase vendor drift will pass
+        # through unchanged rather than match.
+        self.assertEqual(map_status("delivered", None), "delivered")
+
 if __name__ == "__main__":
     unittest.main()
