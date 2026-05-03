@@ -71,6 +71,21 @@ class FilexClient:
         self._token_obtained_at = 0.0
         log.info("Filex token invalidated (account=%s)", self.account)
 
+    def _post_with_401_retry(self, path: str, *, json=None, timeout: int = 120) -> "requests.Response":
+        """
+        POST helper that auto-refreshes the token on a single 401 response.
+        Used by place_orders, get_status, etc. so each method doesn't
+        duplicate the 401 retry boilerplate.
+        """
+        url = f"{self.api_base}{path}"
+        headers = self._auth_headers("application/json")
+        r = requests.post(url, headers=headers, json=json, timeout=timeout)
+        if r.status_code == 401:
+            self._invalidate_token()
+            headers = self._auth_headers("application/json")
+            r = requests.post(url, headers=headers, json=json, timeout=timeout)
+        return r
+
     def place_orders(self, orders: list[dict]) -> dict:
         """
         Submit a batch of orders to Filex.
@@ -84,28 +99,23 @@ class FilexClient:
         Returns:
             dict with keys 'data' ('success' on OK) and 'trackingnos'
             (list of {'tracking_no': str, 'barcode': str} per ShipperRef).
+            For empty input, returns {'data': 'success', 'trackingnos': []}
+            without a network call.
 
         Raises:
-            requests.HTTPError on 4xx/5xx
-            RuntimeError on response body without 'data' key
+            requests.HTTPError on 4xx/5xx (incl. persistent 401 after re-auth retry)
+            RuntimeError if response body's 'data' is not 'success'
         """
-        r = requests.post(
-            f"{self.api_base}/api/order/placebulk",
-            headers=self._auth_headers("application/json"),
+        if not orders:
+            return {"data": "success", "trackingnos": []}
+        r = self._post_with_401_retry(
+            "/api/order/placebulk",
             json={"list": orders},
             timeout=120,
         )
-        if r.status_code == 401:
-            self._invalidate_token()
-            r = requests.post(
-                f"{self.api_base}/api/order/placebulk",
-                headers=self._auth_headers("application/json"),
-                json={"list": orders},
-                timeout=120,
-            )
         r.raise_for_status()
         body = r.json()
-        if "data" not in body:
-            raise RuntimeError(f"Unexpected placebulk response: {body}")
+        if body.get("data") != "success":
+            raise RuntimeError(f"Filex placebulk did not return success: {body}")
         log.info("Filex placed %d order(s)", len(orders))
         return body
