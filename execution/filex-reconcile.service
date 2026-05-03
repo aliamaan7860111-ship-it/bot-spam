@@ -1,0 +1,12 @@
+[Unit]
+Description=Filex nightly reconciliation
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/automation
+EnvironmentFile=/root/automation/.env
+ExecStart=/usr/bin/python3 /root/automation/execution/filex_reconcile.py
+StandardOutput=append:/root/automation/.tmp/filex_reconcile.log
+StandardError=append:/root/automation/.tmp/filex_reconcile.log

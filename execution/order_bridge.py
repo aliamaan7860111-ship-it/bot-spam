@@ -30,7 +30,7 @@ import argparse
 import logging
 import signal
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
@@ -45,9 +45,32 @@ load_dotenv(PROJECT_ROOT / ".env")
 import notion_client as notion
 import telegram_client as tg
 import whatchimp_client as wc
+import filex_status_mapper
+
+# nc alias used by /filex_webhook handler — kept distinct from `notion`
+# so future swaps stay localized.
+nc = notion
+
+FILEX_WEBHOOK_TOKEN = os.getenv("FILEX_WEBHOOK_TOKEN")
+
+
+def _parse_filex_dt(dt_str: str):
+    """Parse Filex's '2026-04-15T00:00:00' format; assume UTC. Returns None on failure."""
+    if not dt_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(dt_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
 
 from telegram import Bot
-from telegram.ext import Application
+from telegram.ext import Application, CommandHandler
+
+from filex_client import FilexClient
+from filex_payload_builder import build_payload, ValidationError
 
 # ---------------------------------------------------------------------------
 # Multi-Brand Configuration
@@ -321,7 +344,215 @@ async def start_health_server():
             path = first_line[1] if len(first_line) > 1 else "/"
             
             # --- Webhook Handling ---
-            if "/whatchimp_webhook" in path:
+            if "/filex_webhook" in path:
+                log.info(f"📦 Filex Webhook ({method}): {path}")
+
+                # Filex only sends POST. Reject everything else with a 405-ish
+                # 200 (we never want Filex to retry on shape mismatch).
+                if method != "POST":
+                    body = json.dumps({
+                        "code": 200,
+                        "isUpdeted": False,
+                        "message": f"Method {method} not supported",
+                    })
+                    status_line = "HTTP/1.1 200 OK\r\n"
+                    headers = (
+                        f"Content-Type: application/json\r\n"
+                        f"Content-Length: {len(body)}\r\n"
+                        f"Connection: close\r\n"
+                        f"\r\n"
+                    )
+                else:
+                    # 1. Read body
+                    body_text = ""
+                    try:
+                        content_len = 0
+                        try:
+                            header_end_idx = lines.index("")
+                        except ValueError:
+                            header_end_idx = len(lines)
+
+                        for line in lines[1:header_end_idx]:
+                            if line.lower().startswith("content-length:"):
+                                content_len = int(line.split(":")[1].strip())
+
+                        body_parts = request_text.split('\r\n\r\n', 1)
+                        if len(body_parts) > 1:
+                            body_text = body_parts[1]
+
+                        if content_len > 0 and len(body_text.encode()) < content_len:
+                            remaining = content_len - len(body_text.encode())
+                            try:
+                                extra_bytes = await asyncio.wait_for(
+                                    reader.readexactly(remaining), timeout=2.0
+                                )
+                                body_text += extra_bytes.decode()
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        log.debug(f"  filex_webhook: error reading body: {e}")
+
+                    # 2. Parse JSON
+                    try:
+                        payload = json.loads(body_text or "{}")
+                        if not isinstance(payload, dict):
+                            raise ValueError("payload is not an object")
+                    except (ValueError, json.JSONDecodeError) as e:
+                        log.warning(f"  filex_webhook: bad JSON — {e}")
+                        body = json.dumps({
+                            "code": 400,
+                            "isUpdeted": False,
+                            "message": f"Bad JSON: {e}",
+                        })
+                        status_line = "HTTP/1.1 400 Bad Request\r\n"
+                        headers = (
+                            f"Content-Type: application/json\r\n"
+                            f"Content-Length: {len(body)}\r\n"
+                            f"Connection: close\r\n"
+                            f"\r\n"
+                        )
+                        response = status_line + headers + body
+                        writer.write(response.encode())
+                        await writer.drain()
+                        return
+
+                    # 3. Verify token
+                    if not FILEX_WEBHOOK_TOKEN or payload.get("Token") != FILEX_WEBHOOK_TOKEN:
+                        # peer info for log forensics
+                        peer = "?"
+                        try:
+                            peer_info = writer.get_extra_info("peername")
+                            if peer_info:
+                                peer = f"{peer_info[0]}:{peer_info[1]}"
+                        except Exception:
+                            pass
+                        # X-Forwarded-For header takes priority if present
+                        for line in lines[1:]:
+                            if line.lower().startswith("x-forwarded-for:"):
+                                peer = line.split(":", 1)[1].strip()
+                                break
+                        log.warning(f"  filex_webhook: token mismatch from {peer}")
+                        body = json.dumps({
+                            "code": 401,
+                            "isUpdeted": False,
+                            "message": "Unauthorized",
+                        })
+                        status_line = "HTTP/1.1 401 Unauthorized\r\n"
+                        headers = (
+                            f"Content-Type: application/json\r\n"
+                            f"Content-Length: {len(body)}\r\n"
+                            f"Connection: close\r\n"
+                            f"\r\n"
+                        )
+                        response = status_line + headers + body
+                        writer.write(response.encode())
+                        await writer.drain()
+                        return
+
+                    shipper_ref = (payload.get("ShipperRef") or "").strip()
+                    status_text = (payload.get("Status") or "").strip()
+                    notes = (payload.get("Notes") or "").strip()
+                    order_date = (payload.get("OrderDate") or "").strip()
+
+                    log.info(
+                        f"  ✓ Filex update: ShipperRef={shipper_ref!r} "
+                        f"Status={status_text!r} OrderDate={order_date!r}"
+                    )
+
+                    # 4. Look up Notion order
+                    order = None
+                    if shipper_ref:
+                        try:
+                            order = nc.find_order_by_shipper_ref(shipper_ref)
+                        except Exception as e:
+                            log.error(f"  filex_webhook: Notion lookup failed for {shipper_ref}: {e}")
+
+                    if order is None:
+                        log.warning(f"  filex_webhook: unknown ShipperRef {shipper_ref!r}")
+                        body = json.dumps({
+                            "code": 200,
+                            "isUpdeted": False,
+                            "message": f"Unknown ShipperRef {shipper_ref}",
+                        })
+                        status_line = "HTTP/1.1 200 OK\r\n"
+                        headers = (
+                            f"Content-Type: application/json\r\n"
+                            f"Content-Length: {len(body)}\r\n"
+                            f"Connection: close\r\n"
+                            f"\r\n"
+                        )
+                        response = status_line + headers + body
+                        writer.write(response.encode())
+                        await writer.drain()
+                        return
+
+                    # 5. Stale-event guard
+                    incoming_dt = _parse_filex_dt(order_date)
+                    stored_last_update = order.get("last_update") or ""
+                    if incoming_dt and stored_last_update:
+                        try:
+                            stored_dt = datetime.fromisoformat(
+                                stored_last_update.replace("Z", "+00:00")
+                            )
+                            if stored_dt.tzinfo is None:
+                                stored_dt = stored_dt.replace(tzinfo=timezone.utc)
+                            if incoming_dt < stored_dt:
+                                log.info(
+                                    f"  filex_webhook: stale event for {shipper_ref} "
+                                    f"({incoming_dt.isoformat()} < {stored_dt.isoformat()})"
+                                )
+                                body = json.dumps({
+                                    "code": 200,
+                                    "isUpdeted": True,
+                                    "message": "Stale event ignored",
+                                })
+                                status_line = "HTTP/1.1 200 OK\r\n"
+                                headers = (
+                                    f"Content-Type: application/json\r\n"
+                                    f"Content-Length: {len(body)}\r\n"
+                                    f"Connection: close\r\n"
+                                    f"\r\n"
+                                )
+                                response = status_line + headers + body
+                                writer.write(response.encode())
+                                await writer.drain()
+                                return
+                        except (ValueError, AttributeError):
+                            # malformed stored date — proceed with update
+                            pass
+
+                    # 6. Map status and update Notion
+                    current_filex_status = order.get("filex_status")
+                    new_status = filex_status_mapper.map_status(status_text, current_filex_status)
+                    page_id = order["page_id"]
+
+                    try:
+                        if new_status:
+                            nc.set_filex_status(page_id, new_status)
+                        nc.set_filex_notes(page_id, notes)
+                        if incoming_dt:
+                            nc.set_last_update(page_id, incoming_dt.isoformat())
+                        log.info(
+                            f"  ✓ Notion updated for {shipper_ref}: "
+                            f"FILEX STATUS → {new_status!r}"
+                        )
+                    except Exception as e:
+                        log.error(f"  filex_webhook: Notion write failed for {shipper_ref}: {e}")
+
+                    body = json.dumps({
+                        "code": 200,
+                        "isUpdeted": True,
+                        "message": "Updated successfully",
+                    })
+                    status_line = "HTTP/1.1 200 OK\r\n"
+                    headers = (
+                        f"Content-Type: application/json\r\n"
+                        f"Content-Length: {len(body)}\r\n"
+                        f"Connection: close\r\n"
+                        f"\r\n"
+                    )
+
+            elif "/whatchimp_webhook" in path:
                 log.info(f"🔔 Incoming Webhook ({method}): {path}")
                 log.info(f"  📦 RAW REQUEST:\n{request_text[:2000]}")
                 
@@ -511,6 +742,136 @@ async def start_health_server():
 
 
 # ---------------------------------------------------------------------------
+# Filex /print all command
+# ---------------------------------------------------------------------------
+
+FILEX_USERNAME       = os.getenv("FILEX_USERNAME")
+FILEX_PASSWORD       = os.getenv("FILEX_PASSWORD")
+FILEX_ACCOUNT_NUMBER = os.getenv("FILEX_ACCOUNT_NUMBER")
+FILEX_API_BASE       = os.getenv("FILEX_API_BASE", "https://filex-shipperapi.dispatchex.com")
+FILEX_TRACKING_BASE  = os.getenv("FILEX_TRACKING_BASE_URL", "https://www.filexexpress.ae/track?awb=")
+
+# tg.TELEGRAM_FULFILLMENT_GROUP_ID is a string; coerce here for chat-id compares.
+try:
+    FULFILLMENT_GROUP_ID = int(tg.TELEGRAM_FULFILLMENT_GROUP_ID) if tg.TELEGRAM_FULFILLMENT_GROUP_ID else 0
+except (TypeError, ValueError):
+    FULFILLMENT_GROUP_ID = 0
+
+# Single shared Filex client (token cached across calls)
+_filex_client: FilexClient | None = None
+
+
+def get_filex_client() -> FilexClient:
+    """Lazy-init a singleton FilexClient so its auth token is reused."""
+    global _filex_client
+    if _filex_client is None:
+        _filex_client = FilexClient(
+            FILEX_USERNAME, FILEX_PASSWORD, FILEX_ACCOUNT_NUMBER, FILEX_API_BASE,
+        )
+    return _filex_client
+
+
+async def cmd_print_all(update, context):
+    """
+    /print all  — place all eligible Notion orders in Filex, write back
+    tracking info, send the combined airway-bill PDF to the fulfillment group.
+    """
+    chat_id = update.effective_chat.id
+    bot = context.bot
+
+    # Restrict to fulfillment group only
+    if FULFILLMENT_GROUP_ID and chat_id != FULFILLMENT_GROUP_ID:
+        await bot.send_message(chat_id, "/print is only available in the fulfillment group.")
+        return
+
+    user_id = update.effective_user.id if update.effective_user else "?"
+    log.info("/print all triggered by %s in chat %s", user_id, chat_id)
+
+    # 1. Query eligible orders from Notion
+    eligible = nc.query_filex_eligible()
+    if not eligible:
+        await bot.send_message(chat_id, "No orders eligible for /print all right now.")
+        return
+
+    # 2. Build payloads with validation
+    payloads: list[dict] = []
+    page_id_by_ref: dict[str, str] = {}
+    for order in eligible:
+        try:
+            payload = build_payload(order)
+        except ValidationError as e:
+            await bot.send_message(
+                chat_id,
+                f"⚠️ Skipped {order.get('order_id', '?')}: {e}",
+            )
+            continue
+        payloads.append(payload)
+        page_id_by_ref[payload["ShipperRef"]] = order.get("page_id") or order.get("id")
+
+    if not payloads:
+        await bot.send_message(chat_id, "No valid orders after validation.")
+        return
+
+    # 3. Lock orders BEFORE the API call (prevents double-submit on retry)
+    for ref, page_id in page_id_by_ref.items():
+        nc.mark_filex_submitted(page_id, True)
+
+    # 4. Place orders via Filex
+    client = get_filex_client()
+    try:
+        result = client.place_orders(payloads)
+    except Exception as e:
+        # Revert locks on failure so a retry can re-submit
+        for ref, page_id in page_id_by_ref.items():
+            nc.mark_filex_submitted(page_id, False)
+        await bot.send_message(chat_id, f"⚠️ Filex submission failed: {e}")
+        log.error("filex placebulk failed", exc_info=True)
+        return
+
+    # 5. Update Notion with tracking info
+    now_iso = datetime.now(timezone.utc).isoformat()
+    tracking_pairs = result.get("trackingnos", [])
+    for entry in tracking_pairs:
+        ref = entry.get("barcode")
+        tn = entry.get("tracking_no")
+        page_id = page_id_by_ref.get(ref)
+        if not page_id:
+            log.warning("Returned ref %s not in our locked set", ref)
+            continue
+        nc.set_tracking_info(page_id, tn, FILEX_TRACKING_BASE + tn)
+        nc.set_filex_status(page_id, "Label Created")
+        nc.set_dispatched_at(page_id, now_iso)
+        nc.set_last_update(page_id, now_iso)
+
+    # 6. Fetch combined PDF
+    tracking_numbers = [e["tracking_no"] for e in tracking_pairs if e.get("tracking_no")]
+    try:
+        pdf_bytes = client.get_label_pdf(tracking_numbers)
+    except Exception as e:
+        await bot.send_message(
+            chat_id,
+            f"✅ Placed {len(tracking_numbers)} orders, but label PDF fetch failed: {e}\n"
+            f"Retry the print manually.",
+        )
+        log.error("filex label pdf fetch failed", exc_info=True)
+        return
+
+    # 7. Send PDF as document attachment
+    today = datetime.now().strftime("%Y-%m-%d")
+    filename = f"filex_labels_{today}_{len(tracking_numbers)}.pdf"
+    await bot.send_document(
+        chat_id,
+        document=pdf_bytes,
+        filename=filename,
+    )
+    log.info(
+        "/print all completed: %d orders, PDF %d bytes",
+        len(tracking_numbers),
+        len(pdf_bytes),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -529,6 +890,9 @@ async def run_bridge():
     handlers = tg.create_command_handlers(notion)
     for handler in handlers:
         app.add_handler(handler)
+
+    # Filex /print command (fulfillment group only — guarded inside the handler)
+    app.add_handler(CommandHandler("print", cmd_print_all))
 
     # Initialize the application and get bot
     await app.initialize()
