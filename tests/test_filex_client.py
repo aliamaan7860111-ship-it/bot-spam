@@ -53,5 +53,29 @@ class TestAuth(unittest.TestCase):
         t2 = client.get_token()
         self.assertEqual(t1, t2)  # second call should hit cache, return same token
 
+
+@unittest.skipUnless(_sandbox_reachable(), SANDBOX_UNREACHABLE_MSG)
+class TestPlaceOrders(unittest.TestCase):
+    def test_place_single_order(self):
+        client = FilexClient(SANDBOX_USERNAME, SANDBOX_PASSWORD, SANDBOX_ACCOUNT, SANDBOX_BASE)
+        result = client.place_orders([{
+            "RecipientName": "Test Customer",
+            "TotalCOG": "1.00",
+            "MobileNumber": "0500000000",
+            "ShipperRef": "TEST-PLAN-001",
+            "AddressCountry": "United Arab Emirates",
+            "City": "Dubai",
+            "Area": "",
+            "Street": "Test Address",
+            "MobileNumber2": "",
+            "Remarks": "TEST - DO NOT DISPATCH",
+            "NumberOfPieces": "1",
+            "Desc1": "Test item",
+        }])
+        self.assertEqual(result["data"], "success")
+        self.assertEqual(len(result["trackingnos"]), 1)
+        self.assertEqual(result["trackingnos"][0]["barcode"], "TEST-PLAN-001")
+        self.assertTrue(result["trackingnos"][0]["tracking_no"].isdigit())
+
 if __name__ == "__main__":
     unittest.main()

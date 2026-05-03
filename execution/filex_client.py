@@ -70,3 +70,42 @@ class FilexClient:
         self._token = None
         self._token_obtained_at = 0.0
         log.info("Filex token invalidated (account=%s)", self.account)
+
+    def place_orders(self, orders: list[dict]) -> dict:
+        """
+        Submit a batch of orders to Filex.
+
+        Args:
+            orders: list of dicts matching placebulk schema (RecipientName,
+                    TotalCOG, MobileNumber, ShipperRef, AddressCountry,
+                    City, Area, Street, MobileNumber2, Remarks,
+                    NumberOfPieces, Desc1).
+
+        Returns:
+            dict with keys 'data' ('success' on OK) and 'trackingnos'
+            (list of {'tracking_no': str, 'barcode': str} per ShipperRef).
+
+        Raises:
+            requests.HTTPError on 4xx/5xx
+            RuntimeError on response body without 'data' key
+        """
+        r = requests.post(
+            f"{self.api_base}/api/order/placebulk",
+            headers=self._auth_headers("application/json"),
+            json={"list": orders},
+            timeout=120,
+        )
+        if r.status_code == 401:
+            self._invalidate_token()
+            r = requests.post(
+                f"{self.api_base}/api/order/placebulk",
+                headers=self._auth_headers("application/json"),
+                json={"list": orders},
+                timeout=120,
+            )
+        r.raise_for_status()
+        body = r.json()
+        if "data" not in body:
+            raise RuntimeError(f"Unexpected placebulk response: {body}")
+        log.info("Filex placed %d order(s)", len(orders))
+        return body
