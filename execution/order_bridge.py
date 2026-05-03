@@ -414,7 +414,7 @@ async def start_health_server():
                         return
 
                     # 3. Verify token
-                    if payload.get("Token") != FILEX_WEBHOOK_TOKEN:
+                    if not FILEX_WEBHOOK_TOKEN or payload.get("Token") != FILEX_WEBHOOK_TOKEN:
                         # peer info for log forensics
                         peer = "?"
                         try:
