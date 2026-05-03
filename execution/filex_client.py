@@ -1,15 +1,22 @@
 """Filex courier API client. Pure HTTP wrapper around their endpoints."""
 
 import time
+import logging
 import requests
+
+log = logging.getLogger("filex_client")
 
 
 class FilexClient:
     """
     Thin client for Filex's REST API.
 
-    Token caching: bearer token expires in 24h; we refresh after 23h
-    or on 401 response from any endpoint.
+    Token caching: bearer token expires in 24h; refreshed lazily after
+    23h. On 401 from a downstream call, callers should invoke
+    `_invalidate_token()` and retry — the wired-up retry happens in the
+    methods added in Tasks 5+ (place_orders, get_status, get_label_pdf).
+
+    Not thread- or async-safe; intended for single-threaded callers.
     """
 
     TOKEN_TTL_SECONDS = 23 * 60 * 60  # 23 hours
@@ -38,12 +45,19 @@ class FilexClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=20,
         )
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            raise RuntimeError(
+                f"Filex auth failed (HTTP {r.status_code}) at {r.url}: {r.text[:300]}"
+            ) from e
         body = r.json()
-        if "access_token" not in body:
-            raise RuntimeError(f"Filex auth failed: {body}")
-        self._token = body["access_token"]
+        token = body.get("access_token")
+        if not token or not isinstance(token, str):
+            raise RuntimeError(f"Filex auth returned no usable token: {body}")
+        self._token = token
         self._token_obtained_at = now
+        log.info("Filex token refreshed (account=%s)", self.account)
         return self._token
 
     def _auth_headers(self, content_type: str | None = None) -> dict:
@@ -55,3 +69,4 @@ class FilexClient:
     def _invalidate_token(self):
         self._token = None
         self._token_obtained_at = 0.0
+        log.info("Filex token invalidated (account=%s)", self.account)
