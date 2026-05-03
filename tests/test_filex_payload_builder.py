@@ -113,5 +113,54 @@ class TestBuildPayload(unittest.TestCase):
             build_payload(order)
         self.assertIn("total", str(ctx.exception).lower())
 
+
+class TestBuildMergedPayload(unittest.TestCase):
+    def _order(self, order_id, total, item):
+        return {
+            "page_id": f"pg-{order_id}",
+            "order_id": order_id,
+            "customer_name": "Salah Alhammadi",
+            "phone": "0509678579",
+            "full_address": "A 165/13 Fujairah",
+            "total": total,
+            "item_qty": item,
+            "internal_note": "",
+        }
+
+    def test_two_orders_merge_correctly(self):
+        from filex_payload_builder import build_merged_payload
+        orders = [
+            self._order("AM3013", 150.00, "LV Ring  1"),
+            self._order("Di1665", 518.99, "RM Watch  1"),
+        ]
+        result = build_merged_payload(orders)
+        self.assertEqual(result["ShipperRef"], "AM3013+Di1665")
+        self.assertEqual(result["TotalCOG"], "668.99")
+        self.assertEqual(result["NumberOfPieces"], "2")
+        self.assertEqual(result["RecipientName"], "Salah Alhammadi")
+        self.assertIn("LV Ring", result["Desc1"])
+        self.assertIn("RM Watch", result["Desc1"])
+        self.assertIn("Merged", result["Remarks"])
+
+    def test_single_order_falls_through_to_normal_build(self):
+        from filex_payload_builder import build_merged_payload, build_payload
+        order = self._order("AM3013", 150.00, "LV Ring  1")
+        merged = build_merged_payload([order])
+        normal = build_payload(order)
+        self.assertEqual(merged, normal)
+
+    def test_three_orders_with_string_totals(self):
+        from filex_payload_builder import build_merged_payload
+        orders = [
+            self._order("A", "AED100.00", "Item A  1"),
+            self._order("B", "AED200.00", "Item B  1"),
+            self._order("C", 300.00, "Item C  1"),
+        ]
+        result = build_merged_payload(orders)
+        self.assertEqual(result["TotalCOG"], "600.00")
+        self.assertEqual(result["NumberOfPieces"], "3")
+        self.assertEqual(result["ShipperRef"], "A+B+C")
+
+
 if __name__ == "__main__":
     unittest.main()

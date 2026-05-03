@@ -83,3 +83,52 @@ def build_payload(order: dict) -> dict:
         "NumberOfPieces": str(pieces),
         "Desc1": desc[:200],
     }
+
+
+def build_merged_payload(orders: list[dict]) -> dict:
+    """
+    Combine multiple Notion orders for the same customer into one Filex payload.
+
+    - ShipperRef = "+".join(order_id for each order)  e.g. "AM3013+Di1665"
+    - TotalCOG = sum of all totals
+    - NumberOfPieces = sum of pieces across orders
+    - Desc1 = combined items (truncated to 200 chars)
+    - All other fields from the FIRST order (name, phone, address)
+
+    Raises:
+        ValidationError if first order is invalid (missing name/phone/address/city)
+    """
+    if not orders:
+        raise ValidationError("empty group")
+    if len(orders) == 1:
+        return build_payload(orders[0])
+
+    # Use first order as the base
+    base = build_payload(orders[0])
+
+    # Combine refs, totals, pieces, descs
+    refs = [o.get("order_id", "?") for o in orders]
+    base["ShipperRef"] = "+".join(refs)
+
+    total_sum = 0.0
+    pieces_sum = 0
+    desc_parts = []
+    for o in orders:
+        total_raw = o.get("total_aed") if o.get("total_aed") is not None else o.get("total")
+        if isinstance(total_raw, (int, float)):
+            total_sum += float(total_raw)
+        elif isinstance(total_raw, str):
+            cleaned = total_raw.strip().upper().removeprefix("AED").replace(",", "").strip()
+            try:
+                total_sum += float(cleaned)
+            except ValueError:
+                pass
+        pieces_sum += parse_pieces(o.get("item_qty") or "")
+        desc_parts.append((o.get("item_qty") or "Item").replace("\n", " + ").strip())
+
+    base["TotalCOG"] = f"{total_sum:.2f}"
+    base["NumberOfPieces"] = str(pieces_sum if pieces_sum > 0 else 1)
+    combined_desc = " | ".join(desc_parts)[:200]
+    base["Desc1"] = combined_desc
+    base["Remarks"] = ((base.get("Remarks") or "") + f" [Merged: {', '.join(refs)}]")[:200]
+    return base
