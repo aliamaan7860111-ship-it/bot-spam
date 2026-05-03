@@ -1,8 +1,13 @@
 """Filex courier API client. Pure HTTP wrapper around their endpoints."""
 
+import io
+import re
 import time
 import logging
+import zlib
+
 import requests
+from pypdf import PdfReader, PdfWriter
 
 log = logging.getLogger("filex_client")
 
@@ -145,3 +150,67 @@ class FilexClient:
         r.raise_for_status()
         log.info("Filex status fetched for %d tracking number(s)", len(tracking_numbers))
         return r.json().get("data", [])
+
+    def get_label_pdf(self, tracking_numbers: list[str]) -> bytes:
+        """
+        Fetch a combined airway-bill PDF for the given tracking numbers,
+        with empty-page detection (Filex's batch endpoint occasionally
+        emits a near-empty page that we strip).
+
+        Args:
+            tracking_numbers: list of Filex AWB strings (must be non-empty).
+
+        Returns:
+            Cleaned PDF as bytes, with any empty pages removed.
+
+        Raises:
+            ValueError if tracking_numbers is empty
+            requests.HTTPError on 4xx/5xx (incl. persistent 401 after re-auth retry)
+        """
+        if not tracking_numbers:
+            raise ValueError("tracking_numbers must not be empty")
+        url = (
+            f"{self.api_base}/api/order/GetAirWayBill"
+            f"?TrackingNos={','.join(tracking_numbers)}"
+        )
+        r = requests.get(url, headers=self._auth_headers(), timeout=180)
+        if r.status_code == 401:
+            self._invalidate_token()
+            r = requests.get(url, headers=self._auth_headers(), timeout=180)
+        r.raise_for_status()
+        log.info("Filex label PDF fetched for %d tracking number(s)", len(tracking_numbers))
+        return self._strip_empty_pages(r.content)
+
+    @staticmethod
+    def _strip_empty_pages(raw_pdf: bytes) -> bytes:
+        """
+        Detect and drop pages whose content stream decompresses to <1000 bytes.
+
+        Filex's GetAirWayBill batch endpoint occasionally inserts a near-empty
+        page in multi-label PDFs (only contains a footer string). This helper
+        identifies those by content-stream size and reassembles a clean PDF.
+        """
+        content_refs = re.findall(rb"/Contents\s+(\d+)", raw_pdf)
+        empty_indices: set[int] = set()
+        for i, ref in enumerate(content_refs):
+            pat = (rf"^{ref.decode()} 0 obj.*?stream\n(.*?)\nendstream").encode()
+            m = re.search(pat, raw_pdf, re.DOTALL | re.MULTILINE)
+            if not m:
+                continue
+            try:
+                if len(zlib.decompress(m.group(1))) < 1000:
+                    empty_indices.add(i)
+            except zlib.error:
+                empty_indices.add(i)
+
+        if not empty_indices:
+            return raw_pdf
+
+        reader = PdfReader(io.BytesIO(raw_pdf))
+        writer = PdfWriter()
+        for i, page in enumerate(reader.pages):
+            if i not in empty_indices:
+                writer.add_page(page)
+        out = io.BytesIO()
+        writer.write(out)
+        return out.getvalue()

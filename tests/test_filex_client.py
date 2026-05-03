@@ -110,5 +110,35 @@ class TestGetStatus(unittest.TestCase):
         self.assertEqual(client.get_status([]), [])
 
 
+@unittest.skipUnless(_sandbox_reachable(), SANDBOX_UNREACHABLE_MSG)
+class TestLabelPdf(unittest.TestCase):
+    def test_get_label_returns_clean_pdf(self):
+        client = FilexClient(SANDBOX_USERNAME, SANDBOX_PASSWORD, SANDBOX_ACCOUNT, SANDBOX_BASE)
+        place_result = client.place_orders([{
+            "RecipientName": "Label Test",
+            "TotalCOG": "1.00",
+            "MobileNumber": "0500000000",
+            "ShipperRef": "TEST-LABEL-001",
+            "AddressCountry": "United Arab Emirates",
+            "City": "Dubai",
+            "Area": "",
+            "Street": "Test",
+            "MobileNumber2": "",
+            "Remarks": "TEST",
+            "NumberOfPieces": "1",
+            "Desc1": "Test",
+        }])
+        tn = place_result["trackingnos"][0]["tracking_no"]
+
+        pdf_bytes = client.get_label_pdf([tn])
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+        self.assertGreater(len(pdf_bytes), 50_000)  # real label > 50KB
+
+    def test_get_label_empty_input_raises(self):
+        client = FilexClient(SANDBOX_USERNAME, SANDBOX_PASSWORD, SANDBOX_ACCOUNT, SANDBOX_BASE)
+        with self.assertRaises(ValueError):
+            client.get_label_pdf([])
+
+
 if __name__ == "__main__":
     unittest.main()
