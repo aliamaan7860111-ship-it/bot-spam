@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Filex reconciliation nightly at 23:00
+
+[Timer]
+OnCalendar=*-*-* 23:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
