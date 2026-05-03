@@ -20,7 +20,7 @@ def build_payload(order: dict) -> dict:
     Args:
         order: dict from notion_client.parse_order with keys
                'order_id', 'customer_name', 'phone', 'full_address',
-               'total', 'item_qty', 'internal_note'.
+               'total_aed' (or legacy 'total'), 'item_qty', 'internal_note'.
 
     Returns:
         dict matching Filex placebulk schema.
@@ -50,7 +50,8 @@ def build_payload(order: dict) -> dict:
     if not city:
         raise ValidationError(f"could not extract city from address: {address[:50]}")
 
-    total = order.get("total")
+    # parse_order exposes the total as `total_aed`; accept legacy `total` too.
+    total = order.get("total_aed") if order.get("total_aed") is not None else order.get("total")
     if total is None or not isinstance(total, (int, float)):
         raise ValidationError(f"invalid total: {total!r}")
     total_str = f"{float(total):.2f}"

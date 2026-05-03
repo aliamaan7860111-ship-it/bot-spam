@@ -68,5 +68,12 @@ class TestBuildPayload(unittest.TestCase):
         result = build_payload(order)
         self.assertEqual(result["NumberOfPieces"], "2")
 
+    def test_total_aed_key_also_accepted(self):
+        order = self._full_order()
+        order.pop("total")
+        order["total_aed"] = 295.00
+        result = build_payload(order)
+        self.assertEqual(result["TotalCOG"], "295.00")
+
 if __name__ == "__main__":
     unittest.main()
