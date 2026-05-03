@@ -486,8 +486,30 @@ async def start_health_server():
                         except Exception as e:
                             log.error(f"  filex_webhook: Notion lookup failed for {shipper_ref}: {e}")
 
+                    incoming_tn = (payload.get("TrackingNo") or payload.get("Track_id") or "").strip()
+
+                    # If ShipperRef didn't match, fall back to tracking number lookup.
+                    # This handles cases where Notion stores the ORDER ID with formatting that
+                    # differs from what we sent to Filex (e.g. "WA 67" in Notion vs "WA67" sent).
+                    if not order and incoming_tn:
+                        try:
+                            linked = nc.query_orders_by_tracking(incoming_tn)
+                        except Exception as e:
+                            log.error(
+                                f"  filex_webhook: fallback tracking lookup failed for {incoming_tn}: {e}"
+                            )
+                            linked = []
+                        if linked:
+                            order = linked[0]
+                            log.info(
+                                "  filex_webhook: ShipperRef %r not found, but tracking %s matched %d Notion row(s)",
+                                shipper_ref, incoming_tn, len(linked),
+                            )
+
                     if order is None:
-                        log.warning(f"  filex_webhook: unknown ShipperRef {shipper_ref!r}")
+                        log.warning(
+                            f"  filex_webhook: unknown ShipperRef {shipper_ref!r} and tracking {incoming_tn!r}"
+                        )
                         body = json.dumps({
                             "code": 200,
                             "isUpdeted": False,
