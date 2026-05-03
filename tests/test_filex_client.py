@@ -77,5 +77,38 @@ class TestPlaceOrders(unittest.TestCase):
         self.assertEqual(result["trackingnos"][0]["barcode"], "TEST-PLAN-001")
         self.assertTrue(result["trackingnos"][0]["tracking_no"].isdigit())
 
+
+@unittest.skipUnless(_sandbox_reachable(), SANDBOX_UNREACHABLE_MSG)
+class TestGetStatus(unittest.TestCase):
+    def test_get_status_for_known_tracking(self):
+        # First place a test order, then query its status
+        client = FilexClient(SANDBOX_USERNAME, SANDBOX_PASSWORD, SANDBOX_ACCOUNT, SANDBOX_BASE)
+        place_result = client.place_orders([{
+            "RecipientName": "Status Test",
+            "TotalCOG": "1.00",
+            "MobileNumber": "0500000000",
+            "ShipperRef": "TEST-STAT-001",
+            "AddressCountry": "United Arab Emirates",
+            "City": "Dubai",
+            "Area": "",
+            "Street": "Test Address",
+            "MobileNumber2": "",
+            "Remarks": "TEST",
+            "NumberOfPieces": "1",
+            "Desc1": "Test",
+        }])
+        tn = place_result["trackingnos"][0]["tracking_no"]
+
+        statuses = client.get_status([tn])
+        self.assertEqual(len(statuses), 1)
+        self.assertEqual(statuses[0]["tracking_No"], tn)
+        self.assertEqual(statuses[0]["shipperRef"], "TEST-STAT-001")
+        self.assertIn("trackingStatus", statuses[0])
+
+    def test_get_status_empty_input_returns_empty_list(self):
+        client = FilexClient(SANDBOX_USERNAME, SANDBOX_PASSWORD, SANDBOX_ACCOUNT, SANDBOX_BASE)
+        self.assertEqual(client.get_status([]), [])
+
+
 if __name__ == "__main__":
     unittest.main()

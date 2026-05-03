@@ -119,3 +119,29 @@ class FilexClient:
             raise RuntimeError(f"Filex placebulk did not return success: {body}")
         log.info("Filex placed %d order(s)", len(orders))
         return body
+
+    def get_status(self, tracking_numbers: list[str]) -> list[dict]:
+        """
+        Fetch the latest status for one or more tracking numbers.
+
+        Args:
+            tracking_numbers: list of Filex AWB strings.
+
+        Returns:
+            list of dicts: {'tracking_No', 'shipperRef', 'trackingStatus',
+                            'trackingStatusID', 'eventTime'}
+            For empty input, returns [] without a network call.
+
+        Raises:
+            requests.HTTPError on 4xx/5xx (incl. persistent 401 after re-auth retry)
+        """
+        if not tracking_numbers:
+            return []
+        r = self._post_with_401_retry(
+            "/api/order/ShipmentLastStatus",
+            json={"trackingNos": ",".join(tracking_numbers)},
+            timeout=60,
+        )
+        r.raise_for_status()
+        log.info("Filex status fetched for %d tracking number(s)", len(tracking_numbers))
+        return r.json().get("data", [])
