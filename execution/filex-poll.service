@@ -1,0 +1,12 @@
+[Unit]
+Description=Filex 5-minute polling (temp, until webhook is registered)
+After=network.target
+
+[Service]
+Type=oneshot
+User=bilal
+WorkingDirectory=/home/bilal/automation
+EnvironmentFile=/home/bilal/automation/.env
+ExecStart=/home/bilal/automation/venv/bin/python /home/bilal/automation/execution/filex_reconcile.py --status-only --cutoff-iso 2026-05-03T21:00:00+00:00
+StandardOutput=append:/home/bilal/automation/.tmp/filex_poll.log
+StandardError=append:/home/bilal/automation/.tmp/filex_poll.log

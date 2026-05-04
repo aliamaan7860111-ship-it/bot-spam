@@ -1,12 +1,12 @@
 [Unit]
-Description=Filex nightly reconciliation
+Description=Filex nightly reconciliation (alerts + status)
 After=network.target
 
 [Service]
 Type=oneshot
-User=root
-WorkingDirectory=/root/automation
-EnvironmentFile=/root/automation/.env
-ExecStart=/usr/bin/python3 /root/automation/execution/filex_reconcile.py
-StandardOutput=append:/root/automation/.tmp/filex_reconcile.log
-StandardError=append:/root/automation/.tmp/filex_reconcile.log
+User=bilal
+WorkingDirectory=/home/bilal/automation
+EnvironmentFile=/home/bilal/automation/.env
+ExecStart=/home/bilal/automation/venv/bin/python /home/bilal/automation/execution/filex_reconcile.py
+StandardOutput=append:/home/bilal/automation/.tmp/filex_reconcile.log
+StandardError=append:/home/bilal/automation/.tmp/filex_reconcile.log

@@ -854,6 +854,22 @@ def query_filex_active(within_days: int = 14) -> list[dict]:
     return _run_query(payload)
 
 
+def query_filex_active_since(cutoff_iso: str) -> list[dict]:
+    """
+    Orders dispatched at or after cutoff_iso, Filex Submitted == true,
+    FILEX STATUS != "Return to Origin". Used by the polling timer to
+    scope updates to a specific window (e.g. "today after 2 AM PKT").
+    """
+    payload = {
+        "filter": {"and": [
+            {"property": FIELD_FILEX_SUBMITTED, "checkbox": {"equals": True}},
+            {"property": FIELD_FILEX_STATUS,    "select":   {"does_not_equal": "Return to Origin"}},
+            {"property": FIELD_DISPATCHED_AT,   "date":     {"on_or_after": cutoff_iso}},
+        ]},
+    }
+    return _run_query(payload)
+
+
 def query_filex_stuck(hours: int = 24) -> list[dict]:
     """
     Orders stuck at 'Label Created' for more than N hours.
