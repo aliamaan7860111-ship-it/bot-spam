@@ -13,6 +13,7 @@ Run via systemd timer (filex-reconcile.timer) at 23:00 daily.
 
 import os
 import sys
+import argparse
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -69,9 +70,12 @@ def alert_stuck_orders():
     log.info("Sent stuck-order alert for %d orders.", len(stuck))
 
 
-def reconcile_active_orders():
+def reconcile_active_orders(cutoff_iso: str | None = None):
     """Poll Filex for status drift and update Notion when found."""
-    active = nc.query_filex_active(within_days=14)
+    if cutoff_iso:
+        active = nc.query_filex_active_since(cutoff_iso)
+    else:
+        active = nc.query_filex_active(within_days=14)
     if not active:
         log.info("No active orders to reconcile.")
         return
@@ -115,15 +119,28 @@ def reconcile_active_orders():
 
 
 def main():
-    log.info("=== Filex reconcile run starting ===")
+    parser = argparse.ArgumentParser(description="Filex reconciliation runner.")
+    parser.add_argument("--status-only", action="store_true",
+                        help="Skip stuck-order alerts; only reconcile statuses (used by polling timer).")
+    parser.add_argument("--cutoff-iso", default=None,
+                        help="ISO timestamp; only poll orders dispatched at or after this. "
+                             "Default: 14 days back.")
+    args = parser.parse_args()
+
+    log.info("=== Filex reconcile starting (status_only=%s, cutoff=%s) ===",
+             args.status_only, args.cutoff_iso)
+
+    if not args.status_only:
+        try:
+            alert_stuck_orders()
+        except Exception:
+            log.exception("alert_stuck_orders crashed")
+
     try:
-        alert_stuck_orders()
-    except Exception:
-        log.exception("alert_stuck_orders crashed")
-    try:
-        reconcile_active_orders()
+        reconcile_active_orders(cutoff_iso=args.cutoff_iso)
     except Exception:
         log.exception("reconcile_active_orders crashed")
+
     log.info("=== Filex reconcile run done ===")
 
 
