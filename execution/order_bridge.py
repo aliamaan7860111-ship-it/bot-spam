@@ -842,6 +842,47 @@ def get_filex_client() -> FilexClient:
     return _filex_client
 
 
+def _lock_pages(page_ids_by_ref: dict[str, list[str]]) -> None:
+    """Set Filex Submitted=✓ on every page in the lock set."""
+    for page_ids in page_ids_by_ref.values():
+        for page_id in page_ids:
+            nc.mark_filex_submitted(page_id, True)
+
+
+def _unlock_pages(page_ids_by_ref: dict[str, list[str]]) -> None:
+    """Revert Filex Submitted=☐ on every page in the lock set."""
+    for page_ids in page_ids_by_ref.values():
+        for page_id in page_ids:
+            nc.mark_filex_submitted(page_id, False)
+
+
+def _write_tracking_to_notion(
+    page_ids_by_ref: dict[str, list[str]],
+    tracking_pairs: list[dict],
+) -> list[str]:
+    """Write tracking + status + timestamps to every Notion row that placed.
+    Returns the list of tracking numbers that were written (in placebulk order)."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    written = []
+    for entry in tracking_pairs:
+        ref = entry.get("barcode")
+        tn = entry.get("tracking_no")
+        page_ids = page_ids_by_ref.get(ref, [])
+        if not page_ids:
+            log.warning("Returned ref %s not in our locked set", ref)
+            continue
+        for page_id in page_ids:
+            nc.set_tracking_info(page_id, tn, FILEX_TRACKING_BASE + tn)
+            nc.set_filex_status(page_id, "Label Created")
+            nc.set_dispatched_at(page_id, now_iso)
+            nc.set_last_update(page_id, now_iso)
+        if len(page_ids) > 1:
+            log.info(f"  ↳ Wrote tracking {tn} to {len(page_ids)} merged Notion rows ({ref})")
+        if tn:
+            written.append(tn)
+    return written
+
+
 async def cmd_print_all(update, context):
     """
     /print all  — place all eligible Notion orders in Filex, write back
@@ -941,43 +982,21 @@ async def cmd_print_all(update, context):
         return
 
     # 4. Lock orders BEFORE the API call (prevents double-submit on retry)
-    for ref, page_ids in page_ids_by_ref.items():
-        for page_id in page_ids:
-            nc.mark_filex_submitted(page_id, True)
+    _lock_pages(page_ids_by_ref)
 
     # 5. Place orders via Filex
     client = get_filex_client()
     try:
         result = client.place_orders(payloads)
     except Exception as e:
-        # Revert locks on failure so a retry can re-submit
-        for ref, page_ids in page_ids_by_ref.items():
-            for page_id in page_ids:
-                nc.mark_filex_submitted(page_id, False)
+        _unlock_pages(page_ids_by_ref)
         await _safe_send_message(bot, chat_id, f"⚠️ Filex submission failed: {e}")
         log.error("filex placebulk failed", exc_info=True)
         return
 
     # 6. Update Notion with tracking info — fan out across all linked rows for merged shipments
-    now_iso = datetime.now(timezone.utc).isoformat()
     tracking_pairs = result.get("trackingnos", [])
-    for entry in tracking_pairs:
-        ref = entry.get("barcode")
-        tn = entry.get("tracking_no")
-        page_ids = page_ids_by_ref.get(ref, [])
-        if not page_ids:
-            log.warning("Returned ref %s not in our locked set", ref)
-            continue
-        for page_id in page_ids:
-            nc.set_tracking_info(page_id, tn, FILEX_TRACKING_BASE + tn)
-            nc.set_filex_status(page_id, "Label Created")
-            nc.set_dispatched_at(page_id, now_iso)
-            nc.set_last_update(page_id, now_iso)
-        if len(page_ids) > 1:
-            log.info(f"  ↳ Wrote tracking {tn} to {len(page_ids)} merged Notion rows ({ref})")
-
-    # 6. Fetch combined PDF
-    tracking_numbers = [e["tracking_no"] for e in tracking_pairs if e.get("tracking_no")]
+    tracking_numbers = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs)
     try:
         pdf_bytes = client.get_label_pdf(tracking_numbers)
     except Exception as e:
