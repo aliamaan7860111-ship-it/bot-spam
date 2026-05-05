@@ -113,6 +113,41 @@ class TestBuildPayload(unittest.TestCase):
             build_payload(order)
         self.assertIn("total", str(ctx.exception).lower())
 
+    def test_no_city_error_starts_with_category(self):
+        order = self._full_order()
+        order["full_address"] = "Random building street villa no_city_token"
+        with self.assertRaises(ValidationError) as ctx:
+            build_payload(order)
+        self.assertTrue(str(ctx.exception).startswith("missing city in address"))
+
+    def test_invalid_total_error_starts_with_category(self):
+        order = self._full_order()
+        order["total"] = "AED"
+        with self.assertRaises(ValidationError) as ctx:
+            build_payload(order)
+        self.assertTrue(str(ctx.exception).startswith("invalid total"))
+
+    def test_missing_phone_error_starts_with_category(self):
+        order = self._full_order()
+        order["phone"] = ""
+        with self.assertRaises(ValidationError) as ctx:
+            build_payload(order)
+        self.assertTrue(str(ctx.exception).startswith("missing phone"))
+
+    def test_missing_name_error_starts_with_category(self):
+        order = self._full_order()
+        order["customer_name"] = ""
+        with self.assertRaises(ValidationError) as ctx:
+            build_payload(order)
+        self.assertTrue(str(ctx.exception).startswith("missing customer name"))
+
+    def test_missing_address_error_starts_with_category(self):
+        order = self._full_order()
+        order["full_address"] = ""
+        with self.assertRaises(ValidationError) as ctx:
+            build_payload(order)
+        self.assertTrue(str(ctx.exception).startswith("missing address"))
+
 
 from filex_payload_builder import parse_total
 

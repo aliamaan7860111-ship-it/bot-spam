@@ -76,7 +76,7 @@ def build_payload(order: dict) -> dict:
     if phone.startswith("971"):
         phone = "0" + phone[3:]
     if not phone or len(phone) < 10:
-        raise ValidationError(f"invalid phone after normalization: {phone}")
+        raise ValidationError(f"missing phone (invalid after normalization: {phone!r})")
 
     address = (order.get("full_address") or "").strip()
     if not address:
@@ -84,7 +84,7 @@ def build_payload(order: dict) -> dict:
 
     city = normalize_city(address)
     if not city:
-        raise ValidationError(f"could not extract city from address: {address[:50]}")
+        raise ValidationError(f"missing city in address: {address[:60]!r}")
 
     total_raw = order.get("total_aed") if order.get("total_aed") is not None else order.get("total")
     total = parse_total(total_raw)
