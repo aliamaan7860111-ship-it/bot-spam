@@ -216,8 +216,9 @@ implementation:
       `\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?`
    b. Strip commas from the match.
    c. Parse as `float`.
-3. If the field is anything else, raise `ValidationError("invalid total: ...")`.
-4. Reject any result with `value <= 0` — raises `ValidationError("invalid total: ...")`.
+   d. If no match found, raise `ValidationError("invalid total: ...")`.
+3. If the field is `None` or any other type, raise `ValidationError("invalid total: ...")`.
+4. Reject any result with `value < 0` — raises `ValidationError("invalid total: ...")`. Zero is allowed (exchange orders).
 
 The regex captures either:
 - A grouped form with thousand separators: `1,234.56`, `1,234,567.89`
@@ -241,8 +242,10 @@ surrounding characters.
 | `"300/-"` | `300.0` |
 | `"AED"` | raises ValidationError |
 | `""` | raises ValidationError |
-| `0` | raises ValidationError (non-positive) |
-| `0.0` | raises ValidationError (non-positive) |
+| `None` | raises ValidationError |
+| `0` | `0.0` (allowed for exchange orders) |
+| `0.0` | `0.0` (allowed for exchange orders) |
+| `-5` | raises ValidationError (negative) |
 
 ## Architecture
 
