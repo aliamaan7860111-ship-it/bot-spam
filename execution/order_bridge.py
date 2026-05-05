@@ -87,10 +87,10 @@ async def _safe_send_message(bot, chat_id: int, text: str) -> None:
         log.warning("Telegram send_message failed: %s | text=%s", e, text[:100])
 
 
-async def _safe_send_document(bot, chat_id: int, document: bytes, filename: str) -> bool:
+async def _safe_send_document(bot, chat_id: int, document: bytes, filename: str, **kwargs) -> bool:
     """Send a Telegram document, log timeouts/errors instead of crashing. Returns True on success."""
     try:
-        await bot.send_document(chat_id, document=document, filename=filename)
+        await bot.send_document(chat_id, document=document, filename=filename, **kwargs)
         return True
     except (TimedOut, TelegramError) as e:
         log.error("Telegram send_document failed: %s | filename=%s", e, filename)
@@ -883,6 +883,81 @@ def _write_tracking_to_notion(
     return written
 
 
+# Validation reason categories — must match prefixes in build_payload's ValidationError messages.
+_SKIP_CATEGORIES: list[tuple[str, str]] = [
+    ("missing city in address", "Missing city in address"),
+    ("invalid total",            "Invalid total"),
+    ("missing phone",            "Missing phone"),
+    ("missing customer name",    "Missing customer name"),
+    ("missing address",          "Missing address"),
+]
+
+
+def _categorize_validation_error(msg: str) -> str:
+    """Map a ValidationError message to one of the fixed category headers."""
+    for prefix, header in _SKIP_CATEGORIES:
+        if msg.startswith(prefix):
+            return header
+    return "Other"
+
+
+def _format_validation_skip_message(
+    skips_by_category: dict[str, list[tuple[str, str]]],
+) -> str:
+    """Build the single Telegram message body for validation skips.
+
+    skips_by_category maps the category header to a list of (order_id, reason_detail).
+    """
+    total = sum(len(v) for v in skips_by_category.values())
+    lines = [
+        f"⚠️ Skipped {total} order(s) — fix and re-run /print or use /print <ID>:",
+        "",
+    ]
+    for _, header in _SKIP_CATEGORIES:
+        items = skips_by_category.get(header, [])
+        if not items:
+            continue
+        lines.append(f"{header} ({len(items)}):")
+        for oid, detail in items:
+            short = (detail[:60] + "…") if len(detail) > 60 else detail
+            lines.append(f"  • {oid} — {short}")
+        lines.append("")
+    other = skips_by_category.get("Other", [])
+    if other:
+        lines.append(f"Other ({len(other)}):")
+        for oid, detail in other:
+            short = (detail[:60] + "…") if len(detail) > 60 else detail
+            lines.append(f"  • {oid} — {short}")
+    return "\n".join(lines).rstrip()
+
+
+def _format_already_labeled_message(rows: list[dict]) -> str:
+    """Build the single Telegram message body for 'already has Filex label' skips."""
+    lines = [
+        f"ℹ️ {len(rows)} order(s) already have a Filex label — verify and tick \"Filex Submitted\":",
+    ]
+    for r in rows:
+        oid = r.get("order_id", "?")
+        status = r.get("filex_status", "?") or "?"
+        tn = r.get("tracking_number", "") or "(no tracking)"
+        lines.append(f"  • {oid} — status: {status}, tracking: {tn}")
+    return "\n".join(lines)
+
+
+async def _send_long_message(bot, chat_id: int, body: str, fallback_filename: str) -> None:
+    """Send a single Telegram message; fall back to .txt attachment if too long."""
+    LIMIT = 3800  # defensive margin under Telegram's 4096 char cap
+    if len(body) <= LIMIT:
+        await _safe_send_message(bot, chat_id, body)
+        return
+    await _safe_send_document(
+        bot,
+        chat_id,
+        document=body.encode("utf-8"),
+        filename=fallback_filename,
+    )
+
+
 async def cmd_print_all(update, context):
     """
     /print all  — place all eligible Notion orders in Filex, write back
@@ -899,19 +974,29 @@ async def cmd_print_all(update, context):
     user_id = update.effective_user.id if update.effective_user else "?"
     log.info("/print all triggered by %s in chat %s", user_id, chat_id)
 
-    # 1. Query eligible orders from Notion
-    eligible = nc.query_filex_eligible()
+    # 1. Query every Processed order — no checkbox gates.
+    eligible = nc.query_filex_processed()
     if not eligible:
-        await _safe_send_message(bot, chat_id, "No orders eligible for /print all right now.")
+        await _safe_send_message(bot, chat_id, "No orders with status Processed.")
         return
 
-    # 2. Group eligible orders by normalized phone — same customer = merged shipment
+    # 2. Classify each row.
+    skips_by_category: dict[str, list[tuple[str, str]]] = {}
+    already_labeled: list[dict] = []
+    to_place: list[dict] = []
+
+    for order in eligible:
+        if (order.get("filex_status") or "").strip():
+            already_labeled.append(order)
+            continue
+        to_place.append(order)
+
+    # 3. Group placeable orders by phone for auto-merge.
     from collections import defaultdict
     from whatchimp_client import clean_phone_number
-
     grouped: dict[str, list[dict]] = defaultdict(list)
-    orphans: list[dict] = []  # orders missing phone — handled individually
-    for order in eligible:
+    orphans: list[dict] = []
+    for order in to_place:
         raw_phone = order.get("phone", "") or ""
         if not raw_phone:
             orphans.append(order)
@@ -922,13 +1007,13 @@ async def cmd_print_all(update, context):
             continue
         grouped[normalized].append(order)
 
-    # 3. Build payloads — one per group (merged when group has >1 order)
+    # 4. Build payloads — validation errors collected, not sent per-order.
     payloads: list[dict] = []
-    page_ids_by_ref: dict[str, list[str]] = {}  # ref -> list of page_ids (multiple if merged)
+    page_ids_by_ref: dict[str, list[str]] = {}
 
-    def _register(ref: str, page_ids: list[str], payload: dict) -> None:
-        payloads.append(payload)
-        page_ids_by_ref[ref] = page_ids
+    def _record_skip(order_id: str, err_msg: str) -> None:
+        category = _categorize_validation_error(err_msg)
+        skips_by_category.setdefault(category, []).append((order_id, err_msg))
 
     for phone, group in grouped.items():
         if len(group) == 1:
@@ -936,55 +1021,48 @@ async def cmd_print_all(update, context):
             try:
                 payload = build_payload(order)
             except ValidationError as e:
-                await _safe_send_message(
-                    bot,
-                    chat_id,
-                    f"⚠️ Skipped {order.get('order_id', '?')}: {e}",
-                )
+                _record_skip(order.get("order_id", "?"), str(e))
                 continue
-            _register(payload["ShipperRef"], [order["page_id"]], payload)
+            payloads.append(payload)
+            page_ids_by_ref[payload["ShipperRef"]] = [order["page_id"]]
         else:
             try:
                 merged_payload = build_merged_payload(group)
             except ValidationError as e:
-                order_ids = [o.get("order_id", "?") for o in group]
-                await _safe_send_message(
-                    bot,
-                    chat_id,
-                    f"⚠️ Skipped merged group {order_ids}: {e}",
-                )
+                # Merged group fails on the FIRST order's validation; report all members.
+                for o in group:
+                    _record_skip(o.get("order_id", "?"), str(e))
                 continue
-            _register(
-                merged_payload["ShipperRef"],
-                [o["page_id"] for o in group],
-                merged_payload,
-            )
+            payloads.append(merged_payload)
+            page_ids_by_ref[merged_payload["ShipperRef"]] = [o["page_id"] for o in group]
             log.info(
                 f"  ↳ Merging {len(group)} orders for phone {phone}: "
                 f"{[o.get('order_id') for o in group]}"
             )
 
-    # Phone-less orders are processed individually (no merging possible)
     for order in orphans:
         try:
             payload = build_payload(order)
         except ValidationError as e:
-            await _safe_send_message(
-                bot,
-                chat_id,
-                f"⚠️ Skipped {order.get('order_id', '?')}: {e}",
-            )
+            _record_skip(order.get("order_id", "?"), str(e))
             continue
-        _register(payload["ShipperRef"], [order["page_id"]], payload)
+        payloads.append(payload)
+        page_ids_by_ref[payload["ShipperRef"]] = [order["page_id"]]
+
+    # 5. Send the two skip messages (single API call each).
+    if skips_by_category:
+        body = _format_validation_skip_message(skips_by_category)
+        await _send_long_message(bot, chat_id, body, "validation_skips.txt")
+    if already_labeled:
+        body = _format_already_labeled_message(already_labeled)
+        await _send_long_message(bot, chat_id, body, "already_labeled.txt")
 
     if not payloads:
-        await _safe_send_message(bot, chat_id, "No valid orders after validation.")
+        await _safe_send_message(bot, chat_id, "No labels generated — all eligible orders were skipped.")
         return
 
-    # 4. Lock orders BEFORE the API call (prevents double-submit on retry)
+    # 6. Lock, place, update.
     _lock_pages(page_ids_by_ref)
-
-    # 5. Place orders via Filex
     client = get_filex_client()
     try:
         result = client.place_orders(payloads)
@@ -994,34 +1072,38 @@ async def cmd_print_all(update, context):
         log.error("filex placebulk failed", exc_info=True)
         return
 
-    # 6. Update Notion with tracking info — fan out across all linked rows for merged shipments
     tracking_pairs = result.get("trackingnos", [])
     tracking_numbers = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs)
+
+    # 7. Fetch combined PDF.
+    if not tracking_numbers:
+        await _safe_send_message(
+            bot, chat_id,
+            "⚠️ Filex returned 'success' but no tracking numbers — verify in Filex portal.",
+        )
+        return
     try:
         pdf_bytes = client.get_label_pdf(tracking_numbers)
     except Exception as e:
         await _safe_send_message(
-            bot,
-            chat_id,
+            bot, chat_id,
             f"✅ Placed {len(tracking_numbers)} orders, but label PDF fetch failed: {e}\n"
-            f"Retry the print manually.",
+            f"Use /print <ID> for each order to retrieve the label.",
         )
         log.error("filex label pdf fetch failed", exc_info=True)
         return
 
-    # 7. Send PDF as document attachment
     today = datetime.now().strftime("%Y-%m-%d")
     filename = f"filex_labels_{today}_{len(tracking_numbers)}.pdf"
     await _safe_send_document(
-        bot,
-        chat_id,
+        bot, chat_id,
         document=pdf_bytes,
         filename=filename,
+        caption=f"✅ Placed {len(tracking_numbers)} order(s). Filex labels attached.",
     )
     log.info(
         "/print all completed: %d orders, PDF %d bytes",
-        len(tracking_numbers),
-        len(pdf_bytes),
+        len(tracking_numbers), len(pdf_bytes),
     )
 
 
