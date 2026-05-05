@@ -30,7 +30,7 @@ import argparse
 import logging
 import signal
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
 
@@ -53,15 +53,20 @@ nc = notion
 
 FILEX_WEBHOOK_TOKEN = os.getenv("FILEX_WEBHOOK_TOKEN")
 
+# Filex's eventTime arrives without a tz suffix; empirically it tracks PKT.
+# Tagging it as UTC made stored Last Update render 5h ahead in Notion.
+FILEX_TZ = timezone(timedelta(hours=5))
+
 
 def _parse_filex_dt(dt_str: str):
-    """Parse Filex's '2026-04-15T00:00:00' format; assume UTC. Returns None on failure."""
+    """Parse Filex's '2026-04-15T00:00:00' format. Naive values are PKT.
+    Returns a tz-aware datetime, or None on failure."""
     if not dt_str:
         return None
     try:
         dt = datetime.fromisoformat(dt_str)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=FILEX_TZ)
         return dt
     except ValueError:
         return None

@@ -113,8 +113,9 @@ def reconcile_active_orders(cutoff_iso: str | None = None):
                 nc.set_filex_status(order["page_id"], mapped)
                 event_iso = r.get("eventTime")
                 if event_iso:
+                    # Filex eventTime is naive PKT; tag as +05:00 so stored UTC matches reality.
                     if "T" in event_iso and "+" not in event_iso and "Z" not in event_iso:
-                        event_iso = event_iso + "+00:00"
+                        event_iso = event_iso + "+05:00"
                     nc.set_last_update(order["page_id"], event_iso)
 
 
