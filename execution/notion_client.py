@@ -835,6 +835,20 @@ def query_filex_eligible() -> list[dict]:
     return _run_query(payload)
 
 
+def query_filex_processed() -> list[dict]:
+    """
+    Every order whose ORDER STATUS == "Processed", regardless of
+    Sourcing Notified, Fulfillment Notified, or Filex Submitted state.
+
+    Used by /print all (the per-order classifier inspects FILEX STATUS
+    and validation result to decide what to do with each row).
+    """
+    payload = {
+        "filter": {"property": FIELD_ORDER_STATUS, "select": {"equals": "Processed"}},
+    }
+    return _run_query(payload)
+
+
 def query_filex_active(within_days: int = 14) -> list[dict]:
     """
     Orders dispatched within the last N days that haven't reached terminal:
