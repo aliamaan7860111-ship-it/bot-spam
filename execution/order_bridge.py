@@ -958,6 +958,29 @@ async def _send_long_message(bot, chat_id: int, body: str, fallback_filename: st
     )
 
 
+async def cmd_print(update, context):
+    """Dispatch /print:
+       - /print all           → bulk placement
+       - /print <ORDER_ID>    → single placement / label re-fetch
+       - /print               → usage hint
+       - /print AM 3030       → joined as 'AM 3030' for the Notion lookup
+    """
+    args = context.args or []
+    if not args:
+        chat_id = update.effective_chat.id
+        await _safe_send_message(
+            context.bot, chat_id,
+            "Usage:\n  /print all          — print every Processed order\n"
+            "  /print <ORDER_ID>   — print one order (e.g. /print AM3030)",
+        )
+        return
+    if len(args) == 1 and args[0].lower() == "all":
+        await cmd_print_all(update, context)
+        return
+    order_id = " ".join(args)
+    await cmd_print_one(update, context, order_id)
+
+
 async def cmd_print_all(update, context):
     """
     /print all  — place all eligible Notion orders in Filex, write back
@@ -1107,6 +1130,135 @@ async def cmd_print_all(update, context):
     )
 
 
+def _resolve_order_id(raw: str) -> dict | None:
+    """Look up an order in Notion, tolerating WA127/WA 127 spelling variants.
+
+    Returns the parsed order dict on first match, or None if no variant matches.
+    """
+    candidates = [raw]
+    if " " not in raw and len(raw) >= 3 and raw[:2].isalpha() and raw[2:3].isdigit():
+        candidates.append(f"{raw[:2]} {raw[2:]}")
+    if " " in raw:
+        candidates.append(raw.replace(" ", ""))
+    seen = set()
+    for cand in candidates:
+        if cand in seen:
+            continue
+        seen.add(cand)
+        order = nc.find_order_by_shipper_ref(cand)
+        if order:
+            return order
+    return None
+
+
+async def cmd_print_one(update, context, order_id: str) -> None:
+    """/print <ORDER_ID> — single-order placement OR label re-fetch."""
+    chat_id = update.effective_chat.id
+    bot = context.bot
+
+    if FULFILLMENT_GROUP_ID and chat_id != FULFILLMENT_GROUP_ID:
+        await _safe_send_message(bot, chat_id, "/print is only available in the fulfillment group.")
+        return
+
+    user_id = update.effective_user.id if update.effective_user else "?"
+    log.info("/print %r triggered by %s in chat %s", order_id, user_id, chat_id)
+
+    # 1. Lookup with spelling-variant tolerance.
+    order = _resolve_order_id(order_id)
+    if not order:
+        await _safe_send_message(bot, chat_id, f"⚠️ Order {order_id} not found in CRM.")
+        return
+
+    canonical_id = order.get("order_id") or order_id
+
+    # 2. Status gate.
+    status = (order.get("order_status") or "").strip()
+    if status != "Processed":
+        await _safe_send_message(
+            bot, chat_id,
+            f"⚠️ {canonical_id} status is \"{status or '(blank)'}\" — only \"Processed\" orders can be printed.",
+        )
+        return
+
+    client = get_filex_client()
+
+    # 3. Already-labeled branch: re-fetch existing label, no placement.
+    filex_status = (order.get("filex_status") or "").strip()
+    if filex_status:
+        tn = (order.get("tracking_number") or "").strip()
+        if not tn:
+            await _safe_send_message(
+                bot, chat_id,
+                f"⚠️ {canonical_id} has FILEX STATUS but no tracking number. Manual investigation needed.",
+            )
+            return
+        try:
+            pdf_bytes = client.get_label_pdf([tn])
+        except Exception as e:
+            await _safe_send_message(
+                bot, chat_id,
+                f"⚠️ {canonical_id} label fetch failed: {e}",
+            )
+            log.error("/print %s label fetch failed", canonical_id, exc_info=True)
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        await _safe_send_document(
+            bot, chat_id,
+            document=pdf_bytes,
+            filename=f"{canonical_id.replace(' ', '_')}_{today}.pdf",
+            caption=f"ℹ️ {canonical_id} already has a Filex label. Status: {filex_status}. Tracking: {tn}.",
+        )
+        return
+
+    # 4. Fresh placement branch.
+    try:
+        payload = build_payload(order)
+    except ValidationError as e:
+        await _safe_send_message(
+            bot, chat_id,
+            f"⚠️ {canonical_id} cannot be placed: {e}. Fix the order in CRM and retry.",
+        )
+        return
+
+    page_ids_by_ref = {payload["ShipperRef"]: [order["page_id"]]}
+    _lock_pages(page_ids_by_ref)
+    try:
+        result = client.place_orders([payload])
+    except Exception as e:
+        _unlock_pages(page_ids_by_ref)
+        await _safe_send_message(bot, chat_id, f"⚠️ {canonical_id} Filex submission failed: {e}")
+        log.error("/print %s placebulk failed", canonical_id, exc_info=True)
+        return
+
+    tracking_pairs = result.get("trackingnos", [])
+    written = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs)
+    if not written:
+        await _safe_send_message(
+            bot, chat_id,
+            f"⚠️ {canonical_id} placed but Filex returned no tracking number — verify in Filex portal.",
+        )
+        return
+
+    tn = written[0]
+    try:
+        pdf_bytes = client.get_label_pdf([tn])
+    except Exception as e:
+        await _safe_send_message(
+            bot, chat_id,
+            f"✅ {canonical_id} placed (tracking: {tn}), but label fetch failed: {e}",
+        )
+        log.error("/print %s label fetch failed after placement", canonical_id, exc_info=True)
+        return
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    await _safe_send_document(
+        bot, chat_id,
+        document=pdf_bytes,
+        filename=f"{canonical_id.replace(' ', '_')}_{today}.pdf",
+        caption=f"✅ {canonical_id} placed. Tracking: {tn}.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1128,7 +1280,7 @@ async def run_bridge():
         app.add_handler(handler)
 
     # Filex /print command (fulfillment group only — guarded inside the handler)
-    app.add_handler(CommandHandler("print", cmd_print_all))
+    app.add_handler(CommandHandler("print", cmd_print))
 
     # Initialize the application and get bot
     await app.initialize()
