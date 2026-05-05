@@ -113,6 +113,103 @@ class TestBuildPayload(unittest.TestCase):
             build_payload(order)
         self.assertIn("total", str(ctx.exception).lower())
 
+    def test_no_city_error_starts_with_category(self):
+        order = self._full_order()
+        order["full_address"] = "Random building street villa no_city_token"
+        with self.assertRaises(ValidationError) as ctx:
+            build_payload(order)
+        self.assertTrue(str(ctx.exception).startswith("missing city in address"))
+
+    def test_invalid_total_error_starts_with_category(self):
+        order = self._full_order()
+        order["total"] = "AED"
+        with self.assertRaises(ValidationError) as ctx:
+            build_payload(order)
+        self.assertTrue(str(ctx.exception).startswith("invalid total"))
+
+    def test_missing_phone_error_starts_with_category(self):
+        order = self._full_order()
+        order["phone"] = ""
+        with self.assertRaises(ValidationError) as ctx:
+            build_payload(order)
+        self.assertTrue(str(ctx.exception).startswith("missing phone"))
+
+    def test_missing_name_error_starts_with_category(self):
+        order = self._full_order()
+        order["customer_name"] = ""
+        with self.assertRaises(ValidationError) as ctx:
+            build_payload(order)
+        self.assertTrue(str(ctx.exception).startswith("missing customer name"))
+
+    def test_missing_address_error_starts_with_category(self):
+        order = self._full_order()
+        order["full_address"] = ""
+        with self.assertRaises(ValidationError) as ctx:
+            build_payload(order)
+        self.assertTrue(str(ctx.exception).startswith("missing address"))
+
+
+from filex_payload_builder import parse_total
+
+
+class TestParseTotal(unittest.TestCase):
+    def test_int_passes_through(self):
+        self.assertEqual(parse_total(300), 300.0)
+
+    def test_float_passes_through(self):
+        self.assertEqual(parse_total(300.99), 300.99)
+
+    def test_zero_int_allowed(self):
+        self.assertEqual(parse_total(0), 0.0)
+
+    def test_zero_float_allowed(self):
+        self.assertEqual(parse_total(0.0), 0.0)
+
+    def test_negative_int_rejected(self):
+        with self.assertRaises(ValidationError):
+            parse_total(-5)
+
+    def test_plain_string_number(self):
+        self.assertEqual(parse_total("300"), 300.0)
+
+    def test_string_with_decimal(self):
+        self.assertEqual(parse_total("300.99"), 300.99)
+
+    def test_aed_prefix_with_space(self):
+        self.assertEqual(parse_total("AED 300.00"), 300.0)
+
+    def test_aed_prefix_no_space(self):
+        self.assertEqual(parse_total("AED1,111.99"), 1111.99)
+
+    def test_inline_note_after_amount(self):
+        # The bug from the AM3088 incident: was returning 1.00 instead of 1949.39.
+        self.assertEqual(
+            parse_total("AED1,949.39\n\nnote: send all good quality and same"),
+            1949.39,
+        )
+
+    def test_million_thousand_separators(self):
+        self.assertEqual(parse_total("AED 1,234,567.89"), 1234567.89)
+
+    def test_trailing_slash_dash(self):
+        self.assertEqual(parse_total("300/-"), 300.0)
+
+    def test_aed_only_no_number_rejected(self):
+        with self.assertRaises(ValidationError):
+            parse_total("AED")
+
+    def test_empty_string_rejected(self):
+        with self.assertRaises(ValidationError):
+            parse_total("")
+
+    def test_none_rejected(self):
+        with self.assertRaises(ValidationError):
+            parse_total(None)
+
+    def test_unsupported_type_rejected(self):
+        with self.assertRaises(ValidationError):
+            parse_total(["300"])
+
 
 class TestBuildMergedPayload(unittest.TestCase):
     def _order(self, order_id, total, item):

@@ -87,10 +87,10 @@ async def _safe_send_message(bot, chat_id: int, text: str) -> None:
         log.warning("Telegram send_message failed: %s | text=%s", e, text[:100])
 
 
-async def _safe_send_document(bot, chat_id: int, document: bytes, filename: str) -> bool:
+async def _safe_send_document(bot, chat_id: int, document: bytes, filename: str, **kwargs) -> bool:
     """Send a Telegram document, log timeouts/errors instead of crashing. Returns True on success."""
     try:
-        await bot.send_document(chat_id, document=document, filename=filename)
+        await bot.send_document(chat_id, document=document, filename=filename, **kwargs)
         return True
     except (TimedOut, TelegramError) as e:
         log.error("Telegram send_document failed: %s | filename=%s", e, filename)
@@ -842,6 +842,145 @@ def get_filex_client() -> FilexClient:
     return _filex_client
 
 
+def _lock_pages(page_ids_by_ref: dict[str, list[str]]) -> None:
+    """Set Filex Submitted=✓ on every page in the lock set."""
+    for page_ids in page_ids_by_ref.values():
+        for page_id in page_ids:
+            nc.mark_filex_submitted(page_id, True)
+
+
+def _unlock_pages(page_ids_by_ref: dict[str, list[str]]) -> None:
+    """Revert Filex Submitted=☐ on every page in the lock set."""
+    for page_ids in page_ids_by_ref.values():
+        for page_id in page_ids:
+            nc.mark_filex_submitted(page_id, False)
+
+
+def _write_tracking_to_notion(
+    page_ids_by_ref: dict[str, list[str]],
+    tracking_pairs: list[dict],
+) -> list[str]:
+    """Write tracking + status + timestamps to every Notion row that placed.
+    Returns the list of tracking numbers that were written (in placebulk order)."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    written = []
+    for entry in tracking_pairs:
+        ref = entry.get("barcode")
+        tn = entry.get("tracking_no")
+        page_ids = page_ids_by_ref.get(ref, [])
+        if not page_ids:
+            log.warning("Returned ref %s not in our locked set", ref)
+            continue
+        for page_id in page_ids:
+            nc.set_tracking_info(page_id, tn, FILEX_TRACKING_BASE + tn)
+            nc.set_filex_status(page_id, "Label Created")
+            nc.set_dispatched_at(page_id, now_iso)
+            nc.set_last_update(page_id, now_iso)
+        if len(page_ids) > 1:
+            log.info(f"  ↳ Wrote tracking {tn} to {len(page_ids)} merged Notion rows ({ref})")
+        if tn:
+            written.append(tn)
+    return written
+
+
+# Validation reason categories — must match prefixes in build_payload's ValidationError messages.
+_SKIP_CATEGORIES: list[tuple[str, str]] = [
+    ("missing city in address", "Missing city in address"),
+    ("invalid total",            "Invalid total"),
+    ("missing phone",            "Missing phone"),
+    ("missing customer name",    "Missing customer name"),
+    ("missing address",          "Missing address"),
+]
+
+
+def _categorize_validation_error(msg: str) -> str:
+    """Map a ValidationError message to one of the fixed category headers."""
+    for prefix, header in _SKIP_CATEGORIES:
+        if msg.startswith(prefix):
+            return header
+    return "Other"
+
+
+def _format_validation_skip_message(
+    skips_by_category: dict[str, list[tuple[str, str]]],
+) -> str:
+    """Build the single Telegram message body for validation skips.
+
+    skips_by_category maps the category header to a list of (order_id, reason_detail).
+    """
+    total = sum(len(v) for v in skips_by_category.values())
+    lines = [
+        f"⚠️ Skipped {total} order(s) — fix and re-run /print or use /print <ID>:",
+        "",
+    ]
+    for _, header in _SKIP_CATEGORIES:
+        items = skips_by_category.get(header, [])
+        if not items:
+            continue
+        lines.append(f"{header} ({len(items)}):")
+        for oid, detail in items:
+            short = (detail[:60] + "…") if len(detail) > 60 else detail
+            lines.append(f"  • {oid} — {short}")
+        lines.append("")
+    other = skips_by_category.get("Other", [])
+    if other:
+        lines.append(f"Other ({len(other)}):")
+        for oid, detail in other:
+            short = (detail[:60] + "…") if len(detail) > 60 else detail
+            lines.append(f"  • {oid} — {short}")
+    return "\n".join(lines).rstrip()
+
+
+def _format_already_labeled_message(rows: list[dict]) -> str:
+    """Build the single Telegram message body for 'already has Filex label' skips."""
+    lines = [
+        f"ℹ️ {len(rows)} order(s) already have a Filex label — verify and tick \"Filex Submitted\":",
+    ]
+    for r in rows:
+        oid = r.get("order_id", "?")
+        status = r.get("filex_status", "?") or "?"
+        tn = r.get("tracking_number", "") or "(no tracking)"
+        lines.append(f"  • {oid} — status: {status}, tracking: {tn}")
+    return "\n".join(lines)
+
+
+async def _send_long_message(bot, chat_id: int, body: str, fallback_filename: str) -> None:
+    """Send a single Telegram message; fall back to .txt attachment if too long."""
+    LIMIT = 3800  # defensive margin under Telegram's 4096 char cap
+    if len(body) <= LIMIT:
+        await _safe_send_message(bot, chat_id, body)
+        return
+    await _safe_send_document(
+        bot,
+        chat_id,
+        document=body.encode("utf-8"),
+        filename=fallback_filename,
+    )
+
+
+async def cmd_print(update, context):
+    """Dispatch /print:
+       - /print all           → bulk placement
+       - /print <ORDER_ID>    → single placement / label re-fetch
+       - /print               → usage hint
+       - /print AM 3030       → joined as 'AM 3030' for the Notion lookup
+    """
+    args = context.args or []
+    if not args:
+        chat_id = update.effective_chat.id
+        await _safe_send_message(
+            context.bot, chat_id,
+            "Usage:\n  /print all          — print every Processed order\n"
+            "  /print <ORDER_ID>   — print one order (e.g. /print AM3030)",
+        )
+        return
+    if len(args) == 1 and args[0].lower() == "all":
+        await cmd_print_all(update, context)
+        return
+    order_id = " ".join(args)
+    await cmd_print_one(update, context, order_id)
+
+
 async def cmd_print_all(update, context):
     """
     /print all  — place all eligible Notion orders in Filex, write back
@@ -858,19 +997,29 @@ async def cmd_print_all(update, context):
     user_id = update.effective_user.id if update.effective_user else "?"
     log.info("/print all triggered by %s in chat %s", user_id, chat_id)
 
-    # 1. Query eligible orders from Notion
-    eligible = nc.query_filex_eligible()
+    # 1. Query every Processed order — no checkbox gates.
+    eligible = nc.query_filex_processed()
     if not eligible:
-        await _safe_send_message(bot, chat_id, "No orders eligible for /print all right now.")
+        await _safe_send_message(bot, chat_id, "No orders with status Processed.")
         return
 
-    # 2. Group eligible orders by normalized phone — same customer = merged shipment
+    # 2. Classify each row.
+    skips_by_category: dict[str, list[tuple[str, str]]] = {}
+    already_labeled: list[dict] = []
+    to_place: list[dict] = []
+
+    for order in eligible:
+        if (order.get("filex_status") or "").strip():
+            already_labeled.append(order)
+            continue
+        to_place.append(order)
+
+    # 3. Group placeable orders by phone for auto-merge.
     from collections import defaultdict
     from whatchimp_client import clean_phone_number
-
     grouped: dict[str, list[dict]] = defaultdict(list)
-    orphans: list[dict] = []  # orders missing phone — handled individually
-    for order in eligible:
+    orphans: list[dict] = []
+    for order in to_place:
         raw_phone = order.get("phone", "") or ""
         if not raw_phone:
             orphans.append(order)
@@ -881,13 +1030,13 @@ async def cmd_print_all(update, context):
             continue
         grouped[normalized].append(order)
 
-    # 3. Build payloads — one per group (merged when group has >1 order)
+    # 4. Build payloads — validation errors collected, not sent per-order.
     payloads: list[dict] = []
-    page_ids_by_ref: dict[str, list[str]] = {}  # ref -> list of page_ids (multiple if merged)
+    page_ids_by_ref: dict[str, list[str]] = {}
 
-    def _register(ref: str, page_ids: list[str], payload: dict) -> None:
-        payloads.append(payload)
-        page_ids_by_ref[ref] = page_ids
+    def _record_skip(order_id: str, err_msg: str) -> None:
+        category = _categorize_validation_error(err_msg)
+        skips_by_category.setdefault(category, []).append((order_id, err_msg))
 
     for phone, group in grouped.items():
         if len(group) == 1:
@@ -895,114 +1044,218 @@ async def cmd_print_all(update, context):
             try:
                 payload = build_payload(order)
             except ValidationError as e:
-                await _safe_send_message(
-                    bot,
-                    chat_id,
-                    f"⚠️ Skipped {order.get('order_id', '?')}: {e}",
-                )
+                _record_skip(order.get("order_id", "?"), str(e))
                 continue
-            _register(payload["ShipperRef"], [order["page_id"]], payload)
+            payloads.append(payload)
+            page_ids_by_ref[payload["ShipperRef"]] = [order["page_id"]]
         else:
             try:
                 merged_payload = build_merged_payload(group)
             except ValidationError as e:
-                order_ids = [o.get("order_id", "?") for o in group]
-                await _safe_send_message(
-                    bot,
-                    chat_id,
-                    f"⚠️ Skipped merged group {order_ids}: {e}",
-                )
+                # Merged group fails on the FIRST order's validation; report all members.
+                for o in group:
+                    _record_skip(o.get("order_id", "?"), str(e))
                 continue
-            _register(
-                merged_payload["ShipperRef"],
-                [o["page_id"] for o in group],
-                merged_payload,
-            )
+            payloads.append(merged_payload)
+            page_ids_by_ref[merged_payload["ShipperRef"]] = [o["page_id"] for o in group]
             log.info(
                 f"  ↳ Merging {len(group)} orders for phone {phone}: "
                 f"{[o.get('order_id') for o in group]}"
             )
 
-    # Phone-less orders are processed individually (no merging possible)
     for order in orphans:
         try:
             payload = build_payload(order)
         except ValidationError as e:
-            await _safe_send_message(
-                bot,
-                chat_id,
-                f"⚠️ Skipped {order.get('order_id', '?')}: {e}",
-            )
+            _record_skip(order.get("order_id", "?"), str(e))
             continue
-        _register(payload["ShipperRef"], [order["page_id"]], payload)
+        payloads.append(payload)
+        page_ids_by_ref[payload["ShipperRef"]] = [order["page_id"]]
+
+    # 5. Send the two skip messages (single API call each).
+    if skips_by_category:
+        body = _format_validation_skip_message(skips_by_category)
+        await _send_long_message(bot, chat_id, body, "validation_skips.txt")
+    if already_labeled:
+        body = _format_already_labeled_message(already_labeled)
+        await _send_long_message(bot, chat_id, body, "already_labeled.txt")
 
     if not payloads:
-        await _safe_send_message(bot, chat_id, "No valid orders after validation.")
+        await _safe_send_message(bot, chat_id, "No labels generated — all eligible orders were skipped.")
         return
 
-    # 4. Lock orders BEFORE the API call (prevents double-submit on retry)
-    for ref, page_ids in page_ids_by_ref.items():
-        for page_id in page_ids:
-            nc.mark_filex_submitted(page_id, True)
-
-    # 5. Place orders via Filex
+    # 6. Lock, place, update.
+    _lock_pages(page_ids_by_ref)
     client = get_filex_client()
     try:
         result = client.place_orders(payloads)
     except Exception as e:
-        # Revert locks on failure so a retry can re-submit
-        for ref, page_ids in page_ids_by_ref.items():
-            for page_id in page_ids:
-                nc.mark_filex_submitted(page_id, False)
+        _unlock_pages(page_ids_by_ref)
         await _safe_send_message(bot, chat_id, f"⚠️ Filex submission failed: {e}")
         log.error("filex placebulk failed", exc_info=True)
         return
 
-    # 6. Update Notion with tracking info — fan out across all linked rows for merged shipments
-    now_iso = datetime.now(timezone.utc).isoformat()
     tracking_pairs = result.get("trackingnos", [])
-    for entry in tracking_pairs:
-        ref = entry.get("barcode")
-        tn = entry.get("tracking_no")
-        page_ids = page_ids_by_ref.get(ref, [])
-        if not page_ids:
-            log.warning("Returned ref %s not in our locked set", ref)
-            continue
-        for page_id in page_ids:
-            nc.set_tracking_info(page_id, tn, FILEX_TRACKING_BASE + tn)
-            nc.set_filex_status(page_id, "Label Created")
-            nc.set_dispatched_at(page_id, now_iso)
-            nc.set_last_update(page_id, now_iso)
-        if len(page_ids) > 1:
-            log.info(f"  ↳ Wrote tracking {tn} to {len(page_ids)} merged Notion rows ({ref})")
+    tracking_numbers = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs)
 
-    # 6. Fetch combined PDF
-    tracking_numbers = [e["tracking_no"] for e in tracking_pairs if e.get("tracking_no")]
+    # 7. Fetch combined PDF.
+    if not tracking_numbers:
+        await _safe_send_message(
+            bot, chat_id,
+            "⚠️ Filex returned 'success' but no tracking numbers — verify in Filex portal.",
+        )
+        return
     try:
         pdf_bytes = client.get_label_pdf(tracking_numbers)
     except Exception as e:
         await _safe_send_message(
-            bot,
-            chat_id,
+            bot, chat_id,
             f"✅ Placed {len(tracking_numbers)} orders, but label PDF fetch failed: {e}\n"
-            f"Retry the print manually.",
+            f"Use /print <ID> for each order to retrieve the label.",
         )
         log.error("filex label pdf fetch failed", exc_info=True)
         return
 
-    # 7. Send PDF as document attachment
     today = datetime.now().strftime("%Y-%m-%d")
     filename = f"filex_labels_{today}_{len(tracking_numbers)}.pdf"
     await _safe_send_document(
-        bot,
-        chat_id,
+        bot, chat_id,
         document=pdf_bytes,
         filename=filename,
+        caption=f"✅ Placed {len(tracking_numbers)} order(s). Filex labels attached.",
     )
     log.info(
         "/print all completed: %d orders, PDF %d bytes",
-        len(tracking_numbers),
-        len(pdf_bytes),
+        len(tracking_numbers), len(pdf_bytes),
+    )
+
+
+def _resolve_order_id(raw: str) -> dict | None:
+    """Look up an order in Notion, tolerating WA127/WA 127 spelling variants.
+
+    Returns the parsed order dict on first match, or None if no variant matches.
+    """
+    candidates = [raw]
+    if " " not in raw and len(raw) >= 3 and raw[:2].isalpha() and raw[2:3].isdigit():
+        candidates.append(f"{raw[:2]} {raw[2:]}")
+    if " " in raw:
+        candidates.append(raw.replace(" ", ""))
+    seen = set()
+    for cand in candidates:
+        if cand in seen:
+            continue
+        seen.add(cand)
+        order = nc.find_order_by_shipper_ref(cand)
+        if order:
+            return order
+    return None
+
+
+async def cmd_print_one(update, context, order_id: str) -> None:
+    """/print <ORDER_ID> — single-order placement OR label re-fetch."""
+    chat_id = update.effective_chat.id
+    bot = context.bot
+
+    if FULFILLMENT_GROUP_ID and chat_id != FULFILLMENT_GROUP_ID:
+        await _safe_send_message(bot, chat_id, "/print is only available in the fulfillment group.")
+        return
+
+    user_id = update.effective_user.id if update.effective_user else "?"
+    log.info("/print %r triggered by %s in chat %s", order_id, user_id, chat_id)
+
+    # 1. Lookup with spelling-variant tolerance.
+    order = _resolve_order_id(order_id)
+    if not order:
+        await _safe_send_message(bot, chat_id, f"⚠️ Order {order_id} not found in CRM.")
+        return
+
+    canonical_id = order.get("order_id") or order_id
+
+    # 2. Status gate.
+    status = (order.get("order_status") or "").strip()
+    if status != "Processed":
+        await _safe_send_message(
+            bot, chat_id,
+            f"⚠️ {canonical_id} status is \"{status or '(blank)'}\" — only \"Processed\" orders can be printed.",
+        )
+        return
+
+    client = get_filex_client()
+
+    # 3. Already-labeled branch: re-fetch existing label, no placement.
+    filex_status = (order.get("filex_status") or "").strip()
+    if filex_status:
+        tn = (order.get("tracking_number") or "").strip()
+        if not tn:
+            await _safe_send_message(
+                bot, chat_id,
+                f"⚠️ {canonical_id} has FILEX STATUS but no tracking number. Manual investigation needed.",
+            )
+            return
+        try:
+            pdf_bytes = client.get_label_pdf([tn])
+        except Exception as e:
+            await _safe_send_message(
+                bot, chat_id,
+                f"⚠️ {canonical_id} label fetch failed: {e}",
+            )
+            log.error("/print %s label fetch failed", canonical_id, exc_info=True)
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        await _safe_send_document(
+            bot, chat_id,
+            document=pdf_bytes,
+            filename=f"{canonical_id.replace(' ', '_')}_{today}.pdf",
+            caption=f"ℹ️ {canonical_id} already has a Filex label. Status: {filex_status}. Tracking: {tn}.",
+        )
+        return
+
+    # 4. Fresh placement branch.
+    try:
+        payload = build_payload(order)
+    except ValidationError as e:
+        await _safe_send_message(
+            bot, chat_id,
+            f"⚠️ {canonical_id} cannot be placed: {e}. Fix the order in CRM and retry.",
+        )
+        return
+
+    page_ids_by_ref = {payload["ShipperRef"]: [order["page_id"]]}
+    _lock_pages(page_ids_by_ref)
+    try:
+        result = client.place_orders([payload])
+    except Exception as e:
+        _unlock_pages(page_ids_by_ref)
+        await _safe_send_message(bot, chat_id, f"⚠️ {canonical_id} Filex submission failed: {e}")
+        log.error("/print %s placebulk failed", canonical_id, exc_info=True)
+        return
+
+    tracking_pairs = result.get("trackingnos", [])
+    written = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs)
+    if not written:
+        await _safe_send_message(
+            bot, chat_id,
+            f"⚠️ {canonical_id} placed but Filex returned no tracking number — verify in Filex portal.",
+        )
+        return
+
+    tn = written[0]
+    try:
+        pdf_bytes = client.get_label_pdf([tn])
+    except Exception as e:
+        await _safe_send_message(
+            bot, chat_id,
+            f"✅ {canonical_id} placed (tracking: {tn}), but label fetch failed: {e}",
+        )
+        log.error("/print %s label fetch failed after placement", canonical_id, exc_info=True)
+        return
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    await _safe_send_document(
+        bot, chat_id,
+        document=pdf_bytes,
+        filename=f"{canonical_id.replace(' ', '_')}_{today}.pdf",
+        caption=f"✅ {canonical_id} placed. Tracking: {tn}.",
     )
 
 
@@ -1027,7 +1280,7 @@ async def run_bridge():
         app.add_handler(handler)
 
     # Filex /print command (fulfillment group only — guarded inside the handler)
-    app.add_handler(CommandHandler("print", cmd_print_all))
+    app.add_handler(CommandHandler("print", cmd_print))
 
     # Initialize the application and get bot
     await app.initialize()
