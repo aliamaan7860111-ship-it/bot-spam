@@ -114,6 +114,68 @@ class TestBuildPayload(unittest.TestCase):
         self.assertIn("total", str(ctx.exception).lower())
 
 
+from filex_payload_builder import parse_total
+
+
+class TestParseTotal(unittest.TestCase):
+    def test_int_passes_through(self):
+        self.assertEqual(parse_total(300), 300.0)
+
+    def test_float_passes_through(self):
+        self.assertEqual(parse_total(300.99), 300.99)
+
+    def test_zero_int_allowed(self):
+        self.assertEqual(parse_total(0), 0.0)
+
+    def test_zero_float_allowed(self):
+        self.assertEqual(parse_total(0.0), 0.0)
+
+    def test_negative_int_rejected(self):
+        with self.assertRaises(ValidationError):
+            parse_total(-5)
+
+    def test_plain_string_number(self):
+        self.assertEqual(parse_total("300"), 300.0)
+
+    def test_string_with_decimal(self):
+        self.assertEqual(parse_total("300.99"), 300.99)
+
+    def test_aed_prefix_with_space(self):
+        self.assertEqual(parse_total("AED 300.00"), 300.0)
+
+    def test_aed_prefix_no_space(self):
+        self.assertEqual(parse_total("AED1,111.99"), 1111.99)
+
+    def test_inline_note_after_amount(self):
+        # The bug from the AM3088 incident: was returning 1.00 instead of 1949.39.
+        self.assertEqual(
+            parse_total("AED1,949.39\n\nnote: send all good quality and same"),
+            1949.39,
+        )
+
+    def test_million_thousand_separators(self):
+        self.assertEqual(parse_total("AED 1,234,567.89"), 1234567.89)
+
+    def test_trailing_slash_dash(self):
+        self.assertEqual(parse_total("300/-"), 300.0)
+
+    def test_aed_only_no_number_rejected(self):
+        with self.assertRaises(ValidationError):
+            parse_total("AED")
+
+    def test_empty_string_rejected(self):
+        with self.assertRaises(ValidationError):
+            parse_total("")
+
+    def test_none_rejected(self):
+        with self.assertRaises(ValidationError):
+            parse_total(None)
+
+    def test_unsupported_type_rejected(self):
+        with self.assertRaises(ValidationError):
+            parse_total(["300"])
+
+
 class TestBuildMergedPayload(unittest.TestCase):
     def _order(self, order_id, total, item):
         return {

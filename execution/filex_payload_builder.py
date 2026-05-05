@@ -1,5 +1,6 @@
 """Build Filex placebulk payloads from Notion order dicts, with validation."""
 
+import re
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -11,6 +12,41 @@ from whatchimp_client import clean_phone_number
 
 class ValidationError(ValueError):
     """Raised when an order is missing required fields for Filex."""
+
+
+_TOTAL_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+
+
+def parse_total(raw) -> float:
+    """
+    Extract a non-negative float from a Notion total field.
+
+    Accepts:
+      - int / float: returned as float (zero allowed for exchange orders).
+      - str: extracts the FIRST numeric token. Handles 'AED' prefix,
+        thousand-separator commas, decimals, trailing notes, '/-' suffix.
+
+    Raises:
+        ValidationError if the value is None, an unsupported type,
+        a string with no numeric content, or a negative number.
+    """
+    if isinstance(raw, bool):
+        raise ValidationError(f"invalid total: {raw!r}")
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+    elif isinstance(raw, str):
+        m = _TOTAL_RE.search(raw)
+        if not m:
+            raise ValidationError(f"invalid total: {raw!r}")
+        try:
+            value = float(m.group(0).replace(",", ""))
+        except ValueError:
+            raise ValidationError(f"invalid total: {raw!r}")
+    else:
+        raise ValidationError(f"invalid total: {raw!r}")
+    if value < 0:
+        raise ValidationError(f"invalid total: {raw!r}")
+    return value
 
 
 def build_payload(order: dict) -> dict:
@@ -50,20 +86,8 @@ def build_payload(order: dict) -> dict:
     if not city:
         raise ValidationError(f"could not extract city from address: {address[:50]}")
 
-    # Total can come from Notion as a number OR a formatted string like "AED299.00"
     total_raw = order.get("total_aed") if order.get("total_aed") is not None else order.get("total")
-    total: float | None = None
-    if isinstance(total_raw, (int, float)):
-        total = float(total_raw)
-    elif isinstance(total_raw, str):
-        # Strip AED prefix, currency symbols, commas, whitespace
-        cleaned = total_raw.strip().upper().removeprefix("AED").replace(",", "").strip()
-        try:
-            total = float(cleaned)
-        except ValueError:
-            total = None
-    if total is None:
-        raise ValidationError(f"invalid total: {total_raw!r}")
+    total = parse_total(total_raw)
     total_str = f"{total:.2f}"
 
     pieces = parse_pieces(order.get("item_qty") or "")
@@ -115,14 +139,13 @@ def build_merged_payload(orders: list[dict]) -> dict:
     desc_parts = []
     for o in orders:
         total_raw = o.get("total_aed") if o.get("total_aed") is not None else o.get("total")
-        if isinstance(total_raw, (int, float)):
-            total_sum += float(total_raw)
-        elif isinstance(total_raw, str):
-            cleaned = total_raw.strip().upper().removeprefix("AED").replace(",", "").strip()
-            try:
-                total_sum += float(cleaned)
-            except ValueError:
-                pass
+        try:
+            total_sum += parse_total(total_raw)
+        except ValidationError:
+            # In a merged group, the first order's total has already been
+            # validated by build_payload. Subsequent unparseable totals are
+            # treated as 0 to avoid losing the merged shipment.
+            pass
         pieces_sum += parse_pieces(o.get("item_qty") or "")
         desc_parts.append((o.get("item_qty") or "Item").replace("\n", " + ").strip())
 
