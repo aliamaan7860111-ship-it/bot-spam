@@ -38,6 +38,20 @@ TEST_PROXY = os.getenv("TEST_PROXY", "")
 # Bright Data Scraping Browser URL (wss://user:pass@brd.superproxy.io:9222)
 BLOCK_RESOURCES = os.getenv("BLOCK_RESOURCES", "True").lower() == "true"
 
+# FB Ads Library gate — only test stores that currently have active campaigns
+# Set FB_ADS_GATE_ENABLED=true to activate. Set FB_ADS_GATE_QUERIES to a CSV
+# of "<store_domain>=<search_query>" pairs, e.g.
+#   meowtiqueofficial.com=Meowtique,mandarerabrands.com=Mandarera
+FB_ADS_GATE_ENABLED = os.getenv("FB_ADS_GATE_ENABLED", "false").lower() == "true"
+FB_ADS_GATE_COUNTRY = os.getenv("FB_ADS_GATE_COUNTRY", "AE")
+_fb_queries_env = os.getenv("FB_ADS_GATE_QUERIES", "")
+FB_ADS_GATE_QUERIES: dict[str, str] = {}
+for entry in _fb_queries_env.split(","):
+    entry = entry.strip()
+    if "=" in entry:
+        d, q = entry.split("=", 1)
+        FB_ADS_GATE_QUERIES[d.strip().lower()] = q.strip()
+
 # Demographic-Categorized Name Data (400+ entries)
 DEMOGRAPHICS = {
     "gulf": {
@@ -1789,10 +1803,50 @@ async def run_bot(headless=True, visible=False, count=0):
             log.warning("System Chrome not found, using bundled Chromium")
 
         order_count = 0
+        # Track the rotation pool the bot is currently using. Gets reduced to
+        # only stores with active FB ads when FB_ADS_GATE_ENABLED is true.
+        active_store_urls = list(STORE_URLS)
+
         while True:
             if count > 0 and order_count >= count:
                 log.info(f"Reached target order count ({count}). Exiting.")
                 break
+
+            # FB Ads Library gate — refresh the list of stores worth testing.
+            # The gate caches results for 60 min internally so calling every
+            # round is cheap after the first call of the hour.
+            if FB_ADS_GATE_ENABLED and STORE_URLS and FB_ADS_GATE_QUERIES:
+                try:
+                    from fb_ads_gate import filter_stores_with_active_ads
+                    # Build {store_url: search_query} from configured map by
+                    # matching domain substrings
+                    gate_map = {}
+                    for url in STORE_URLS:
+                        for domain, query in FB_ADS_GATE_QUERIES.items():
+                            if domain in url.lower():
+                                gate_map[url] = query
+                                break
+                    if gate_map:
+                        active_store_urls = await filter_stores_with_active_ads(
+                            store_query_map=gate_map,
+                            country_code=FB_ADS_GATE_COUNTRY,
+                            proxy_url=TEST_PROXY or None,
+                        )
+                        log.info(f"FB Ads gate -> {len(active_store_urls)}/{len(STORE_URLS)} stores have active ads: {active_store_urls}")
+                    else:
+                        log.warning("FB Ads gate enabled but no matching queries — falling back to all stores")
+                        active_store_urls = list(STORE_URLS)
+                except Exception as e:
+                    log.warning(f"FB Ads gate error: {e} — falling back to all stores")
+                    active_store_urls = list(STORE_URLS)
+
+            if FB_ADS_GATE_ENABLED and not active_store_urls:
+                # No store has active ads right now — sleep and re-check next interval
+                jitter = random.uniform(0.8, 1.2)
+                sleep_mins = TEST_INTERVAL_MINS * jitter
+                log.info(f"FB Ads gate: no stores with active campaigns. Sleeping {sleep_mins:.1f} min and re-checking...")
+                await asyncio.sleep(sleep_mins * 60)
+                continue
 
             log.info(f"--- Starting Round {order_count + 1} ---")
 
@@ -1813,8 +1867,8 @@ async def run_bot(headless=True, visible=False, count=0):
 
             # Determine current target store for resource blocking decision
             current_target = PRODUCT_URL
-            if STORE_URLS:
-                current_target = STORE_URLS[order_count % len(STORE_URLS)]
+            if active_store_urls:
+                current_target = active_store_urls[order_count % len(active_store_urls)]
 
             # Skip resource blocking for protected stores (MIDA fingerprints missing loads)
             should_block = BLOCK_RESOURCES and not is_protected_store(current_target)
@@ -1848,9 +1902,9 @@ async def run_bot(headless=True, visible=False, count=0):
             # Fetch random product if needed
             target_url = PRODUCT_URL
             platform = "shopify"
-            if STORE_URLS:
+            if active_store_urls:
                 # Cycle through URLs based on order count
-                base_url = STORE_URLS[order_count % len(STORE_URLS)]
+                base_url = active_store_urls[order_count % len(active_store_urls)]
                 platform = detect_platform(base_url)
                 log.info(f"Targeting Store: {base_url} (platform: {platform})")
 
