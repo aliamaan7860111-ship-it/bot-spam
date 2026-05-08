@@ -98,17 +98,26 @@ async def _count_active_ads_on_page(page) -> int:
             return -1
 
         # 3. Count "X results" header if present (most reliable signal)
-        results_count = await page.evaluate(
+        match_data = await page.evaluate(
             """() => {
                 const t = document.body ? document.body.innerText : '';
-                // FB shows e.g. "~12 results" or "12 ads"
-                const m = t.match(/~?\\s*([0-9,]+)\\s+(results?|ads?)/i);
-                if (m) return parseInt(m[1].replace(/,/g, ''), 10);
-                return null;
+                // FB shows e.g. "~12 results" or "12 ads". Require word boundary
+                // after the keyword so we don't match navigation entries like
+                // "Ads" or "Ad Library".
+                const m = t.match(/~?\\s*([0-9,]+)\\s+(results?|ads?)\\b/i);
+                return {
+                    bodyLen: t.length,
+                    match: m ? m[0] : null,
+                    matchedNumber: m ? m[1] : null,
+                    // Snippets that should contain count text on a real page
+                    snippet: t.match(/.{0,40}(results?|ads?)\\b.{0,40}/i)
+                        ? t.match(/.{0,40}(results?|ads?)\\b.{0,40}/i)[0] : null,
+                };
             }"""
         )
-        if results_count is not None:
-            return results_count
+        log.info(f"[FB Gate] count parse: bodyLen={match_data['bodyLen']} match={match_data['match']!r} snippet={match_data['snippet']!r}")
+        if match_data["matchedNumber"] is not None:
+            return int(match_data["matchedNumber"].replace(",", ""))
 
         # 4. Structural count of ad cards as last resort
         card_count = await page.evaluate(
@@ -188,17 +197,42 @@ async def check_query(
 
             # Wait for the results region to render (or fail quickly)
             try:
-                await page.wait_for_function(
-                    """() => {
-                        const t = document.body ? document.body.innerText : '';
-                        return /results?|ads?|no\\s+results/i.test(t);
-                    }""",
-                    timeout=20_000,
-                )
+                # Wait for the actual result-count text to render. FB's nav
+                # contains "Ad Library" / "Ads" so we must require a DIGIT
+                # before the result/ad keyword to avoid false-positive early
+                # exit (which was returning count=0 before content rendered).
+                wait_ok = True
+                try:
+                    await page.wait_for_function(
+                        """() => {
+                            const t = document.body ? document.body.innerText : '';
+                            return /\\d+\\s+results?\\b|\\d+\\s+ads?\\b|no\\s+results|we\\s+couldn/i.test(t);
+                        }""",
+                        timeout=30_000,
+                    )
+                except Exception:
+                    wait_ok = False
             except Exception:
-                pass
+                wait_ok = False
+
+            # Settle delay so the count text stabilises (FB sometimes shows
+            # "1 result" then jumps to "~18 results" as paginated data arrives)
+            await asyncio.sleep(3)
 
             count = await _count_active_ads_on_page(page)
+
+            # If our wait timed out AND we found 0, the page probably hadn't
+            # rendered the count yet — give it more time and recount once.
+            if not wait_ok and count == 0:
+                log.info(f"[FB Gate] wait timed out for '{query}' — extra 8s recount")
+                await asyncio.sleep(8)
+                count = await _count_active_ads_on_page(page)
+                # Still 0 with no positive signal? Treat as ambiguous so we
+                # don't false-negative a live campaign because the page was
+                # slow to render.
+                if count == 0:
+                    log.warning(f"[FB Gate] '{query}' inconclusive — treating as ambiguous")
+                    count = -1
             if count == -1:
                 # Ambiguous — soft-fail to active so we don't accidentally block
                 # the order bot just because FB threw a login wall on us
