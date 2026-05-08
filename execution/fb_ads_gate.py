@@ -6,7 +6,14 @@ Usage from load_test_bot.py:
     from fb_ads_gate import filter_stores_with_active_ads
 
     active = await filter_stores_with_active_ads(
-        store_query_map={"https://mandarerabrands.com/": "Mandarera", ...},
+        # PREFERRED: map domain -> FB Page ID (numeric). The gate hits the
+        # page's ad listing directly — no keyword collisions, fast load.
+        store_query_map={
+            "https://mandarerabrands.com/": "1023336610862074",
+            "https://hypedxb.store":         "1153411037859666",
+        },
+        # OR: keyword strings (fallback when you don't know the page id)
+        # store_query_map={"https://mandarerabrands.com/": "Mandarera"},
         country_code="AE",
         proxy_url=TEST_PROXY,
     )
@@ -38,11 +45,26 @@ USER_AGENT = (
 _cache: dict[tuple[str, str], tuple[float, bool, int]] = {}
 
 
-def _build_url(query: str, country_code: str) -> str:
+def _build_url(target: str, country_code: str) -> str:
+    """Build FB Ads Library URL.
+
+    `target` is either a numeric Page ID (preferred — direct page-ad listing,
+    most reliable) or a free-text keyword query (fallback)."""
+    if target.isdigit():
+        # Direct Page ID lookup — shows ALL active ads from that specific page.
+        # Far more reliable than keyword search because there's no name collision.
+        return (
+            "https://www.facebook.com/ads/library/?"
+            f"active_status=active&ad_type=all&country={country_code}"
+            f"&is_targeted_country=false&media_type=all&search_type=page"
+            f"&sort_data[mode]=total_impressions&sort_data[direction]=desc"
+            f"&view_all_page_id={target}"
+        )
+    # Keyword fallback (preserved for backwards compatibility)
     return (
         "https://www.facebook.com/ads/library/?"
         f"active_status=active&ad_type=all&country={country_code}"
-        f"&q={quote_plus(query)}&search_type=keyword_unordered"
+        f"&q={quote_plus(target)}&search_type=keyword_unordered"
         "&media_type=all"
     )
 
@@ -220,7 +242,8 @@ async def filter_stores_with_active_ads(
 
 
 # CLI helper for ad-hoc verification:
-#   python -m execution.fb_ads_gate Mandarera Hypedxb
+#   python -m execution.fb_ads_gate 1023336610862074 1153411037859666
+#   python -m execution.fb_ads_gate Mandarera Hypedxb       # keyword mode
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

@@ -38,13 +38,21 @@ TEST_PROXY = os.getenv("TEST_PROXY", "")
 # Bright Data Scraping Browser URL (wss://user:pass@brd.superproxy.io:9222)
 BLOCK_RESOURCES = os.getenv("BLOCK_RESOURCES", "True").lower() == "true"
 
-# FB Ads Library gate — only test stores that currently have active campaigns
-# Set FB_ADS_GATE_ENABLED=true to activate. Set FB_ADS_GATE_QUERIES to a CSV
-# of "<store_domain>=<search_query>" pairs, e.g.
-#   meowtiqueofficial.com=Meowtique,mandarerabrands.com=Mandarera
+# FB Ads Library gate — only test stores that currently have active campaigns.
+# Set FB_ADS_GATE_ENABLED=true to activate. FB_ADS_GATE_QUERIES is a CSV of
+# "<store_domain>=<page_id_or_keyword>" pairs. Numeric values become direct
+# Page-ID lookups (most reliable); non-numeric values fall back to keyword
+# search. Default map covers the 5 known stores.
 FB_ADS_GATE_ENABLED = os.getenv("FB_ADS_GATE_ENABLED", "false").lower() == "true"
 FB_ADS_GATE_COUNTRY = os.getenv("FB_ADS_GATE_COUNTRY", "AE")
-_fb_queries_env = os.getenv("FB_ADS_GATE_QUERIES", "")
+_default_fb_pages = (
+    "mandarerabrands.com=1023336610862074,"
+    "hypedxb.store=1153411037859666,"
+    "vestro-ae.shop=934377499754712,"
+    "meowtiqueofficial.com=366824119856639,"
+    "luxurytrunkdubai.com=984215328108740"
+)
+_fb_queries_env = os.getenv("FB_ADS_GATE_QUERIES", _default_fb_pages)
 FB_ADS_GATE_QUERIES: dict[str, str] = {}
 for entry in _fb_queries_env.split(","):
     entry = entry.strip()
