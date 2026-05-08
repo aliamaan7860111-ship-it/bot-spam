@@ -76,28 +76,12 @@ async def _count_active_ads_on_page(page) -> int:
     relying on any single selector. Returns -1 if the page state is ambiguous
     (login wall, network error, captcha)."""
     try:
-        # 1. Check for explicit "no results" copy
-        no_results_text = await page.evaluate(
-            """() => {
-                const t = document.body ? document.body.innerText : '';
-                return /no\\s+results|0\\s+results|we couldn.?t find/i.test(t);
-            }"""
-        )
-        if no_results_text:
-            return 0
-
-        # 2. Check for login wall / consent screen — ambiguous, return -1
-        login_wall = await page.evaluate(
-            """() => {
-                const t = document.body ? document.body.innerText : '';
-                return /log in to facebook|create new account|you must log in/i.test(t)
-                    || !!document.querySelector('input[name="email"], input[name="pass"]');
-            }"""
-        )
-        if login_wall:
-            return -1
-
-        # 3. Count "X results" header if present (most reliable signal)
+        # 1. Look for the explicit "~X results" / "X ads" header FIRST. This is
+        # the most reliable positive signal. Doing this before the no-results
+        # check is important because FB's page sometimes contains the phrase
+        # "no results" in a hidden filter-panel placeholder even on pages WITH
+        # results — see Mandarera (30 ads, both '~30 results' and 'no results'
+        # appear in body text).
         match_data = await page.evaluate(
             """() => {
                 const t = document.body ? document.body.innerText : '';
@@ -109,7 +93,6 @@ async def _count_active_ads_on_page(page) -> int:
                     bodyLen: t.length,
                     match: m ? m[0] : null,
                     matchedNumber: m ? m[1] : null,
-                    // Snippets that should contain count text on a real page
                     snippet: t.match(/.{0,40}(results?|ads?)\\b.{0,40}/i)
                         ? t.match(/.{0,40}(results?|ads?)\\b.{0,40}/i)[0] : null,
                 };
@@ -118,6 +101,30 @@ async def _count_active_ads_on_page(page) -> int:
         log.info(f"[FB Gate] count parse: bodyLen={match_data['bodyLen']} match={match_data['match']!r} snippet={match_data['snippet']!r}")
         if match_data["matchedNumber"] is not None:
             return int(match_data["matchedNumber"].replace(",", ""))
+
+        # 2. No positive count found. Now check the negative signals: explicit
+        # "no results" / "we couldn't find" copy on the actual results page.
+        # Tighten the regex to require it to be a genuine page-level message
+        # (e.g. "No results found", "0 results") not buried filter-panel text.
+        no_results_text = await page.evaluate(
+            """() => {
+                const t = document.body ? document.body.innerText : '';
+                return /no\\s+results\\s+found|0\\s+results\\b|we\\s+couldn.?t\\s+find/i.test(t);
+            }"""
+        )
+        if no_results_text:
+            return 0
+
+        # 3. Check for login wall / consent screen — ambiguous, return -1
+        login_wall = await page.evaluate(
+            """() => {
+                const t = document.body ? document.body.innerText : '';
+                return /log in to facebook|create new account|you must log in/i.test(t)
+                    || !!document.querySelector('input[name="email"], input[name="pass"]');
+            }"""
+        )
+        if login_wall:
+            return -1
 
         # 4. Structural count of ad cards as last resort
         card_count = await page.evaluate(
