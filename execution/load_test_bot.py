@@ -1243,6 +1243,35 @@ async def get_random_woocommerce_product_url(page, base_url):
             log.warning(f"WooCommerce shop path '{path}' failed: {e}")
             continue
 
+    # Fallback: some WC stores (e.g. luxurytrunkdubai.com) don't expose a
+    # /shop/ page and use only the home page as the catalogue, with products
+    # rendered as cards carrying data-product_id attributes. Harvest those and
+    # build ?p=ID URLs which WordPress redirects to the canonical permalink.
+    log.info(f"No /product/ links found via shop paths — trying home page for data-product_id cards")
+    try:
+        await page.goto(store_origin + "/", wait_until="domcontentloaded", timeout=45000)
+        # Home pages load product cards via JS — give them extra settle time
+        # (probe established 8s is enough; we use 12s for safety on slow proxies)
+        await asyncio.sleep(12)
+        product_ids = await page.evaluate("""
+            () => {
+                const ids = new Set();
+                document.querySelectorAll('[data-product_id], [data-product-id]').forEach(el => {
+                    const id = el.getAttribute('data-product_id') || el.getAttribute('data-product-id');
+                    if (id && /^\\d{2,}$/.test(id)) ids.add(id);
+                });
+                return Array.from(ids);
+            }
+        """)
+        log.info(f"Home page harvest found {len(product_ids)} data-product_id values")
+        if product_ids:
+            chosen_id = random.choice(product_ids)
+            chosen_url = f"{store_origin}/?p={chosen_id}"
+            log.info(f"Picked id={chosen_id} -> {chosen_url}")
+            return chosen_url
+    except Exception as e:
+        log.warning(f"Home page product harvest failed: {e}")
+
     log.error(f"Could not find any /product/ links across shop paths on {store_origin}")
     try:
         os.makedirs(".tmp", exist_ok=True)
@@ -1336,8 +1365,9 @@ async def run_woocommerce_checkout_flow(context, customer, target_url):
             // 4. .product .single_add_to_cart_button (any product type)
             let single = document.querySelector('.product .single_add_to_cart_button, .product button[name="add-to-cart"]');
             if (single && single.value) return cleanId(single.value);
-            // 5. body class postid-XXXX (WordPress canonical)
-            const bodyClass = document.body.className || '';
+            // 5. body class postid-XXXX (WordPress canonical) — guarded
+            // because proxy timeouts can leave document.body null.
+            const bodyClass = (document.body && document.body.className) || '';
             const m = bodyClass.match(/postid-(\\d+)/);
             if (m) return m[1];
             // 6. last resort: any data-product_id on the main product container
@@ -1346,6 +1376,35 @@ async def run_woocommerce_checkout_flow(context, customer, target_url):
             return null;
         }""")
         log.info(f"[WC] Detected product_id: {product_id}")
+
+        # If the page came back with no recognisable product markers, the
+        # proxy probably gave us a partial response. Reload once and re-extract
+        # before giving up.
+        if not product_id:
+            log.warning("[WC] product_id missing on first pass — reloading and retrying")
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=60000)
+                await asyncio.sleep(8)
+                product_id = await page.evaluate("""() => {
+                    const cleanId = (v) => {
+                        if (!v) return null;
+                        const m = String(v).match(/\\d{2,}/);
+                        return m ? m[0] : null;
+                    };
+                    let btn = document.querySelector('form.cart button[name="add-to-cart"]');
+                    if (btn && btn.value) return cleanId(btn.value);
+                    let single = document.querySelector('.single_add_to_cart_button');
+                    if (single && single.value) return cleanId(single.value);
+                    const bodyClass = (document.body && document.body.className) || '';
+                    const m = bodyClass.match(/postid-(\\d+)/);
+                    if (m) return m[1];
+                    const dataEl = document.querySelector('[data-product_id]');
+                    if (dataEl) return cleanId(dataEl.getAttribute('data-product_id'));
+                    return null;
+                }""")
+                log.info(f"[WC] After reload, product_id: {product_id}")
+            except Exception as e:
+                log.warning(f"[WC] reload retry failed: {e}")
 
         # 4. Click Add to Cart - with progressive fallback to URL trick
         clicked_add = False
@@ -1434,35 +1493,66 @@ async def run_woocommerce_checkout_flow(context, customer, target_url):
         await page.goto(cart_url, wait_until="domcontentloaded", timeout=60000)
         await asyncio.sleep(2)
 
-        cart_has_items = await page.evaluate("""() => {
-            // Standard WooCommerce: items live in tr.cart_item or .woocommerce-cart-form
-            const items = document.querySelectorAll('tr.cart_item, .cart_item, .woocommerce-cart-form .product-name');
-            if (items.length > 0) return items.length;
-            // Empty-cart message
-            const empty = document.querySelector('.cart-empty, .wc-empty-cart-message');
-            return empty ? 0 : -1;  // -1 = inconclusive
-        }""")
+        # Use a permissive cart-state check that handles WC default themes,
+        # Woodmart, Storefront, and other custom WC themes. Returns:
+        #   N>0  = cart has N items (definite)
+        #   0    = cart is definitely empty (empty-cart message present)
+        #   -1   = inconclusive (page didn't render expected elements)
+        cart_check_js = """() => {
+            // 1. Definite items via WC standard or theme-specific selectors
+            const itemSels = [
+                'tr.cart_item', '.cart_item',
+                '.woocommerce-cart-form .product-name',
+                '.shop_table .product-name',
+                '.wd-cart-table tr',
+                '.wd-cart-form tr.product',
+                'form.woocommerce-cart-form tr[class*="item"]',
+            ];
+            for (const s of itemSels) {
+                const n = document.querySelectorAll(s).length;
+                if (n > 0) return n;
+            }
+            // 2. Definite empty signal
+            const emptySels = [
+                '.cart-empty', '.wc-empty-cart-message',
+                '.wd-empty-cart', '.empty-cart',
+            ];
+            for (const s of emptySels) {
+                if (document.querySelector(s)) return 0;
+            }
+            // 3. Text-based positive signal: "Subtotal", "Cart totals" only
+            // appear on a cart page with items
+            const t = (document.body && document.body.innerText) || '';
+            if (/cart\\s+totals|subtotal/i.test(t) && !/cart\\s+is\\s+empty|empty\\s+cart/i.test(t)) {
+                return 1;  // unknown count but cart has stuff
+            }
+            // 4. Text-based empty signal
+            if (/cart\\s+is\\s+empty|empty\\s+cart|no\\s+products\\s+in\\s+the\\s+cart/i.test(t)) {
+                return 0;
+            }
+            return -1;
+        }"""
+
+        cart_has_items = await page.evaluate(cart_check_js)
         log.info(f"[WC] Cart item count: {cart_has_items}")
 
-        if cart_has_items == 0 and product_id:
-            # Retry with URL trick (most reliable WC add-to-cart)
+        # Treat both "definitely empty" (0) and "inconclusive" (-1) as
+        # "should retry with URL trick before giving up"
+        if cart_has_items <= 0 and product_id:
             from urllib.parse import urlparse as _u
             parsed = _u(target_url)
             base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
             add_url = f"{base}?add-to-cart={product_id}"
-            log.info(f"[WC] Cart empty — retrying with URL: {add_url}")
+            log.info(f"[WC] Cart not confirmed (count={cart_has_items}) — retrying with URL: {add_url}")
             await page.goto(add_url, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)
             await page.goto(cart_url, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(2)
-            cart_has_items = await page.evaluate("""() => {
-                const items = document.querySelectorAll('tr.cart_item, .cart_item, .woocommerce-cart-form .product-name');
-                return items.length;
-            }""")
+            await asyncio.sleep(3)
+            cart_has_items = await page.evaluate(cart_check_js)
             log.info(f"[WC] Cart item count after URL retry: {cart_has_items}")
 
-        if not cart_has_items or cart_has_items <= 0:
-            log.error("[WC] Cart is empty after add-to-cart attempts")
+        if cart_has_items <= 0:
+            log.error(f"[WC] Cart still not confirmed (count={cart_has_items}) — giving up")
             try:
                 await page.screenshot(path=f".tmp/wc_empty_cart_{int(time.time())}.png")
             except:
