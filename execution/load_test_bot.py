@@ -60,6 +60,30 @@ for entry in _fb_queries_env.split(","):
         d, q = entry.split("=", 1)
         FB_ADS_GATE_QUERIES[d.strip().lower()] = q.strip()
 
+# WooCommerce cart-page URL overrides for stores that don't expose /cart/.
+# Format: "<domain>=<absolute_url_or_path>". Default covers luxurytrunkdubai.com
+# which uses ?page_id=11 instead of /cart/ (confirmed by the operator).
+_default_wc_cart_overrides = "luxurytrunkdubai.com=https://luxurytrunkdubai.com/?page_id=11"
+_wc_cart_env = os.getenv("WC_CART_URL_OVERRIDES", _default_wc_cart_overrides)
+WC_CART_URL_OVERRIDES: dict[str, str] = {}
+for entry in _wc_cart_env.split(","):
+    entry = entry.strip()
+    if "=" in entry:
+        d, u = entry.split("=", 1)
+        WC_CART_URL_OVERRIDES[d.strip().lower()] = u.strip()
+
+
+def resolve_wc_cart_url(store_origin: str) -> str:
+    """Return the cart-page URL for this store, honoring per-domain overrides."""
+    origin_l = store_origin.lower()
+    for domain, override in WC_CART_URL_OVERRIDES.items():
+        if domain in origin_l:
+            # Allow either an absolute URL or a path (will be joined to origin)
+            if override.startswith("http"):
+                return override
+            return store_origin.rstrip("/") + (override if override.startswith("/") else "/" + override)
+    return store_origin.rstrip("/") + "/cart/"
+
 # Demographic-Categorized Name Data (400+ entries)
 DEMOGRAPHICS = {
     "gulf": {
@@ -1485,10 +1509,10 @@ async def run_woocommerce_checkout_flow(context, customer, target_url):
         # Wait for AJAX add-to-cart to settle
         await asyncio.sleep(random.uniform(3, 5))
 
-        # 4. Verify cart actually has items by visiting /cart/
-        # If empty, retry via URL trick (handles cases where button click was
-        # intercepted by JS but the server-side cart never updated)
-        cart_url = f"{store_origin}/cart/"
+        # 4. Verify cart actually has items by visiting the cart page.
+        # Some stores (e.g. luxurytrunkdubai.com) use ?page_id=N instead of
+        # /cart/. resolve_wc_cart_url honors WC_CART_URL_OVERRIDES env var.
+        cart_url = resolve_wc_cart_url(store_origin)
         log.info(f"[WC] Verifying cart at {cart_url}")
         await page.goto(cart_url, wait_until="domcontentloaded", timeout=60000)
         await asyncio.sleep(2)
@@ -1669,7 +1693,11 @@ async def enter_woocommerce_checkout_info(context, customer, page):
                 continue
             await safe_fill(page, f"input[name='{name}'], input#{name}", value, name)
 
-        # Billing state (UAE emirate)
+        # Billing state (UAE emirate). Some stores use a <select>, others
+        # (e.g. luxurytrunkdubai.com) use a plain <input> with no dropdown.
+        # We try the select first, then fall back to text-input fill, then
+        # a few common alternate field names.
+        state_handled = False
         try:
             state_select = page.locator("select#billing_state, select[name='billing_state']").first
             if await state_select.count() > 0 and await state_select.is_visible():
@@ -1699,9 +1727,30 @@ async def enter_woocommerce_checkout_info(context, customer, page):
 
                 if chosen:
                     await state_select.select_option(value=chosen)
-                    log.info(f"[WC] Selected billing_state: {chosen}")
+                    log.info(f"[WC] Selected billing_state via dropdown: {chosen}")
+                    state_handled = True
         except Exception as e:
             log.warning(f"[WC] State select failed: {e}")
+
+        # Text-input fallback: try filling billing_state as a text input.
+        # Stops here as soon as one selector accepts the fill.
+        if not state_handled:
+            state_value = customer.get("city", "Dubai")
+            for sel in (
+                "input[name='billing_state']",
+                "input#billing_state",
+                "input[name='state']",
+                "input[name='billing_emirate']",
+            ):
+                try:
+                    if await safe_fill(page, sel, state_value, "billing_state (text)"):
+                        state_handled = True
+                        log.info(f"[WC] Filled billing_state as text: {state_value}")
+                        break
+                except Exception:
+                    continue
+        if not state_handled:
+            log.warning("[WC] billing_state not handled — checkout may reject due to missing shipping zone")
 
         # Wait for AJAX checkout update_order_review to settle
         await asyncio.sleep(3)
@@ -1709,6 +1758,82 @@ async def enter_woocommerce_checkout_info(context, customer, page):
             await page.wait_for_selector(".blockUI.blockOverlay", state="detached", timeout=15000)
         except:
             pass
+
+        # Verify a shipping method became available. WC won't accept the order
+        # without one, and some stores (e.g. luxurytrunkdubai.com) only have
+        # shipping zones for specific emirates. If no method shows up, refill
+        # state as Dubai and try again — Dubai is universally covered in UAE.
+        async def _shipping_method_ok():
+            return await page.evaluate("""() => {
+                const radios = document.querySelectorAll('input[name^="shipping_method"]');
+                if (radios.length === 0) return false;
+                // Are any actually visible (not display:none)?
+                for (const r of radios) {
+                    const cs = window.getComputedStyle(r.closest('li, tr, div') || r);
+                    if (cs.display !== 'none' && cs.visibility !== 'hidden') return true;
+                }
+                return false;
+            }""")
+
+        has_shipping = await _shipping_method_ok()
+        if not has_shipping:
+            log.warning("[WC] No shipping method visible — retrying with state=Dubai")
+            for sel in (
+                "input[name='billing_state']",
+                "input#billing_state",
+                "input[name='state']",
+                "input[name='billing_emirate']",
+            ):
+                try:
+                    if await safe_fill(page, sel, "Dubai", "billing_state retry"):
+                        break
+                except Exception:
+                    continue
+            # Also retry the city field as Dubai
+            try:
+                await safe_fill(page, "input[name='billing_city'], input#billing_city", "Dubai", "billing_city retry")
+            except Exception:
+                pass
+            # Trigger update_order_review by blurring the field
+            try:
+                await page.evaluate("""() => {
+                    const f = document.querySelector('input[name="billing_state"], input#billing_state');
+                    if (f) {
+                        f.dispatchEvent(new Event('change', {bubbles: true}));
+                        f.dispatchEvent(new Event('blur', {bubbles: true}));
+                    }
+                }""")
+            except Exception:
+                pass
+            await asyncio.sleep(5)
+            try:
+                await page.wait_for_selector(".blockUI.blockOverlay", state="detached", timeout=15000)
+            except:
+                pass
+            has_shipping = await _shipping_method_ok()
+            log.info(f"[WC] After Dubai retry, shipping_method_ok={has_shipping}")
+
+        # Tick the first available shipping method radio (some themes don't
+        # auto-select, leaving 'No shipping method has been selected' as the
+        # checkout error even when a method exists).
+        if has_shipping:
+            try:
+                ticked = await page.evaluate("""() => {
+                    const radio = document.querySelector('input[name^="shipping_method"]:not(:checked)');
+                    if (radio) {
+                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'checked').set;
+                        setter.call(radio, true);
+                        radio.dispatchEvent(new Event('change', {bubbles: true}));
+                        radio.dispatchEvent(new Event('click', {bubbles: true}));
+                        return radio.value || true;
+                    }
+                    // First radio might already be checked; that's fine
+                    return !!document.querySelector('input[name^="shipping_method"]:checked');
+                }""")
+                log.info(f"[WC] Shipping method ticked: {ticked}")
+                await asyncio.sleep(2)
+            except Exception as e:
+                log.warning(f"[WC] Shipping tick error: {e}")
 
         # Select COD payment method
         log.info("[WC] Selecting COD payment method")
@@ -1793,7 +1918,9 @@ async def enter_woocommerce_checkout_info(context, customer, page):
                 # (/order-received/<ID>/) and on the page as .order strong / .woocommerce-order-overview__order
                 import re as _re
                 order_id = None
-                m = _re.search(r"/order-received/(\d+)", page.url)
+                # Path style (/order-received/<id>/) and query style
+                # (?order-received=<id>) — Luxury uses the latter.
+                m = _re.search(r"order-received[/=](\d+)", page.url)
                 if m:
                     order_id = m.group(1)
                 if not order_id:
