@@ -539,6 +539,16 @@ async def get_random_product_url(page, base_url=None):
             href = await link.get_attribute("href")
             if href and "/products/" in href and "page=" not in href:
                 full_url = href if href.startswith("http") else f"{store_origin}{href}"
+                # Normalize to the canonical Shopify product URL form. Some
+                # collection pages render hrefs as /collections/<handle>/products/<sku>
+                # which Meowtique's MIDA setup fingerprints differently from
+                # the bare /products/<sku> URL — silently breaking downstream
+                # add-to-cart on Meow rounds. Strip any /collections/.../ prefix.
+                import re as _re_strip
+                full_url = _re_strip.sub(r"/collections/[^/]+/products/", "/products/", full_url)
+                # Drop tracking/variant query params for a clean canonical URL
+                if "?" in full_url:
+                    full_url = full_url.split("?", 1)[0]
                 valid_urls.append(full_url)
 
         # Deduplicate
