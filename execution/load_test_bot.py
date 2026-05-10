@@ -607,6 +607,34 @@ async def run_checkout_flow(context, customer, target_url):
             }""")
             log.info("Stripped MIDA decoy badges and re-enabled buttons")
 
+        # Universal popup/modal killer — runs for every Shopify store. Many
+        # 3rd-party apps (Codk COD popup, Wisepops, Privy, OptiMonk, etc.)
+        # inject overlays/iframes that intercept pointer events on the
+        # add-to-cart button. Removing them here prevents 'iframe intercepts
+        # pointer events' click failures (production round 19 on Hype).
+        await page.evaluate("""() => {
+            const popupSelectors = [
+                'iframe[id*="codk"]',                // COD Kingdom
+                'iframe[id*="modal"]',
+                'iframe[src*="popup"]',
+                '#codk-full-modal-svelte',
+                '[class*="popup-overlay"]',
+                '[class*="modal-backdrop"]',
+                '.optimonk-iframe-container',
+                '.privy-popup',
+                '.wisepops-root',
+                '[id*="pop-up"]:not([class*="cart"])',
+            ];
+            popupSelectors.forEach(sel => {
+                document.querySelectorAll(sel).forEach(el => {
+                    try { el.remove(); } catch(e) {}
+                });
+            });
+            // Also strip body overflow:hidden which popups apply to lock scroll
+            document.body.style.overflow = '';
+            document.documentElement.style.overflow = '';
+        }""")
+
         # Humanize: Scroll and hover a bit
         log.info("Humanizing: Scrolling and hovering...")
         await page.mouse.wheel(0, 500)
@@ -1794,24 +1822,57 @@ async def enter_woocommerce_checkout_info(context, customer, page):
                 await safe_fill(page, "input[name='billing_city'], input#billing_city", "Dubai", "billing_city retry")
             except Exception:
                 pass
-            # Trigger update_order_review by blurring the field
+            # Force WC's update_checkout event explicitly. Dispatching
+                # change/blur on a text input doesn't always reach WC's
+                # debounced jQuery handler — some themes only listen to the
+                # 'update_checkout' body event directly.
             try:
                 await page.evaluate("""() => {
-                    const f = document.querySelector('input[name="billing_state"], input#billing_state');
-                    if (f) {
-                        f.dispatchEvent(new Event('change', {bubbles: true}));
-                        f.dispatchEvent(new Event('blur', {bubbles: true}));
+                    // Fire native events
+                    ['billing_state', 'billing_city', 'billing_postcode'].forEach(name => {
+                        const f = document.querySelector(`input[name="${name}"], input#${name}`);
+                        if (f) {
+                            f.dispatchEvent(new Event('input', {bubbles: true}));
+                            f.dispatchEvent(new Event('change', {bubbles: true}));
+                            f.dispatchEvent(new Event('blur', {bubbles: true}));
+                            // Some themes need keyup specifically
+                            f.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true, key: 'Tab'}));
+                        }
+                    });
+                    // The canonical WC trigger — works on every standard theme
+                    if (typeof jQuery !== 'undefined') {
+                        try { jQuery('body').trigger('update_checkout'); } catch(e) {}
                     }
                 }""")
             except Exception:
                 pass
-            await asyncio.sleep(5)
+            # AJAX is debounced ~1s in WC core, then the request itself takes
+            # 2-5s on slow proxies — give it a real chance to land.
+            await asyncio.sleep(8)
             try:
-                await page.wait_for_selector(".blockUI.blockOverlay", state="detached", timeout=15000)
+                await page.wait_for_selector(".blockUI.blockOverlay", state="detached", timeout=20000)
             except:
                 pass
             has_shipping = await _shipping_method_ok()
             log.info(f"[WC] After Dubai retry, shipping_method_ok={has_shipping}")
+            # If STILL no shipping method, try one more time with the full
+            # update_checkout event chain — sometimes WC needs a second nudge.
+            if not has_shipping:
+                try:
+                    await page.evaluate("""() => {
+                        if (typeof jQuery !== 'undefined') {
+                            jQuery('body').trigger('update_checkout');
+                        }
+                    }""")
+                    await asyncio.sleep(8)
+                    try:
+                        await page.wait_for_selector(".blockUI.blockOverlay", state="detached", timeout=20000)
+                    except:
+                        pass
+                    has_shipping = await _shipping_method_ok()
+                    log.info(f"[WC] After 2nd update_checkout, shipping_method_ok={has_shipping}")
+                except Exception:
+                    pass
 
         # Tick the first available shipping method radio (some themes don't
         # auto-select, leaving 'No shipping method has been selected' as the
