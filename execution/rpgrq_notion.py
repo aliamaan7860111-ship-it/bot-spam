@@ -228,14 +228,15 @@ async def stamp_customer_message(
     )
 
 
-async def reassign_agent(
+async def update_agent_assigned_list(
     client: httpx.AsyncClient,
     page_id: str,
-    agent_name: str,
+    ordered_agents: list[str],
 ) -> bool:
-    """Update Agent Assigned to a new agent name."""
+    """Write Agent Assigned as a multi-select array. Position [0] = latest replier."""
+    ms_value = [{"name": n} for n in ordered_agents]
     return await _update_page(
-        client, page_id, {"Agent Assigned": {"select": {"name": agent_name}}}
+        client, page_id, {"Agent Assigned": {"multi_select": ms_value}}
     )
 
 
@@ -286,6 +287,13 @@ def ticket_status_names(ticket: dict) -> list[str]:
     return [s.get("name", "") for s in status_arr]
 
 
+def ticket_agent_assigned_list(ticket: dict) -> list[str]:
+    """Return the Agent Assigned multi-select array as a list of names. Position [0] = latest."""
+    arr = ticket.get("properties", {}).get("Agent Assigned", {}).get("multi_select", [])
+    return [o.get("name", "") for o in arr if o.get("name")]
+
+
 def ticket_agent_assigned(ticket: dict) -> Optional[str]:
-    prop = ticket.get("properties", {}).get("Agent Assigned", {}).get("select")
-    return prop.get("name") if prop else None
+    """Return position [0] of the Agent Assigned multi-select (the latest replier), or None."""
+    arr = ticket_agent_assigned_list(ticket)
+    return arr[0] if arr else None
