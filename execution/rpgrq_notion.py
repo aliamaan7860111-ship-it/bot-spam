@@ -73,12 +73,15 @@ async def get_active_roster(client: httpx.AsyncClient, force_refresh: bool = Fal
         name = title_arr[0].get("plain_text", "").strip() if title_arr else ""
         if not name:
             continue
+        off_days_arr = p.get("Off Days", {}).get("multi_select", [])
+        off_days = [o.get("name", "") for o in off_days_arr if o.get("name")]
         roster.append({
             "name": name,
             "team_member_id": p.get("Team Member ID", {}).get("number"),
             "user_id": p.get("WhatChimp User ID", {}).get("number"),
             "shift_start": p.get("Shift Start Hour", {}).get("number"),
             "shift_end": p.get("Shift End Hour", {}).get("number"),
+            "off_days": off_days,
         })
     roster.sort(key=lambda a: a["name"])
     _ROSTER_CACHE = roster
