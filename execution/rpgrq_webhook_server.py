@@ -242,7 +242,12 @@ async def handle_outgoing(
 
     ticket = await notion.find_ticket(client, phone, brand)
     if ticket is None:
-        log.debug(f"outgoing: no ticket for {phone}/{brand}; ignoring")
+        # Race: outgoing webhook fired before the incoming webhook finished
+        # creating the ticket. Sleep 2s and retry once.
+        await asyncio.sleep(2.0)
+        ticket = await notion.find_ticket(client, phone, brand)
+    if ticket is None:
+        log.info(f"outgoing: ignored — no ticket for {phone}/{brand} after retry")
         return
 
     # Labels can sync regardless of who sent the message
