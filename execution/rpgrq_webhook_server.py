@@ -308,13 +308,13 @@ async def handle_outgoing(
     # We require sender=='bot' AND agent_name to be a digit string.
     needle = (agent_name or "").strip() if isinstance(agent_name, str) else ""
     if sender != "bot":
-        log.info(f"outgoing: {phone}/{brand} sender={sender!r} not 'bot' -> system/ghost event; ignoring")
+        log.info(f"outgoing: ignored — {phone}/{brand} sender={sender!r} not 'bot' (system/ghost event)")
         return
     if not needle:
-        log.info(f"outgoing: {phone}/{brand} agent_name empty/None -> automation; ignoring")
+        log.info(f"outgoing: ignored — {phone}/{brand} agent_name empty/None (automation)")
         return
     if not needle.isdigit():
-        log.info(f"outgoing: {phone}/{brand} agent_name={needle!r} not numeric -> not a real agent; ignoring")
+        log.info(f"outgoing: ignored — {phone}/{brand} agent_name={needle!r} not numeric (not a real agent)")
         return
 
     needle_int = int(needle)
