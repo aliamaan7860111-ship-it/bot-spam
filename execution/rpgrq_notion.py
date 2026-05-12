@@ -228,6 +228,17 @@ async def stamp_customer_message(
     )
 
 
+async def stamp_closed_date(
+    client: httpx.AsyncClient,
+    page_id: str,
+    closed_at_iso: str,
+) -> bool:
+    """Stamp Closed Date when the Closed label transitions from absent to present."""
+    return await _update_page(
+        client, page_id, {"Closed Date": {"date": {"start": closed_at_iso}}}
+    )
+
+
 async def update_agent_assigned_list(
     client: httpx.AsyncClient,
     page_id: str,
