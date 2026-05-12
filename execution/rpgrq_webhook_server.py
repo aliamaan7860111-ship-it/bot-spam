@@ -299,25 +299,29 @@ async def handle_outgoing(
             replier = a
             break
 
-    current_assigned = notion.ticket_agent_assigned(ticket) or ""
-
-    # Dynamic reassignment: if the replier is a different active roster member
-    # than the current assignee, move ownership to them (both Notion + WhatChimp).
-    # If the replier isn't in the active roster (e.g. shared admin session),
-    # leave Agent Assigned alone.
-    if replier and replier["name"] != current_assigned:
-        ok = await notion.reassign_agent(client, ticket["id"], replier["name"])
-        if ok:
-            log.info(
-                f"🔀 reassigned {brand} / {phone}: "
-                f"{current_assigned or 'Unassigned'} -> {replier['name']}"
-            )
-            pid = wc.brand_to_phone_id(brand)
-            if pid and replier.get("team_member_id"):
-                await wc.assign_to_team_member(
-                    client, pid, phone, int(replier["team_member_id"])
+    # Update Agent Assigned multi-select: prepend the replier to position [0],
+    # removing them from elsewhere in the list if present. If replier isn't in
+    # the active roster (e.g. shared admin session), leave the list untouched.
+    if replier:
+        current_list = notion.ticket_agent_assigned_list(ticket)
+        new_list = [replier["name"]] + [n for n in current_list if n != replier["name"]]
+        if new_list != current_list:
+            ok = await notion.update_agent_assigned_list(client, ticket["id"], new_list)
+            if ok:
+                log.info(
+                    f"🔀 reassigned {brand} / {phone}: {current_list} -> {new_list}"
                 )
-            current_assigned = replier["name"]
+                # WhatChimp side-assign only when position [0] actually changed.
+                prev_owner = current_list[0] if current_list else None
+                if prev_owner != replier["name"]:
+                    pid = wc.brand_to_phone_id(brand)
+                    if pid and replier.get("team_member_id"):
+                        await wc.assign_to_team_member(
+                            client, pid, phone, int(replier["team_member_id"])
+                        )
+        current_assigned = replier["name"]
+    else:
+        current_assigned = notion.ticket_agent_assigned(ticket) or ""
 
     # Look up the current assignee's shift for response-speed calculation.
     assigned_shift_start = 12
