@@ -167,11 +167,10 @@ async def create_ticket(
         "Name":                   {"title": [{"text": {"content": phone}}]},
         "Phone Number":           {"rich_text": [{"text": {"content": phone}}]},
         "Source (Store)":         {"select": {"name": brand}},
-        "Status":                 {"multi_select": [{"name": "Waiting"}]},
         "Outcome":                {"select": {"name": "Pending"}},
         "Created At":             {"date": {"start": created_at_iso}},
         "Last Customer Message":  {"date": {"start": created_at_iso}},
-        "Agent Assigned":         {"select": {"name": agent_name}},
+        "Agent Assigned":         {"multi_select": [{"name": agent_name}]},
     }
     payload = {"parent": {"database_id": LEADS_DB_ID}, "properties": properties}
     try:
