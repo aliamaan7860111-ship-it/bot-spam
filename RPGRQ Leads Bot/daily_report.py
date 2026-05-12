@@ -141,13 +141,10 @@ def count_closed_today(agent: str, day_start: str, day_end: str) -> int:
 
 
 def count_pending(agent: str) -> int:
-    """
-    Pending: All leads assigned to this agent where Outcome = 'Pending'.
-    These are tickets awaiting response at shift end.
-    """
+    """Pending tickets where this agent is anywhere in the multi-select."""
     filter_payload = {
         "and": [
-            {"property": "Agent Assigned", "select": {"equals": agent}},
+            {"property": "Agent Assigned", "multi_select": {"contains": agent}},
             {"property": "Outcome", "select": {"equals": "Pending"}},
         ]
     }
