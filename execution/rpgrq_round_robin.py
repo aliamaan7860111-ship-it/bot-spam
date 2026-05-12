@@ -172,19 +172,24 @@ def calculate_response_speed(
         log.warning(f"Wraparound shift ({shift_start_hour}->{shift_end_hour}) unsupported; falling back to 12-20")
         shift_start_hour, shift_end_hour = 12, 20
 
+    def _at(d: datetime, hour: int) -> datetime:
+        """Build a datetime at the given hour. hour=24 means midnight of next day."""
+        if hour >= 24:
+            return (d.replace(hour=0, minute=0, second=0, microsecond=0)
+                    + timedelta(days=24 // 24))
+        return d.replace(hour=hour, minute=0, second=0, microsecond=0)
+
     total_seconds = 0.0
     current = created
     while current < replied:
-        day_shift_start = current.replace(hour=shift_start_hour, minute=0, second=0, microsecond=0)
-        day_shift_end   = current.replace(hour=shift_end_hour,   minute=0, second=0, microsecond=0)
+        day_shift_start = _at(current, shift_start_hour)
+        day_shift_end   = _at(current, shift_end_hour)
 
         if current < day_shift_start:
             current = day_shift_start
         elif current >= day_shift_end:
             # jump to next day's shift start
-            current = (current + timedelta(days=1)).replace(
-                hour=shift_start_hour, minute=0, second=0, microsecond=0
-            )
+            current = _at(current + timedelta(days=1), shift_start_hour)
         else:
             chunk_end = min(replied, day_shift_end)
             total_seconds += (chunk_end - current).total_seconds()
