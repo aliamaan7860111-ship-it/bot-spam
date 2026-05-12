@@ -110,15 +110,12 @@ def get_today_range_iso() -> tuple[str, str]:
 
 
 def count_responded_today(agent: str, day_start: str, day_end: str) -> int:
-    """
-    Total Leads Responded: Leads where Agent Assigned = agent
-    AND Actioned At is within today.
-    """
+    """Tickets where the agent participated AND a reply happened today."""
     filter_payload = {
         "and": [
-            {"property": "Agent Assigned", "select": {"equals": agent}},
-            {"property": "Actioned At", "date": {"on_or_after": day_start}},
-            {"property": "Actioned At", "date": {"on_or_before": day_end}},
+            {"property": "Agent Assigned", "multi_select": {"contains": agent}},
+            {"property": "Last Agent Reply", "date": {"on_or_after": day_start}},
+            {"property": "Last Agent Reply", "date": {"on_or_before": day_end}},
         ]
     }
     results = _query_leads_db(filter_payload)
