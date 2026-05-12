@@ -123,24 +123,21 @@ def count_responded_today(agent: str, day_start: str, day_end: str) -> int:
 
 
 def count_closed_today(agent: str, day_start: str, day_end: str) -> int:
-    """
-    Total Closed: Leads where Agent Assigned = agent
-    AND Status multi-select contains 'Closed'.
-    We check Actioned At within today OR Last Agent Reply within today
-    to capture leads that were worked on today.
-    """
-    # We count any lead assigned to this agent that currently has "Closed" label
-    # AND was contacted today (Last Agent Reply within today)
+    """Tickets where Closed Date falls within today AND this agent is the latest responder (Agent Assigned[0])."""
     filter_payload = {
         "and": [
-            {"property": "Agent Assigned", "select": {"equals": agent}},
-            {"property": "Status", "multi_select": {"contains": "Closed"}},
-            {"property": "Last Agent Reply", "date": {"on_or_after": day_start}},
-            {"property": "Last Agent Reply", "date": {"on_or_before": day_end}},
+            {"property": "Closed Date", "date": {"on_or_after": day_start}},
+            {"property": "Closed Date", "date": {"on_or_before": day_end}},
         ]
     }
     results = _query_leads_db(filter_payload)
-    return len(results)
+    count = 0
+    for row in results:
+        arr = row.get("properties", {}).get("Agent Assigned", {}).get("multi_select", [])
+        names = [o.get("name", "") for o in arr if o.get("name")]
+        if names and names[0] == agent:
+            count += 1
+    return count
 
 
 def count_pending(agent: str) -> int:
