@@ -85,7 +85,7 @@ class RoundRobin:
 
     async def next_agent(self, client: httpx.AsyncClient) -> Optional[dict]:
         """
-        Return the next agent in rotation, or None if no active agents.
+        Return the next agent in rotation based on shift-aware pool selection.
         Thread/task-safe via internal asyncio lock.
         """
         async with self._lock:
@@ -94,28 +94,45 @@ class RoundRobin:
                 log.error("No active agents in roster")
                 return None
 
-            names = [a["name"] for a in roster]
+            now_pkt = datetime.now(PKT)
+            now_hour = now_pkt.hour
+            day_name = now_pkt.strftime("%A")
 
-            # Initialize the pointer from Notion on first call.
+            pool = select_pool(roster, now_hour, day_name)
+            if not pool:
+                log.error("Pool selection returned empty list — should never happen")
+                return None
+
+            names = [a["name"] for a in pool]
+
+            # Pointer initialization from Notion uses the FULL roster, not just current pool.
             if not self._pointer_initialized:
-                last = await notion.get_last_assigned_agent(client, names)
-                if last and last in names:
+                all_names = [a["name"] for a in sorted(roster, key=lambda a: a["name"])]
+                last = await notion.get_last_assigned_agent(client, all_names)
+                if last and last in all_names:
                     self._pointer_name = last
                     log.info(f"RR pointer initialized from Notion: last was {last}")
                 else:
-                    self._pointer_name = None  # start from index 0
+                    self._pointer_name = None
                     log.info("RR pointer initialized fresh (no prior assignment found)")
                 self._pointer_initialized = True
 
-            # Compute next index.
-            if self._pointer_name in names:
-                idx = (names.index(self._pointer_name) + 1) % len(roster)
-            else:
-                # Pointer points to someone no longer active (or fresh start).
+            # Pick the next name in the pool that comes after the pointer (alphabetical).
+            if self._pointer_name and self._pointer_name in names:
+                idx = (names.index(self._pointer_name) + 1) % len(pool)
+            elif self._pointer_name is None:
                 idx = 0
+            else:
+                # Pointer points outside the current pool: pick the smallest name
+                # alphabetically greater than the pointer; else wrap to pool[0].
+                greater = [n for n in names if n > self._pointer_name]
+                idx = names.index(min(greater)) if greater else 0
 
-            chosen = roster[idx]
+            chosen = pool[idx]
             self._pointer_name = chosen["name"]
+            log.info(
+                f"RR pool@{now_hour:02d}:00 {day_name} = {names} -> {chosen['name']}"
+            )
             return chosen
 
     async def refresh_pointer_from_notion(self, client: httpx.AsyncClient):
