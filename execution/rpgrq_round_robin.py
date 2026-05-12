@@ -23,6 +23,52 @@ log = logging.getLogger("rpgrq.rr")
 PKT = timezone(timedelta(hours=5))
 
 
+def select_pool(roster: list[dict], now_hour: int, day_name: str) -> list[dict]:
+    """
+    Select the pool of agents eligible for new lead assignment.
+
+    roster: list of dicts each with keys name, team_member_id, shift_start, shift_end, off_days.
+    now_hour: current hour in PKT (0-23).
+    day_name: current weekday name in PKT (e.g. "Monday").
+
+    Pool rules (in priority order):
+      1. on_shift_now = available_today members where shift_start <= now_hour < shift_end.
+         If non-empty, that's the pool.
+      2. Otherwise: the agent in available_today whose shift_start is the smallest value
+         strictly greater than now_hour. If multiple tie, alphabetical by name.
+         If no agent has shift_start > now_hour (it's past everyone's start today),
+         fall through to step 3.
+      3. Last resort (everyone off today, or nobody starts later today): pool = all roster,
+         ignoring shifts AND off days.
+    """
+    available_today = [a for a in roster if day_name not in (a.get("off_days") or [])]
+
+    on_shift_now = [
+        a for a in available_today
+        if a.get("shift_start") is not None
+        and a.get("shift_end") is not None
+        and a["shift_start"] <= now_hour < a["shift_end"]
+    ]
+    if on_shift_now:
+        return sorted(on_shift_now, key=lambda a: a["name"])
+
+    # Find next-to-start today.
+    later_today = [
+        a for a in available_today
+        if a.get("shift_start") is not None and a["shift_start"] > now_hour
+    ]
+    if later_today:
+        earliest_start = min(a["shift_start"] for a in later_today)
+        winners = sorted(
+            [a for a in later_today if a["shift_start"] == earliest_start],
+            key=lambda a: a["name"],
+        )
+        return [winners[0]]
+
+    # Last resort: everyone is off today OR it's past everyone's start time.
+    return sorted(roster, key=lambda a: a["name"])
+
+
 class RoundRobin:
     """
     Stateful round-robin allocator. One instance per process.
