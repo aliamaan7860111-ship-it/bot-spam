@@ -128,7 +128,7 @@ async def get_last_assigned_agent(client: httpx.AsyncClient, valid_agent_names: 
     payload = {
         "filter": {
             "or": [
-                {"property": "Agent Assigned", "select": {"equals": n}}
+                {"property": "Agent Assigned", "multi_select": {"contains": n}}
                 for n in valid_agent_names
             ]
         },
@@ -144,8 +144,8 @@ async def get_last_assigned_agent(client: httpx.AsyncClient, valid_agent_names: 
         results = resp.json().get("results", [])
         if not results:
             return None
-        prop = results[0].get("properties", {}).get("Agent Assigned", {}).get("select")
-        return prop.get("name") if prop else None
+        arr = results[0].get("properties", {}).get("Agent Assigned", {}).get("multi_select", [])
+        return arr[0].get("name") if arr else None
     except Exception as e:
         log.error(f"get_last_assigned_agent failed: {e}")
         return None
