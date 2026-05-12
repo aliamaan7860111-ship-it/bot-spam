@@ -18,6 +18,7 @@ import signal
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 from urllib.parse import parse_qs
 
 import httpx
@@ -151,15 +152,28 @@ async def sync_labels_side_effect(
     client: httpx.AsyncClient,
     ticket_id: str,
     label_names_raw: str,
+    ticket: Optional[dict] = None,
 ):
-    labels = pick_active_labels(label_names_raw)
-    if not labels:
+    """Sync mapped WhatChimp labels to Notion Status. Stamp Closed Date on transition."""
+    new_labels = pick_active_labels(label_names_raw)
+    if not new_labels:
         return
-    if not label_cache.changed(ticket_id, labels):
+    if not label_cache.changed(ticket_id, new_labels):
         return
-    ok = await notion.update_status_labels(client, ticket_id, labels)
+
+    # Read existing Status from the ticket dict (if provided) to detect Closed transition.
+    prev_labels: list[str] = []
+    if ticket is not None:
+        status_arr = ticket.get("properties", {}).get("Status", {}).get("multi_select", [])
+        prev_labels = [s.get("name", "") for s in status_arr if s.get("name")]
+
+    ok = await notion.update_status_labels(client, ticket_id, new_labels)
     if ok:
-        log.info(f"🏷️  labels synced for {ticket_id[-6:]}: {labels}")
+        log.info(f"🏷️  labels synced for {ticket_id[-6:]}: {new_labels}")
+        # Closed transition: stamp Closed Date.
+        if "Closed" in new_labels and "Closed" not in prev_labels:
+            await notion.stamp_closed_date(client, ticket_id, utc_iso_now())
+            log.info(f"🔒 closed-date stamped for {ticket_id[-6:]}")
 
 
 async def handle_incoming(
@@ -198,7 +212,7 @@ async def handle_incoming(
             log.error("incoming: no active agent, ticket created as Unassigned")
             new_id = await notion.create_ticket(client, phone, brand, "Unassigned", now_iso)
             if new_id:
-                await sync_labels_side_effect(client, new_id, label_names_raw)
+                await sync_labels_side_effect(client, new_id, label_names_raw, ticket=None)
             return
         new_id = await notion.create_ticket(client, phone, brand, agent["name"], now_iso)
         if new_id:
@@ -206,7 +220,7 @@ async def handle_incoming(
             pid = wc.brand_to_phone_id(brand)
             if pid and agent.get("team_member_id"):
                 await wc.assign_to_team_member(client, pid, phone, int(agent["team_member_id"]))
-            await sync_labels_side_effect(client, new_id, label_names_raw)
+            await sync_labels_side_effect(client, new_id, label_names_raw, ticket=None)
         return
 
     # Any existing ticket — ping-pong. Closed is just a label, not special state:
@@ -215,7 +229,7 @@ async def handle_incoming(
     await notion.set_pending(client, ticket["id"])
     await notion.stamp_customer_message(client, ticket["id"], now_iso)
     log.info(f"🔄 ping-pong {brand} / {phone}")
-    await sync_labels_side_effect(client, ticket["id"], label_names_raw)
+    await sync_labels_side_effect(client, ticket["id"], label_names_raw, ticket=ticket)
 
 
 async def handle_outgoing(
@@ -251,7 +265,7 @@ async def handle_outgoing(
         return
 
     # Labels can sync regardless of who sent the message
-    await sync_labels_side_effect(client, ticket["id"], label_names_raw)
+    await sync_labels_side_effect(client, ticket["id"], label_names_raw, ticket=ticket)
 
     # Identify the sender via targeted conversation lookup
     pid = wc.brand_to_phone_id(brand)
