@@ -258,9 +258,22 @@ async def handle_outgoing(
     if not pid:
         return
 
-    latest = await wc.get_latest_message(client, pid, phone)
+    async def _fetch_latest():
+        return await wc.get_latest_message(client, pid, phone)
+
+    latest = await _fetch_latest()
+    # If the webhook's wa_message_id doesn't match the conversation's latest,
+    # WhatChimp may not have propagated yet. Sleep 1s and retry once.
+    webhook_msg_id = wa_message_id or ""
+    if latest and webhook_msg_id and latest.get("wa_message_id") != webhook_msg_id:
+        log.info(
+            f"outgoing: stale conversation lookup for {phone}/{brand} "
+            f"(latest={latest.get('wa_message_id')!r} webhook={webhook_msg_id!r}); retrying"
+        )
+        await asyncio.sleep(1.0)
+        latest = await _fetch_latest()
     if not latest:
-        log.info(f"outgoing: {phone}/{brand} no conversation history returned")
+        log.info(f"outgoing: ignored — no conversation history for {phone}/{brand}")
         return
 
     sender = latest.get("sender")
