@@ -19,7 +19,7 @@ Usage:
 
 Requires in .env:
     NOTION_API_KEY, NOTION_DATABASE_ID,
-    TELEGRAM_BOT_TOKEN, TELEGRAM_SOURCING_GROUP_ID, TELEGRAM_FULFILLMENT_GROUP_ID
+    TELEGRAM_BOT_TOKEN, TELEGRAM_FULFILLMENT_GROUP_ID
 """
 
 import os
@@ -187,8 +187,8 @@ def setup_logging() -> logging.Logger:
 log = setup_logging()
 
 # ---------------------------------------------------------------------------
-# Tracking happens natively via Notion checkboxes now
-# (SOURCING NOTIFIED, FULFILLMENT NOTIFIED) — local JSON is deprecated.
+# Tracking happens via ORDER STATUS transitions (Confirmed | Processing -> Processed).
+# ALBUMS SENT counter (Notion) gives per-album resume on multi-album orders.
 # ---------------------------------------------------------------------------
 
 
