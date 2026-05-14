@@ -19,13 +19,13 @@ assert callable(nc.set_dispatched_at)
 assert callable(nc.set_last_update)
 assert callable(nc.mark_filex_submitted)
 assert callable(nc.find_order_by_shipper_ref)
-assert callable(nc.query_filex_eligible)
+assert callable(nc.query_filex_processed)
 assert callable(nc.query_filex_active)
 assert callable(nc.query_filex_stuck)
 
 # Run real read-only queries against the database
-eligible = nc.query_filex_eligible()
-print(f"query_filex_eligible: {len(eligible)} orders")
+eligible = nc.query_filex_processed()
+print(f"query_filex_processed: {len(eligible)} orders")
 
 active = nc.query_filex_active()
 print(f"query_filex_active: {len(active)} orders")

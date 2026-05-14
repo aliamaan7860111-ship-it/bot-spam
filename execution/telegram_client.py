@@ -23,10 +23,12 @@ from typing import TypedDict
 
 
 class SendOrderResult(TypedDict):
-    success: bool
-    file_ids: list[str]
-    image_count: int        # actually delivered
-    expected_count: int     # from items in Notion
+    success: bool                # True if ALL planned albums in this call sent
+    albums_sent_this_call: int   # Number of albums delivered in THIS invocation
+    total_albums: int            # Total albums planned for the order
+    caption_message_id: int | None   # First msg_id of the caption-bearing album (only set when last sent)
+    image_count: int             # Images successfully delivered in this call
+    expected_count: int          # Parsed from order's item_qty field
 
 # Separator image for visual divider between orders
 SEPARATOR_PATH = Path(__file__).parent / "assets" / "separator.png"
@@ -47,7 +49,6 @@ log = logging.getLogger("order_bridge.telegram")
 # ---------------------------------------------------------------------------
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_SOURCING_GROUP_ID = os.getenv("TELEGRAM_SOURCING_GROUP_ID", "")
 TELEGRAM_FULFILLMENT_GROUP_ID = os.getenv("TELEGRAM_FULFILLMENT_GROUP_ID", "")
 
 # ---------------------------------------------------------------------------
@@ -318,6 +319,36 @@ def truncate_caption_with_overflow(caption: str, max_length: int = TELEGRAM_CAPT
     return caption[:max_length], caption[max_length:]
 
 
+def resume_range(start_album_index: int, total_albums: int) -> list[tuple[int, bool]]:
+    """Return the list of (album_index, is_last) tuples for albums still to send.
+
+    Empty list when everything has already been sent or there is nothing to send.
+    is_last is True only for the final album in the order (where the caption goes).
+    """
+    if total_albums <= 0 or start_album_index >= total_albums:
+        return []
+    return [(i, i == total_albums - 1) for i in range(start_album_index, total_albums)]
+
+
+def sort_orders_for_label_replies(orders: list[dict]) -> list[dict]:
+    """Sort orders for /print label dispatch.
+
+    Orders with a stored fulfillment_message_id go first, ascending by that id
+    (Telegram message_ids are monotonic per chat, so this is chronological).
+    Legacy orders (no message_id) go last, alphabetical by order_id for determinism.
+    """
+    anchored = [o for o in orders if o.get("fulfillment_message_id")]
+    legacy = [o for o in orders if not o.get("fulfillment_message_id")]
+    anchored.sort(key=lambda o: o["fulfillment_message_id"])
+    legacy.sort(key=lambda o: o.get("order_id", ""))
+    return anchored + legacy
+
+
+def legacy_label_caption(order_id: str) -> str:
+    """Caption for label PDFs sent for legacy orders (no message_id anchor)."""
+    return f"📄 {order_id.strip()} — legacy order, no thread anchor"
+
+
 def format_sourcing_message(order: dict) -> str:
     """
     Minimal message for the sourcing group.
@@ -400,17 +431,25 @@ async def send_order_to_group(
     bot: Bot,
     group_id: str | int,
     order: dict,
-    header: str = "📦 NEW ORDER FOR SOURCING",
+    header: str = "✅ READY FOR FULFILLMENT",
+    start_album_index: int = 0,
+    on_album_sent=None,  # async callable: (new_albums_sent_count, caption_message_id_or_None) -> None
 ) -> SendOrderResult:
     """
-    Send order as ONE atomic media group (or multiple if >10 images), with the
-    order caption on the LAST album's first image, then send the separator.
+    Send order as a sequence of atomic media groups (Telegram caps each at 10 items).
+    The caption goes on the FIRST image of the LAST album.
 
-    Returns a SendOrderResult dict with success, file_ids, image_count, expected_count.
+    Resume protocol: if start_album_index > 0, skip the first N albums (the caller has
+    already confirmed they were sent before). After each album sends successfully,
+    invokes on_album_sent(new_count, caption_message_id) so the caller can checkpoint.
+
+    Returns SendOrderResult. success=True only when all planned albums sent.
     """
     result: SendOrderResult = {
         "success": False,
-        "file_ids": [],
+        "albums_sent_this_call": 0,
+        "total_albums": 0,
+        "caption_message_id": None,
         "image_count": 0,
         "expected_count": parse_item_count(order.get("item_qty", "")),
     }
@@ -421,7 +460,7 @@ async def send_order_to_group(
         log.error(f"Invalid Telegram group ID: {group_id}")
         return result
 
-    # Image priority: GraphQL primary, Notion files fallback (already implemented).
+    # Image priority: GraphQL primary, Notion files fallback.
     checkout_url = order.get("order_source_url", "")
     notion_image_urls = order.get("image_urls", [])
     if checkout_url and not order.get("line_items"):
@@ -435,7 +474,7 @@ async def send_order_to_group(
 
     image_urls = order.get("image_urls", [])
 
-    # Download all images upfront so we know the actual delivered count.
+    # Download all images upfront so we know actual delivered count.
     downloaded: list[bytes] = []
     for url in image_urls:
         img_bytes = download_image(url)
@@ -447,34 +486,46 @@ async def send_order_to_group(
     caption_full = format_order_message(order, header)
 
     if not downloaded:
-        # No images to send. Still send the text + separator so the order is visible.
-        log.warning(f"  No images downloaded for {order.get('order_id', '?')}, sending text-only")
+        # No images. Send caption as a plain message + separator so the order is visible.
+        if start_album_index > 0:
+            log.warning(f"  No images for {order.get('order_id', '?')} but start_album_index={start_album_index}; sending text-only fallback")
         try:
-            await bot.send_message(
+            text_msg = await bot.send_message(
                 chat_id=group_id, text=caption_full, parse_mode="Markdown",
                 read_timeout=60, write_timeout=60,
             )
             await _send_separator(bot, group_id)
             result["success"] = True
+            result["total_albums"] = 0
+            result["caption_message_id"] = text_msg.message_id
+            if on_album_sent is not None:
+                await on_album_sent(0, text_msg.message_id)
         except Exception as e:
             log.error(f"Failed to send text-only order: {e}")
         return result
 
     short_caption, overflow_text = truncate_caption_with_overflow(caption_full)
 
-    # Chunk the downloaded image bytes into albums of <=10. Caption goes on
-    # the FIRST image of the LAST album.
+    # Chunk the downloaded bytes into albums of <=10.
     album_chunks = chunk_for_albums(downloaded)
-    last_idx = len(album_chunks) - 1
+    total_albums = len(album_chunks)
+    result["total_albums"] = total_albums
+    result["image_count"] = len(downloaded)
 
-    all_file_ids: list[str] = []
+    # Compute which albums actually need sending.
+    plan = resume_range(start_album_index, total_albums)
+    if not plan:
+        log.info(f"  Skipping send for {order.get('order_id', '?')}: counter {start_album_index} >= total {total_albums}")
+        result["success"] = True
+        return result
+
     last_message_id: int | None = None
     try:
-        for i, chunk in enumerate(album_chunks):
+        for album_index, is_last in plan:
+            chunk = album_chunks[album_index]
             media: list[InputMediaPhoto] = []
             for j, img_bytes in enumerate(chunk):
-                if i == last_idx and j == 0:
-                    # Caption on first image of last album
+                if is_last and j == 0:
                     media.append(InputMediaPhoto(
                         media=io.BytesIO(img_bytes),
                         caption=short_caption,
@@ -484,7 +535,6 @@ async def send_order_to_group(
                     media.append(InputMediaPhoto(media=io.BytesIO(img_bytes)))
 
             if len(media) == 1:
-                # send_media_group requires >=2 items. Use send_photo with caption.
                 first = media[0]
                 photo_msg = await bot.send_photo(
                     chat_id=group_id,
@@ -493,40 +543,46 @@ async def send_order_to_group(
                     parse_mode="Markdown" if getattr(first, "caption", None) else None,
                     read_timeout=60, write_timeout=60,
                 )
-                fid = photo_msg.photo[-1].file_id if photo_msg.photo else None
-                if fid:
-                    all_file_ids.append(fid)
+                first_msg_id_of_album = photo_msg.message_id
                 last_message_id = photo_msg.message_id
             else:
                 msgs = await bot.send_media_group(
                     chat_id=group_id, media=media,
                     read_timeout=60, write_timeout=60,
                 )
-                for m in msgs:
-                    if m.photo:
-                        all_file_ids.append(m.photo[-1].file_id)
+                first_msg_id_of_album = msgs[0].message_id
                 last_message_id = msgs[-1].message_id
 
-        # If caption overflowed, send the overflow as a reply to the LAST sent message.
-        if overflow_text and last_message_id is not None:
-            try:
-                await bot.send_message(
-                    chat_id=group_id,
-                    text=overflow_text,
-                    reply_to_message_id=last_message_id,
-                    parse_mode="Markdown",
-                    read_timeout=60, write_timeout=60,
-                )
-            except Exception as e:
-                log.warning(f"Failed to send overflow reply: {e}")
+            result["albums_sent_this_call"] += 1
+            cap_id_for_callback: int | None = first_msg_id_of_album if is_last else None
+            if is_last:
+                result["caption_message_id"] = first_msg_id_of_album
 
-        log.info(f"  ✓ Sent {len(downloaded)} image(s) in {len(album_chunks)} album(s) to group {group_id}")
-        result["image_count"] = len(downloaded)
-        result["file_ids"] = all_file_ids
+            # Caption overflow handling — fires once, on the LAST album only.
+            if is_last and overflow_text and last_message_id is not None:
+                try:
+                    await bot.send_message(
+                        chat_id=group_id,
+                        text=overflow_text,
+                        reply_to_message_id=last_message_id,
+                        parse_mode="Markdown",
+                        read_timeout=60, write_timeout=60,
+                    )
+                except Exception as e:
+                    log.warning(f"Failed to send overflow reply: {e}")
+
+            # Checkpoint after each successful album.
+            new_count = album_index + 1
+            if on_album_sent is not None:
+                try:
+                    await on_album_sent(new_count, cap_id_for_callback)
+                except Exception as e:
+                    log.error(f"  on_album_sent callback raised: {e}", exc_info=True)
+
+        log.info(f"  ✓ Sent {result['albums_sent_this_call']} album(s) to group {group_id}")
 
     except Exception as e:
         log.error(f"Failed to send album to Telegram: {e}", exc_info=True)
-        # Best-effort fallback: send raw URLs as text so operator still sees the order.
         try:
             await bot.send_message(
                 chat_id=group_id,
@@ -537,9 +593,7 @@ async def send_order_to_group(
             pass
         return result
 
-    # Send separator
     await _send_separator(bot, group_id)
-
     result["success"] = True
     return result
 
@@ -563,91 +617,6 @@ async def _send_separator(bot: Bot, group_id: int) -> None:
         log.warning(f"Could not send separator: {e}")
 
 
-async def send_order_via_file_ids(
-    bot: Bot,
-    group_id: str | int,
-    order: dict,
-    header: str = "✅ READY FOR FULFILLMENT",
-) -> SendOrderResult:
-    """
-    Send an order to a Telegram group by REUSING file_ids saved during Stage 1.
-    No GraphQL fetch, no image download — Telegram clones from cache.
-
-    Returns a SendOrderResult. If file_ids fail (extremely rare), success=False
-    and the caller should fall back to send_order_to_group (GraphQL refetch path).
-    """
-    result: SendOrderResult = {
-        "success": False,
-        "file_ids": [],
-        "image_count": 0,
-        "expected_count": parse_item_count(order.get("item_qty", "")),
-    }
-    try:
-        group_id = int(group_id)
-    except (ValueError, TypeError):
-        log.error(f"Invalid Telegram group ID: {group_id}")
-        return result
-
-    file_ids = order.get("telegram_file_ids", [])
-    if not file_ids:
-        log.warning(f"  send_order_via_file_ids: no file_ids on order {order.get('order_id', '?')}")
-        return result
-
-    caption_full = format_order_message(order, header)
-    short_caption, overflow_text = truncate_caption_with_overflow(caption_full)
-
-    album_chunks = chunk_for_albums(file_ids)
-    last_idx = len(album_chunks) - 1
-
-    last_message_id: int | None = None
-    try:
-        for i, chunk in enumerate(album_chunks):
-            media: list[InputMediaPhoto] = []
-            for j, fid in enumerate(chunk):
-                if i == last_idx and j == 0:
-                    media.append(InputMediaPhoto(media=fid, caption=short_caption,
-                                                  parse_mode="Markdown"))
-                else:
-                    media.append(InputMediaPhoto(media=fid))
-
-            if len(media) == 1:
-                first = media[0]
-                photo_msg = await bot.send_photo(
-                    chat_id=group_id, photo=first.media,
-                    caption=getattr(first, "caption", None),
-                    parse_mode="Markdown" if getattr(first, "caption", None) else None,
-                    read_timeout=60, write_timeout=60,
-                )
-                last_message_id = photo_msg.message_id
-            else:
-                msgs = await bot.send_media_group(
-                    chat_id=group_id, media=media,
-                    read_timeout=60, write_timeout=60,
-                )
-                last_message_id = msgs[-1].message_id
-
-        if overflow_text and last_message_id is not None:
-            try:
-                await bot.send_message(
-                    chat_id=group_id, text=overflow_text,
-                    reply_to_message_id=last_message_id,
-                    parse_mode="Markdown",
-                    read_timeout=60, write_timeout=60,
-                )
-            except Exception as e:
-                log.warning(f"Failed to send overflow reply: {e}")
-
-        await _send_separator(bot, group_id)
-        result["success"] = True
-        result["image_count"] = len(file_ids)
-        result["file_ids"] = file_ids
-
-    except Exception as e:
-        log.error(f"  Failed to send album via file_ids: {e}", exc_info=True)
-
-    return result
-
-
 # ---------------------------------------------------------------------------
 # Command Handlers (called by the bot when messages arrive)
 # ---------------------------------------------------------------------------
@@ -664,176 +633,6 @@ def create_command_handlers(notion_module):
     Args:
         notion_module: The notion_client module (imported in order_bridge.py)
     """
-
-    async def handle_ready(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Handle #ready command variants:
-            #ready all        — forward ALL confirmed orders to fulfillment
-            #ready ORDERID    — forward a specific order to fulfillment
-            #ready (no args)  — show usage help
-        """
-        if not update.message or not update.message.text:
-            return
-
-        text = update.message.text.strip()
-        parts = text.split(None, 1)  # ["#ready", "argument"] or ["#ready"]
-
-        if len(parts) < 2:
-            await update.message.reply_text(
-                "ℹ️ *Ready Usage:*\n\n"
-                "`#ready all` — Forward all sourced orders to fulfillment\n"
-                "`#ready ORDER-123` — Forward a specific order to fulfillment",
-                parse_mode="Markdown",
-            )
-            return
-
-        arg = parts[1].strip()
-        bot = context.bot
-        fulfillment_group = TELEGRAM_FULFILLMENT_GROUP_ID
-
-        # --- #ready all ---
-        if arg.lower() == "all":
-            log.info("Received #ready all command")
-            await update.message.reply_text("🔄 Finding all SOURCING orders to forward to fulfillment...", parse_mode="Markdown")
-
-            orders = notion_module.query_sourcing_orders()
-            if not orders:
-                await update.message.reply_text(
-                    "ℹ️ No orders with *SOURCING* status found.\n\n"
-                    "Orders need to go through sourcing first:\n"
-                    "1️⃣ Set order to `CONFIRMED | PROCESSING` in Notion\n"
-                    "2️⃣ Bot auto-sends to sourcing group (status → SOURCING)\n"
-                    "3️⃣ Then use `#ready all` to forward to fulfillment",
-                    parse_mode="Markdown",
-                )
-                return
-
-            sent_count = 0
-            fail_count = 0
-            for i, order in enumerate(orders):
-                oid = order.get("order_id", "?")
-                try:
-                    # Mark as Processed in Notion (prevents re-processing)
-                    success = notion_module.mark_order_processed(order["page_id"])
-                    if not success:
-                        log.warning(f"  Failed to mark {oid} as Processed")
-                        fail_count += 1
-                        continue
-
-                    # Choose fast path (saved file_ids) vs fallback (GraphQL refetch).
-                    sent_ok = False
-                    if fulfillment_group:
-                        if order.get("file_ids_saved") and order.get("telegram_file_ids"):
-                            res = await send_order_via_file_ids(
-                                bot, fulfillment_group, order,
-                                header="✅ READY FOR FULFILLMENT",
-                            )
-                            sent_ok = res["success"]
-                            if not sent_ok:
-                                log.warning(f"  fast path failed for {oid}, falling back to GraphQL")
-                        if not sent_ok:
-                            res = await send_order_to_group(
-                                bot, fulfillment_group, order,
-                                header="✅ READY FOR FULFILLMENT",
-                            )
-                            sent_ok = res["success"]
-                            if sent_ok and not order.get("file_ids_saved"):
-                                try:
-                                    await bot.send_message(
-                                        chat_id=fulfillment_group,
-                                        text=f"⚠️ {oid}: no file IDs were saved, resorted to fallback fetch",
-                                    )
-                                except Exception:
-                                    pass
-                    if not sent_ok:
-                        fail_count += 1
-                        continue
-                    sent_count += 1
-                    # Track fulfillment send
-                    notion_module.mark_fulfillment_notified(order["page_id"])
-                    log.info(f"  ✓ Order {oid} forwarded to fulfillment")
-
-                    # Rate limit: wait between orders to avoid Telegram API limits
-                    if i < len(orders) - 1:
-                        await asyncio.sleep(1.5)
-                except Exception as e:
-                    log.error(f"  Failed to process order {oid}: {e}")
-                    fail_count += 1
-
-            result_msg = f"✅ *Ready All Complete*\n\n📦 Sent to fulfillment: *{sent_count}*"
-            if fail_count:
-                result_msg += f"\n❌ Failed: *{fail_count}*"
-            await update.message.reply_text(result_msg, parse_mode="Markdown")
-            return
-
-        # --- #ready ORDERID ---
-        order_id = arg
-        log.info(f"Received #ready command for order: {order_id}")
-
-        order = notion_module.find_order_by_id(order_id)
-        if not order:
-            await update.message.reply_text(f"❌ Order `{order_id}` not found in Notion.", parse_mode="Markdown")
-            return
-
-        # Check if already processed — prevent duplicate fulfillment sends
-        current_status = order.get("order_status", "")
-        if current_status.upper() == "PROCESSED":
-            await update.message.reply_text(
-                f"ℹ️ Order `{order_id}` is already *Processed* and was previously sent to fulfillment.",
-                parse_mode="Markdown",
-            )
-            return
-
-        success = notion_module.mark_order_processed(order["page_id"])
-        if not success:
-            await update.message.reply_text(f"❌ Failed to update order `{order_id}` in Notion.", parse_mode="Markdown")
-            return
-
-        if fulfillment_group:
-            sent_ok = False
-            if order.get("file_ids_saved") and order.get("telegram_file_ids"):
-                res = await send_order_via_file_ids(
-                    bot, fulfillment_group, order,
-                    header="✅ READY FOR FULFILLMENT",
-                )
-                sent_ok = res["success"]
-                if not sent_ok:
-                    log.warning(f"  fast path failed for {order_id}, falling back to GraphQL")
-                    res = await send_order_to_group(
-                        bot, fulfillment_group, order,
-                        header="✅ READY FOR FULFILLMENT",
-                    )
-                    sent_ok = res["success"]
-                    if sent_ok:
-                        try:
-                            await bot.send_message(
-                                chat_id=fulfillment_group,
-                                text=f"⚠️ {order_id}: no file IDs (fast path failed), resorted to fallback fetch",
-                            )
-                        except Exception:
-                            pass
-            else:
-                res = await send_order_to_group(
-                    bot, fulfillment_group, order,
-                    header="✅ READY FOR FULFILLMENT",
-                )
-                sent_ok = res["success"]
-                if sent_ok and not order.get("file_ids_saved"):
-                    try:
-                        await bot.send_message(
-                            chat_id=fulfillment_group,
-                            text=f"⚠️ {order_id}: no file IDs were saved, resorted to fallback fetch",
-                        )
-                    except Exception:
-                        pass
-
-            log.info(f"  ✓ Order {order_id} forwarded to fulfillment group")
-            notion_module.mark_fulfillment_notified(order["page_id"])
-
-        await update.message.reply_text(
-            f"✅ Order `{order_id}` marked as *Processed* and forwarded to fulfillment.",
-            parse_mode="Markdown",
-        )
 
     async def handle_cost(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle #cost ORDERID amount command."""
@@ -946,12 +745,10 @@ def create_command_handlers(notion_module):
                 if not oid or not pid:
                     continue
 
-                # Reset status to NEW in Notion
+                # Reset status to NEW in Notion (status flip is the dedup gate now).
                 success = notion_module.mark_order_new(pid)
                 if success:
                     reset_count += 1
-                    # Remove from tracking so poller picks it up again
-                    notion_module.unmark_notified(pid)
                 else:
                     failed.append(oid)
 
@@ -980,11 +777,8 @@ def create_command_handlers(notion_module):
             )
             return
 
-        # Remove from tracking
-        notion_module.unmark_notified(order["page_id"])
-
         await update.message.reply_text(
-            f"✅ Order `{order_id}` reset to *NEW* and removed from tracker.",
+            f"✅ Order `{order_id}` reset to *NEW*.",
             parse_mode="Markdown",
         )
 
@@ -996,13 +790,12 @@ def create_command_handlers(notion_module):
         await update.message.reply_text(
             f"📊 *Bridge Status*\n\n"
             f"The bridge is online and active! 🚀\n"
-            f"Order tracking has been upgraded to run natively via Notion checkboxes (`SOURCING NOTIFIED` and `FULFILLMENT NOTIFIED`) to prevent server resets.",
+            f"Orders flow Confirmed | Processing → fulfillment group → Processed. Multi-album orders resume from `ALBUMS SENT` on retry.",
             parse_mode="Markdown",
         )
 
     # Build handlers — only trigger on messages starting with #
     handlers = [
-        MessageHandler(filters.TEXT & filters.Regex(r"^#ready\b"), handle_ready),
         MessageHandler(filters.TEXT & filters.Regex(r"^#cost\b"), handle_cost),
         MessageHandler(filters.TEXT & filters.Regex(r"^#note\b"), handle_note),
         MessageHandler(filters.TEXT & filters.Regex(r"^#reset\b"), handle_reset),

@@ -93,12 +93,10 @@ FIELD_ORDER_SOURCE_URL = "ORDER SOURCE URL"
 FIELD_IMAGE_URL = "IMAGE URL"
 FIELD_EMAIL = "EMAIL"
 FIELD_PLATFORM_SOURCE = "PLATFORM SOURCE"
-FIELD_SOURCING_NOTIFIED = "SOURCING NOTIFIED"
-FIELD_FULFILLMENT_NOTIFIED = "FULFILLMENT NOTIFIED"
+FIELD_ALBUMS_SENT = "ALBUMS SENT"
+FIELD_FULFILLMENT_MESSAGE_ID = "FULFILLMENT MESSAGE ID"
 FIELD_WHATSAPP_SENT = "Confirmation Sent"
 STATUS_CONFIRMATION_SENT = "Confirmation Sent"
-FIELD_TELEGRAM_FILE_IDS = "TELEGRAM FILE IDS"
-FIELD_FILE_IDS_SAVED = "FILE IDS SAVED"
 
 # Filex-related fields (added in Task 1 setup_notion_fields.py)
 FIELD_TRACKING_NUMBER = "Tracking Number"
@@ -140,6 +138,20 @@ def _get_number(props: dict, field: str) -> float | None:
         return None
 
 
+def _get_number_or_default(props: dict, field: str, default: int = 0) -> int:
+    """Extract an int from a number property; return default if unset or non-numeric."""
+    try:
+        n = props[field]["number"]
+    except (KeyError, TypeError):
+        return default
+    if n is None:
+        return default
+    try:
+        return int(n)
+    except (TypeError, ValueError):
+        return default
+
+
 def _get_select(props: dict, field: str) -> str:
     """Extract value from a select property."""
     try:
@@ -175,13 +187,6 @@ def _get_files(props: dict, field: str) -> list[str]:
         if url:
             urls.append(url)
     return urls
-
-
-def _parse_telegram_file_ids(raw: str) -> list[str]:
-    """Split a comma-separated string of Telegram file_ids into a clean list."""
-    if not raw:
-        return []
-    return [fid.strip() for fid in raw.split(",") if fid.strip()]
 
 
 def _get_checkbox(props: dict, field: str) -> bool:
@@ -247,11 +252,9 @@ def parse_order(page: dict) -> dict:
         "image_urls": image_urls,
         "email": _get_rich_text(props, FIELD_EMAIL) or _get_url(props, FIELD_EMAIL),
         "platform_source": _get_select(props, FIELD_PLATFORM_SOURCE) or _get_rich_text(props, FIELD_PLATFORM_SOURCE),
-        "sourcing_notified": _get_checkbox(props, FIELD_SOURCING_NOTIFIED),
-        "fulfillment_notified": _get_checkbox(props, FIELD_FULFILLMENT_NOTIFIED),
         "whatsapp_sent": _get_checkbox(props, FIELD_WHATSAPP_SENT),
-        "telegram_file_ids": _parse_telegram_file_ids(_get_rich_text(props, FIELD_TELEGRAM_FILE_IDS)),
-        "file_ids_saved": _get_checkbox(props, FIELD_FILE_IDS_SAVED),
+        "albums_sent": _get_number_or_default(props, FIELD_ALBUMS_SENT, default=0),
+        "fulfillment_message_id": _get_number_or_default(props, FIELD_FULFILLMENT_MESSAGE_ID, default=0) or None,
         "filex_status": _get_select(props, FIELD_FILEX_STATUS),
         "last_update": _get_date(props, FIELD_LAST_UPDATE),
         "tracking_number": _get_rich_text(props, FIELD_TRACKING_NUMBER),
@@ -343,64 +346,6 @@ def query_confirmed_orders() -> list[dict]:
                 {
                     "property": FIELD_ORDER_STATUS,
                     "select": {"equals": "CONFIRMED | PROCESSING"},
-                },
-                {
-                    "timestamp": "created_time",
-                    "created_time": {"on_or_after": ORDER_CUTOFF_DATE},
-                },
-            ]
-        },
-    }
-
-    orders = []
-    has_more = True
-    start_cursor = None
-
-    try:
-        with httpx.Client(timeout=30) as client:
-            while has_more:
-                if start_cursor:
-                    payload["start_cursor"] = start_cursor
-
-                resp = client.post(
-                    f"{NOTION_API_BASE}/data_sources/{_get_data_source_id()}/query",
-                    headers=_headers(),
-                    json=payload,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-
-                for page in data.get("results", []):
-                    try:
-                        orders.append(parse_order(page))
-                    except Exception as e:
-                        log.warning(f"Failed to parse order page {page.get('id', '?')}: {e}")
-
-                has_more = data.get("has_more", False)
-                start_cursor = data.get("next_cursor")
-
-        return orders
-
-    except httpx.HTTPStatusError as e:
-        log.error(f"Notion API error: {e.response.status_code} — {e.response.text}")
-        return orders
-    except Exception as e:
-        log.error(f"Notion query failed: {e}")
-        return orders
-
-
-def query_sourcing_orders() -> list[dict]:
-    """
-    Find all orders where ORDER STATUS = 'SOURCING'
-    (sent to sourcing group but not yet forwarded to fulfillment).
-    Returns a list of parsed order dicts.
-    """
-    payload = {
-        "filter": {
-            "and": [
-                {
-                    "property": FIELD_ORDER_STATUS,
-                    "select": {"equals": "SOURCING"},
                 },
                 {
                     "timestamp": "created_time",
@@ -561,40 +506,17 @@ def mark_order_new(page_id: str) -> bool:
     })
 
 
-def mark_sourcing_notified(page_id: str) -> bool:
-    """Check the SOURCING NOTIFIED box in Notion."""
+def update_albums_sent(page_id: str, count: int) -> bool:
+    """Set the ALBUMS SENT number on the order page."""
     return _update_page(page_id, {
-        FIELD_SOURCING_NOTIFIED: {"checkbox": True},
+        FIELD_ALBUMS_SENT: {"number": int(count)},
     })
 
 
-def update_telegram_file_ids(page_id: str, file_ids: list[str]) -> bool:
-    """Save the comma-separated Telegram file_ids to the order page."""
-    joined = ",".join(file_ids)
+def update_fulfillment_message_id(page_id: str, message_id: int) -> bool:
+    """Set the FULFILLMENT MESSAGE ID number on the order page."""
     return _update_page(page_id, {
-        FIELD_TELEGRAM_FILE_IDS: {"rich_text": [{"text": {"content": joined}}]},
-    })
-
-
-def mark_file_ids_saved(page_id: str, value: bool = True) -> bool:
-    """Set the FILE IDS SAVED checkbox to value."""
-    return _update_page(page_id, {
-        FIELD_FILE_IDS_SAVED: {"checkbox": value},
-    })
-
-
-def mark_fulfillment_notified(page_id: str) -> bool:
-    """Check the FULFILLMENT NOTIFIED box in Notion."""
-    return _update_page(page_id, {
-        FIELD_FULFILLMENT_NOTIFIED: {"checkbox": True},
-    })
-
-
-def unmark_notified(page_id: str) -> bool:
-    """Uncheck tracking boxes in Notion for resets."""
-    return _update_page(page_id, {
-        FIELD_SOURCING_NOTIFIED: {"checkbox": False},
-        FIELD_FULFILLMENT_NOTIFIED: {"checkbox": False},
+        FIELD_FULFILLMENT_MESSAGE_ID: {"number": int(message_id)},
     })
 
 
@@ -814,25 +736,6 @@ def query_orders_by_tracking(tracking_no: str) -> list[dict]:
         return []
     filter_ = {"property": FIELD_TRACKING_NUMBER, "rich_text": {"equals": tracking_no}}
     return _run_query({"filter": filter_})
-
-
-def query_filex_eligible() -> list[dict]:
-    """
-    Orders ready to be submitted to Filex via /print all:
-      ORDER STATUS == "Processed"
-      AND SOURCING NOTIFIED == true
-      AND FULFILLMENT NOTIFIED == true
-      AND Filex Submitted == false
-    """
-    payload = {
-        "filter": {"and": [
-            {"property": FIELD_ORDER_STATUS,         "select":   {"equals": "Processed"}},
-            {"property": FIELD_SOURCING_NOTIFIED,    "checkbox": {"equals": True}},
-            {"property": FIELD_FULFILLMENT_NOTIFIED, "checkbox": {"equals": True}},
-            {"property": FIELD_FILEX_SUBMITTED,      "checkbox": {"equals": False}},
-        ]},
-    }
-    return _run_query(payload)
 
 
 def query_filex_processed() -> list[dict]:

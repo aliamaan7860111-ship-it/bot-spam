@@ -9,7 +9,6 @@ import os
 import sys
 import logging
 import httpx
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -35,9 +34,6 @@ NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION  = "2022-06-28"
 PKT = timezone(timedelta(hours=5))
 
-# ── Target run time: 11:20 PM PKT daily ──
-REPORT_HOUR = 23
-REPORT_MINUTE = 20
 
 
 def _headers() -> dict:
@@ -110,34 +106,10 @@ def get_today_range_iso() -> tuple[str, str]:
 
 
 def count_responded_today(agent: str, day_start: str, day_end: str) -> int:
-    """
-    Total Leads Responded: Leads where Agent Assigned = agent
-    AND Actioned At is within today.
-    """
+    """Tickets where the agent participated AND a reply happened today."""
     filter_payload = {
         "and": [
-            {"property": "Agent Assigned", "select": {"equals": agent}},
-            {"property": "Actioned At", "date": {"on_or_after": day_start}},
-            {"property": "Actioned At", "date": {"on_or_before": day_end}},
-        ]
-    }
-    results = _query_leads_db(filter_payload)
-    return len(results)
-
-
-def count_closed_today(agent: str, day_start: str, day_end: str) -> int:
-    """
-    Total Closed: Leads where Agent Assigned = agent
-    AND Status multi-select contains 'Closed'.
-    We check Actioned At within today OR Last Agent Reply within today
-    to capture leads that were worked on today.
-    """
-    # We count any lead assigned to this agent that currently has "Closed" label
-    # AND was contacted today (Last Agent Reply within today)
-    filter_payload = {
-        "and": [
-            {"property": "Agent Assigned", "select": {"equals": agent}},
-            {"property": "Status", "multi_select": {"contains": "Closed"}},
+            {"property": "Agent Assigned", "multi_select": {"contains": agent}},
             {"property": "Last Agent Reply", "date": {"on_or_after": day_start}},
             {"property": "Last Agent Reply", "date": {"on_or_before": day_end}},
         ]
@@ -146,14 +118,29 @@ def count_closed_today(agent: str, day_start: str, day_end: str) -> int:
     return len(results)
 
 
-def count_pending(agent: str) -> int:
-    """
-    Pending: All leads assigned to this agent where Outcome = 'Pending'.
-    These are tickets awaiting response at shift end.
-    """
+def count_closed_today(agent: str, day_start: str, day_end: str) -> int:
+    """Tickets where Closed Date falls within today AND this agent is the latest responder (Agent Assigned[0])."""
     filter_payload = {
         "and": [
-            {"property": "Agent Assigned", "select": {"equals": agent}},
+            {"property": "Closed Date", "date": {"on_or_after": day_start}},
+            {"property": "Closed Date", "date": {"on_or_before": day_end}},
+        ]
+    }
+    results = _query_leads_db(filter_payload)
+    count = 0
+    for row in results:
+        arr = row.get("properties", {}).get("Agent Assigned", {}).get("multi_select", [])
+        names = [o.get("name", "") for o in arr if o.get("name")]
+        if names and names[0] == agent:
+            count += 1
+    return count
+
+
+def count_pending(agent: str) -> int:
+    """Pending tickets where this agent is anywhere in the multi-select."""
+    filter_payload = {
+        "and": [
+            {"property": "Agent Assigned", "multi_select": {"contains": agent}},
             {"property": "Outcome", "select": {"equals": "Pending"}},
         ]
     }
@@ -224,42 +211,9 @@ def generate_daily_report():
     log.info("📊 Daily report complete.")
 
 
-def wait_for_report_time():
-    """Sleep until 11:20 PM PKT, then run the report."""
-    while True:
-        now = datetime.now(PKT)
-        target = now.replace(hour=REPORT_HOUR, minute=REPORT_MINUTE, second=0, microsecond=0)
-
-        # If we've already passed today's target, schedule for tomorrow
-        if now >= target:
-            target += timedelta(days=1)
-
-        sleep_seconds = (target - now).total_seconds()
-        log.info(f"⏰ Next report scheduled for {target.strftime('%Y-%m-%d %H:%M PKT')} "
-                 f"(sleeping {sleep_seconds/3600:.1f}h)")
-        time.sleep(sleep_seconds)
-
-        try:
-            generate_daily_report()
-        except Exception as e:
-            log.error(f"Report generation failed: {e}")
-            import traceback
-            log.error(traceback.format_exc())
-
-
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Daily Agent Performance Report")
-    parser.add_argument("--now", action="store_true", help="Run the report immediately (for testing)")
-    args = parser.parse_args()
-
-    if args.now:
-        log.info("Running report immediately (--now flag)")
-        generate_daily_report()
-    else:
-        log.info("=" * 60)
-        log.info("  Daily Report Service")
-        log.info(f"  Started: {datetime.now(PKT).strftime('%Y-%m-%d %H:%M:%S PKT')}")
-        log.info(f"  Scheduled: {REPORT_HOUR}:{REPORT_MINUTE:02d} PKT daily")
-        log.info("=" * 60)
-        wait_for_report_time()
+    log.info("=" * 60)
+    log.info("  Daily Report — on-demand run")
+    log.info(f"  Started: {datetime.now(PKT).strftime('%Y-%m-%d %H:%M:%S PKT')}")
+    log.info("=" * 60)
+    generate_daily_report()

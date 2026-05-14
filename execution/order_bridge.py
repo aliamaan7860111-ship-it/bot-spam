@@ -19,10 +19,11 @@ Usage:
 
 Requires in .env:
     NOTION_API_KEY, NOTION_DATABASE_ID,
-    TELEGRAM_BOT_TOKEN, TELEGRAM_SOURCING_GROUP_ID, TELEGRAM_FULFILLMENT_GROUP_ID
+    TELEGRAM_BOT_TOKEN, TELEGRAM_FULFILLMENT_GROUP_ID
 """
 
 import os
+import io
 import sys
 import json
 import asyncio
@@ -186,8 +187,8 @@ def setup_logging() -> logging.Logger:
 log = setup_logging()
 
 # ---------------------------------------------------------------------------
-# Tracking happens natively via Notion checkboxes now
-# (SOURCING NOTIFIED, FULFILLMENT NOTIFIED) — local JSON is deprecated.
+# Tracking happens via ORDER STATUS transitions (Confirmed | Processing -> Processed).
+# ALBUMS SENT counter (Notion) gives per-album resume on multi-album orders.
 # ---------------------------------------------------------------------------
 
 
@@ -207,106 +208,110 @@ _sending_in_progress: set[str] = set()
 
 async def poll_notion_once(bot: Bot) -> int:
     """
-    Poll Notion for confirmed orders, send to Telegram sourcing group.
-    Returns number of orders processed.
+    Poll Notion for orders with status `Confirmed | Processing`, send each directly
+    to the fulfillment group as an atomic media album (caption on the last album).
+    Resumes from ALBUMS SENT on multi-album orders. Flips status to `Processed`
+    only when all albums for the order have landed.
+
+    Returns number of orders fully delivered this cycle.
     """
-    sourcing_group = tg.TELEGRAM_SOURCING_GROUP_ID
-    if not sourcing_group:
-        log.error("TELEGRAM_SOURCING_GROUP_ID is not set")
+    fulfillment_group = tg.TELEGRAM_FULFILLMENT_GROUP_ID
+    if not fulfillment_group:
+        log.error("TELEGRAM_FULFILLMENT_GROUP_ID is not set")
         return 0
 
-    # Query Notion for confirmed orders
     orders = notion.query_confirmed_orders()
-
     if not orders:
         return 0
 
-    # Filter out already-notified orders AND orders currently being sent
+    # Filter out orders currently being sent (in-memory lock guards against re-poll race).
     new_orders = [
         o for o in orders
-        if not o.get("sourcing_notified", False)
-        and o.get("order_id", "") not in _sending_in_progress
+        if o.get("order_id", "") not in _sending_in_progress
     ]
-
     if not new_orders:
         return 0
 
-    log.info(f"Found {len(new_orders)} new confirmed order(s)")
+    log.info(f"Found {len(new_orders)} order(s) needing fulfillment send")
 
     processed = 0
     for order in new_orders:
         order_id = order.get("order_id", "?")
-
-        # Lock immediately — prevents duplicate if next poll fires fast
         _sending_in_progress.add(order_id)
-        
-        # Update Notion status and tracking FIRST — eliminates race condition window
-        notion.mark_sourcing_notified(order["page_id"])
-        notion.update_order_status(order["page_id"], "SOURCING")
 
-        log.info(f"📤 Sending order {order_id} to sourcing group...")
+        try:
+            start_album_index = order.get("albums_sent", 0) or 0
+            page_id = order["page_id"]
 
-        # Send to Telegram
-        send_result = await tg.send_order_to_group(
-            bot, sourcing_group, order,
-            header="📦 NEW ORDER FOR SOURCING"
-        )
-        success = send_result["success"]
+            # Build the per-album checkpoint callback. Writes ALBUMS SENT (always)
+            # and FULFILLMENT MESSAGE ID (only when the caption-bearing album lands).
+            async def on_album_sent(new_count: int, caption_msg_id):
+                await notion_write_with_retry(
+                    notion.update_albums_sent,
+                    page_id, new_count,
+                    description=f"ALBUMS SENT={new_count} for {order_id}",
+                )
+                if caption_msg_id is not None:
+                    await notion_write_with_retry(
+                        notion.update_fulfillment_message_id,
+                        page_id, caption_msg_id,
+                        description=f"FULFILLMENT MESSAGE ID={caption_msg_id} for {order_id}",
+                    )
 
-        if success:
-            log.info(f"  ✓ Order {order_id} sent, status → SOURCING")
+            log.info(f"📤 Sending order {order_id} to fulfillment group (resume from album {start_album_index})...")
 
-            # Save file_ids returned from Stage 1 send. 3 retries with backoff.
-            file_ids = send_result.get("file_ids", [])
-            if file_ids:
+            send_result = await tg.send_order_to_group(
+                bot, fulfillment_group, order,
+                header="✅ NEW ORDER FOR FULFILLMENT",
+                start_album_index=start_album_index,
+                on_album_sent=on_album_sent,
+            )
+
+            if not send_result["success"]:
+                log.error(f"  ✗ Send failed for {order_id} — will retry next poll")
+                continue
+
+            # Final flip to Processed only when all planned albums are accounted for.
+            total_albums = send_result.get("total_albums", 0)
+            done_count = start_album_index + send_result.get("albums_sent_this_call", 0)
+            if total_albums == 0 or done_count >= total_albums:
                 ok = await notion_write_with_retry(
-                    notion.update_telegram_file_ids,
-                    order["page_id"], file_ids,
-                    description=f"file_ids write for {order_id}",
+                    notion.mark_order_processed,
+                    page_id,
+                    description=f"status->Processed for {order_id}",
                 )
                 if ok:
-                    await notion_write_with_retry(
-                        notion.mark_file_ids_saved,
-                        order["page_id"], True,
-                        description=f"FILE IDS SAVED checkbox for {order_id}",
-                    )
+                    log.info(f"  ✓ Order {order_id} fully delivered, status -> Processed")
+                    processed += 1
                 else:
-                    # Couldn't save file_ids; warn in the chat. Stage 2 will use
-                    # GraphQL fallback automatically when FILE IDS SAVED is false.
                     try:
                         await bot.send_message(
-                            chat_id=sourcing_group,
-                            text=f"⚠️ {order_id}: file IDs not saved after 3 retries, manual fulfillment may be needed",
+                            chat_id=fulfillment_group,
+                            text=f"⚠️ {order_id}: status flip to Processed failed after 3 retries (will retry on next poll)",
                         )
-                    except Exception as e:
-                        log.error(f"  Failed to post file_id warning: {e}")
+                    except Exception:
+                        pass
+            else:
+                log.warning(f"  Partial send for {order_id}: {done_count}/{total_albums} albums sent — next poll resumes")
 
-            # Image count vs items count mismatch warning.
+            # Image count vs items mismatch warning (only once, when fully done)
             delivered = send_result.get("image_count", 0)
             expected = send_result.get("expected_count", 0)
-            if expected > 0 and delivered < expected:
+            if (total_albums == 0 or done_count >= total_albums) and expected > 0 and delivered < expected:
                 missing = expected - delivered
                 try:
                     await bot.send_message(
-                        chat_id=sourcing_group,
+                        chat_id=fulfillment_group,
                         text=f"⚠️ {order_id}: {delivered} of {expected} images sent, {missing} missing",
                     )
                 except Exception as e:
                     log.error(f"  Failed to post image-count warning: {e}")
 
-            processed += 1
-        else:
-            # Revert Notion status and tracking so it retries on next cycle
-            notion.update_order_status(order["page_id"], "CONFIRMED | PROCESSING")
-            notion.unmark_notified(order["page_id"])
-            log.error(f"  ✗ Failed to send order {order_id} to Telegram — will retry")
-
-        # Release the in-memory lock
-        _sending_in_progress.discard(order_id)
-
-        # Rate limit: wait between orders to avoid Telegram API limits
-        if processed < len(new_orders):
-            await asyncio.sleep(1.5)
+        finally:
+            _sending_in_progress.discard(order_id)
+            # Rate limit between orders to keep well below Telegram per-chat limits.
+            if processed < len(new_orders):
+                await asyncio.sleep(1.5)
 
     return processed
 
@@ -1098,36 +1103,88 @@ async def cmd_print_all(update, context):
     tracking_pairs = result.get("trackingnos", [])
     tracking_numbers = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs)
 
-    # 7. Fetch combined PDF.
+    # 7. Per-order label dispatch as replies to each order's fulfillment message.
     if not tracking_numbers:
         await _safe_send_message(
             bot, chat_id,
             "⚠️ Filex returned 'success' but no tracking numbers — verify in Filex portal.",
         )
         return
-    try:
-        pdf_bytes = client.get_label_pdf(tracking_numbers)
-    except Exception as e:
-        await _safe_send_message(
-            bot, chat_id,
-            f"✅ Placed {len(tracking_numbers)} orders, but label PDF fetch failed: {e}\n"
-            f"Use /print <ID> for each order to retrieve the label.",
-        )
-        log.error("filex label pdf fetch failed", exc_info=True)
-        return
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    filename = f"filex_labels_{today}_{len(tracking_numbers)}.pdf"
-    await _safe_send_document(
-        bot, chat_id,
-        document=pdf_bytes,
-        filename=filename,
-        caption=f"✅ Placed {len(tracking_numbers)} order(s). Filex labels attached.",
+    # Build (order_dict, tracking_number) pairs, looking up each order from Notion
+    # so we have fulfillment_message_id and order_id available.
+    # Filex returns entries shaped like {"barcode": ref, "tracking_no": tn}.
+    order_pairs: list[tuple[dict, str]] = []
+    for entry in tracking_pairs:
+        ref = entry.get("barcode")
+        tn = entry.get("tracking_no")
+        if not tn:
+            continue
+        order = notion.find_order_by_shipper_ref(ref) or {"order_id": ref}
+        order_pairs.append((order, tn))
+
+    # Sort: anchored orders by fulfillment_message_id asc; legacy go last.
+    order_pairs_sorted = sorted(
+        order_pairs,
+        key=lambda p: (
+            0 if p[0].get("fulfillment_message_id") else 1,
+            p[0].get("fulfillment_message_id") or 0,
+            p[0].get("order_id", ""),
+        ),
     )
-    log.info(
-        "/print all completed: %d orders, PDF %d bytes",
-        len(tracking_numbers), len(pdf_bytes),
-    )
+
+    sent_count = 0
+    fail_count = 0
+    for order, tn in order_pairs_sorted:
+        oid = order.get("order_id", "?")
+        msg_id = order.get("fulfillment_message_id")
+
+        try:
+            pdf_bytes = client.get_label_pdf([tn])
+        except Exception as e:
+            log.error("/print all: get_label_pdf failed for %s (%s): %s", oid, tn, e, exc_info=True)
+            await _safe_send_message(
+                bot, chat_id,
+                f"⚠️ {oid}: label fetch failed (see logs)",
+            )
+            fail_count += 1
+            continue
+
+        try:
+            if msg_id:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=io.BytesIO(pdf_bytes),
+                    filename=f"{oid}.pdf",
+                    reply_to_message_id=int(msg_id),
+                    read_timeout=60, write_timeout=60,
+                )
+            else:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=io.BytesIO(pdf_bytes),
+                    filename=f"{oid}.pdf",
+                    caption=tg.legacy_label_caption(oid),
+                    read_timeout=60, write_timeout=60,
+                )
+            sent_count += 1
+        except Exception as e:
+            log.error("/print all: send_document failed for %s: %s", oid, e, exc_info=True)
+            await _safe_send_message(
+                bot, chat_id,
+                f"⚠️ {oid}: label send failed (see logs)",
+            )
+            fail_count += 1
+            continue
+
+        # Light rate-limit cushion between sends.
+        await asyncio.sleep(0.5)
+
+    summary = f"✅ Sent {sent_count} label(s)."
+    if fail_count:
+        summary += f" ⚠️ {fail_count} failed."
+    await _safe_send_message(bot, chat_id, summary)
+    log.info("/print all completed: %d sent, %d failed", sent_count, fail_count)
 
 
 def _resolve_order_id(raw: str) -> dict | None:
@@ -1201,13 +1258,31 @@ async def cmd_print_one(update, context, order_id: str) -> None:
             )
             log.error("/print %s label fetch failed", canonical_id, exc_info=True)
             return
-        today = datetime.now().strftime("%Y-%m-%d")
-        await _safe_send_document(
-            bot, chat_id,
-            document=pdf_bytes,
-            filename=f"{canonical_id.replace(' ', '_')}_{today}.pdf",
-            caption=f"ℹ️ {canonical_id} already has a Filex label. Status: {filex_status}. Tracking: {tn}.",
-        )
+
+        msg_id = order.get("fulfillment_message_id")
+        try:
+            if msg_id:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=io.BytesIO(pdf_bytes),
+                    filename=f"{canonical_id}.pdf",
+                    reply_to_message_id=int(msg_id),
+                    read_timeout=60, write_timeout=60,
+                )
+            else:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=io.BytesIO(pdf_bytes),
+                    filename=f"{canonical_id}.pdf",
+                    caption=tg.legacy_label_caption(canonical_id),
+                    read_timeout=60, write_timeout=60,
+                )
+        except Exception as e:
+            log.error("/print %s send_document failed: %s", canonical_id, e, exc_info=True)
+            await _safe_send_message(
+                bot, chat_id,
+                f"⚠️ {canonical_id}: label send failed (see logs)",
+            )
         return
 
     # 4. Fresh placement branch.
@@ -1250,13 +1325,30 @@ async def cmd_print_one(update, context, order_id: str) -> None:
         log.error("/print %s label fetch failed after placement", canonical_id, exc_info=True)
         return
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    await _safe_send_document(
-        bot, chat_id,
-        document=pdf_bytes,
-        filename=f"{canonical_id.replace(' ', '_')}_{today}.pdf",
-        caption=f"✅ {canonical_id} placed. Tracking: {tn}.",
-    )
+    msg_id = order.get("fulfillment_message_id")
+    try:
+        if msg_id:
+            await bot.send_document(
+                chat_id=chat_id,
+                document=io.BytesIO(pdf_bytes),
+                filename=f"{canonical_id}.pdf",
+                reply_to_message_id=int(msg_id),
+                read_timeout=60, write_timeout=60,
+            )
+        else:
+            await bot.send_document(
+                chat_id=chat_id,
+                document=io.BytesIO(pdf_bytes),
+                filename=f"{canonical_id}.pdf",
+                caption=tg.legacy_label_caption(canonical_id),
+                read_timeout=60, write_timeout=60,
+            )
+    except Exception as e:
+        log.error("/print %s send_document failed after placement: %s", canonical_id, e, exc_info=True)
+        await _safe_send_message(
+            bot, chat_id,
+            f"⚠️ {canonical_id}: label send failed after placement (see logs)",
+        )
 
 
 # ---------------------------------------------------------------------------

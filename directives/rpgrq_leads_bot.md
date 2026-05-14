@@ -37,7 +37,7 @@ Always normalize via a mapping dictionary before writing to Notion.
 - Extract `chat_id` (phone), `whatsapp_bot_name` (→ brand), `wa_message_id`, `label_names`.
 - Idempotency: dedup on `wa_message_id` (in-memory set, bounded).
 - Look up Leads DB for a ticket matching **(phone, brand)**.
-  - No ticket → **create** with `Status=Waiting`, `Outcome=Pending`, `Created At=now`, `Agent Assigned=<next round-robin>`. Also call WhatChimp `assign-to-team-member` for the assigned agent.
+  - No ticket → **create** with `Outcome=Pending`, `Created At=now`, `Last Customer Message=now`, `Agent Assigned=[<next round-robin>]` (multi-select). `Status` left empty; label sync fills it. Round-robin only considers agents whose shift covers now AND who aren't on day-off today (next-to-start fallback off-hours; all-active fallback if everyone is off). Also call WhatChimp `assign-to-team-member` for the assigned agent.
   - Existing ticket → **ping-pong**: stamp `Last Customer Message=now`, flip `Outcome=Pending`. No assignment change, no status change. Closed is just a label — it doesn't alter behavior.
 - As a side-effect, sync labels (see Rule 4).
 
@@ -62,7 +62,8 @@ Always normalize via a mapping dictionary before writing to Notion.
     - ≤ 5 min → `Fast`
     - ≤ 15 min → `Medium`
     - \> 15 min → `Slow`
-- **Dynamic reassignment:** if the replier is a different active roster member (matched by Team Member ID against `agent_name` from `/get/conversation`), move `Agent Assigned` to them AND call WhatChimp `assign-to-team-member`. If the replier isn't in the active roster (e.g. a shared admin session), leave `Agent Assigned` alone.
+- **Dynamic reassignment (multi-select):** `Agent Assigned` is a Notion multi-select where position [0] is the latest replier. On every verified human reply (numeric `agent_name` matched to roster `Team Member ID` or `WhatChimp User ID`), prepend the replier to the array (removing them from elsewhere if present). When position [0] actually changes, also call WhatChimp `assign-to-team-member`. If the replier isn't in the active roster (shared admin session, etc.), leave the array untouched.
+- **Closed Date:** stamped automatically whenever Status transitions to include `Closed` (re-stamped on every fresh add). Used by daily report for accurate per-day close counts.
 
 ### Rule 4: Label sync
 

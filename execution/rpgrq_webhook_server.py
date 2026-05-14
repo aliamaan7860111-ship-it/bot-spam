@@ -18,6 +18,7 @@ import signal
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 from urllib.parse import parse_qs
 
 import httpx
@@ -151,15 +152,28 @@ async def sync_labels_side_effect(
     client: httpx.AsyncClient,
     ticket_id: str,
     label_names_raw: str,
+    ticket: Optional[dict] = None,
 ):
-    labels = pick_active_labels(label_names_raw)
-    if not labels:
+    """Sync mapped WhatChimp labels to Notion Status. Stamp Closed Date on transition."""
+    new_labels = pick_active_labels(label_names_raw)
+    if not new_labels:
         return
-    if not label_cache.changed(ticket_id, labels):
+    if not label_cache.changed(ticket_id, new_labels):
         return
-    ok = await notion.update_status_labels(client, ticket_id, labels)
+
+    # Read existing Status from the ticket dict (if provided) to detect Closed transition.
+    prev_labels: list[str] = []
+    if ticket is not None:
+        status_arr = ticket.get("properties", {}).get("Status", {}).get("multi_select", [])
+        prev_labels = [s.get("name", "") for s in status_arr if s.get("name")]
+
+    ok = await notion.update_status_labels(client, ticket_id, new_labels)
     if ok:
-        log.info(f"🏷️  labels synced for {ticket_id[-6:]}: {labels}")
+        log.info(f"🏷️  labels synced for {ticket_id[-6:]}: {new_labels}")
+        # Closed transition: stamp Closed Date.
+        if "Closed" in new_labels and "Closed" not in prev_labels:
+            await notion.stamp_closed_date(client, ticket_id, utc_iso_now())
+            log.info(f"🔒 closed-date stamped for {ticket_id[-6:]}")
 
 
 async def handle_incoming(
@@ -198,7 +212,7 @@ async def handle_incoming(
             log.error("incoming: no active agent, ticket created as Unassigned")
             new_id = await notion.create_ticket(client, phone, brand, "Unassigned", now_iso)
             if new_id:
-                await sync_labels_side_effect(client, new_id, label_names_raw)
+                await sync_labels_side_effect(client, new_id, label_names_raw, ticket=None)
             return
         new_id = await notion.create_ticket(client, phone, brand, agent["name"], now_iso)
         if new_id:
@@ -206,7 +220,7 @@ async def handle_incoming(
             pid = wc.brand_to_phone_id(brand)
             if pid and agent.get("team_member_id"):
                 await wc.assign_to_team_member(client, pid, phone, int(agent["team_member_id"]))
-            await sync_labels_side_effect(client, new_id, label_names_raw)
+            await sync_labels_side_effect(client, new_id, label_names_raw, ticket=None)
         return
 
     # Any existing ticket — ping-pong. Closed is just a label, not special state:
@@ -215,7 +229,7 @@ async def handle_incoming(
     await notion.set_pending(client, ticket["id"])
     await notion.stamp_customer_message(client, ticket["id"], now_iso)
     log.info(f"🔄 ping-pong {brand} / {phone}")
-    await sync_labels_side_effect(client, ticket["id"], label_names_raw)
+    await sync_labels_side_effect(client, ticket["id"], label_names_raw, ticket=ticket)
 
 
 async def handle_outgoing(
@@ -242,20 +256,38 @@ async def handle_outgoing(
 
     ticket = await notion.find_ticket(client, phone, brand)
     if ticket is None:
-        log.debug(f"outgoing: no ticket for {phone}/{brand}; ignoring")
+        # Race: outgoing webhook fired before the incoming webhook finished
+        # creating the ticket. Sleep 2s and retry once.
+        await asyncio.sleep(2.0)
+        ticket = await notion.find_ticket(client, phone, brand)
+    if ticket is None:
+        log.info(f"outgoing: ignored — no ticket for {phone}/{brand} after retry")
         return
 
     # Labels can sync regardless of who sent the message
-    await sync_labels_side_effect(client, ticket["id"], label_names_raw)
+    await sync_labels_side_effect(client, ticket["id"], label_names_raw, ticket=ticket)
 
     # Identify the sender via targeted conversation lookup
     pid = wc.brand_to_phone_id(brand)
     if not pid:
         return
 
-    latest = await wc.get_latest_message(client, pid, phone)
+    async def _fetch_latest():
+        return await wc.get_latest_message(client, pid, phone)
+
+    latest = await _fetch_latest()
+    # If the webhook's wa_message_id doesn't match the conversation's latest,
+    # WhatChimp may not have propagated yet. Sleep 1s and retry once.
+    webhook_msg_id = wa_message_id or ""
+    if latest and webhook_msg_id and latest.get("wa_message_id") != webhook_msg_id:
+        log.info(
+            f"outgoing: stale conversation lookup for {phone}/{brand} "
+            f"(latest={latest.get('wa_message_id')!r} webhook={webhook_msg_id!r}); retrying"
+        )
+        await asyncio.sleep(1.0)
+        latest = await _fetch_latest()
     if not latest:
-        log.info(f"outgoing: {phone}/{brand} no conversation history returned")
+        log.info(f"outgoing: ignored — no conversation history for {phone}/{brand}")
         return
 
     sender = latest.get("sender")
@@ -276,13 +308,13 @@ async def handle_outgoing(
     # We require sender=='bot' AND agent_name to be a digit string.
     needle = (agent_name or "").strip() if isinstance(agent_name, str) else ""
     if sender != "bot":
-        log.info(f"outgoing: {phone}/{brand} sender={sender!r} not 'bot' -> system/ghost event; ignoring")
+        log.info(f"outgoing: ignored — {phone}/{brand} sender={sender!r} not 'bot' (system/ghost event)")
         return
     if not needle:
-        log.info(f"outgoing: {phone}/{brand} agent_name empty/None -> automation; ignoring")
+        log.info(f"outgoing: ignored — {phone}/{brand} agent_name empty/None (automation)")
         return
     if not needle.isdigit():
-        log.info(f"outgoing: {phone}/{brand} agent_name={needle!r} not numeric -> not a real agent; ignoring")
+        log.info(f"outgoing: ignored — {phone}/{brand} agent_name={needle!r} not numeric (not a real agent)")
         return
 
     needle_int = int(needle)
@@ -299,25 +331,29 @@ async def handle_outgoing(
             replier = a
             break
 
-    current_assigned = notion.ticket_agent_assigned(ticket) or ""
-
-    # Dynamic reassignment: if the replier is a different active roster member
-    # than the current assignee, move ownership to them (both Notion + WhatChimp).
-    # If the replier isn't in the active roster (e.g. shared admin session),
-    # leave Agent Assigned alone.
-    if replier and replier["name"] != current_assigned:
-        ok = await notion.reassign_agent(client, ticket["id"], replier["name"])
-        if ok:
-            log.info(
-                f"🔀 reassigned {brand} / {phone}: "
-                f"{current_assigned or 'Unassigned'} -> {replier['name']}"
-            )
-            pid = wc.brand_to_phone_id(brand)
-            if pid and replier.get("team_member_id"):
-                await wc.assign_to_team_member(
-                    client, pid, phone, int(replier["team_member_id"])
+    # Update Agent Assigned multi-select: prepend the replier to position [0],
+    # removing them from elsewhere in the list if present. If replier isn't in
+    # the active roster (e.g. shared admin session), leave the list untouched.
+    if replier:
+        current_list = notion.ticket_agent_assigned_list(ticket)
+        new_list = [replier["name"]] + [n for n in current_list if n != replier["name"]]
+        if new_list != current_list:
+            ok = await notion.update_agent_assigned_list(client, ticket["id"], new_list)
+            if ok:
+                log.info(
+                    f"🔀 reassigned {brand} / {phone}: {current_list} -> {new_list}"
                 )
-            current_assigned = replier["name"]
+                # WhatChimp side-assign only when position [0] actually changed.
+                prev_owner = current_list[0] if current_list else None
+                if prev_owner != replier["name"]:
+                    pid = wc.brand_to_phone_id(brand)
+                    if pid and replier.get("team_member_id"):
+                        await wc.assign_to_team_member(
+                            client, pid, phone, int(replier["team_member_id"])
+                        )
+        current_assigned = replier["name"]
+    else:
+        current_assigned = notion.ticket_agent_assigned(ticket) or ""
 
     # Look up the current assignee's shift for response-speed calculation.
     assigned_shift_start = 12

@@ -73,12 +73,15 @@ async def get_active_roster(client: httpx.AsyncClient, force_refresh: bool = Fal
         name = title_arr[0].get("plain_text", "").strip() if title_arr else ""
         if not name:
             continue
+        off_days_arr = p.get("Off Days", {}).get("multi_select", [])
+        off_days = [o.get("name", "") for o in off_days_arr if o.get("name")]
         roster.append({
             "name": name,
             "team_member_id": p.get("Team Member ID", {}).get("number"),
             "user_id": p.get("WhatChimp User ID", {}).get("number"),
             "shift_start": p.get("Shift Start Hour", {}).get("number"),
             "shift_end": p.get("Shift End Hour", {}).get("number"),
+            "off_days": off_days,
         })
     roster.sort(key=lambda a: a["name"])
     _ROSTER_CACHE = roster
@@ -125,7 +128,7 @@ async def get_last_assigned_agent(client: httpx.AsyncClient, valid_agent_names: 
     payload = {
         "filter": {
             "or": [
-                {"property": "Agent Assigned", "select": {"equals": n}}
+                {"property": "Agent Assigned", "multi_select": {"contains": n}}
                 for n in valid_agent_names
             ]
         },
@@ -141,8 +144,8 @@ async def get_last_assigned_agent(client: httpx.AsyncClient, valid_agent_names: 
         results = resp.json().get("results", [])
         if not results:
             return None
-        prop = results[0].get("properties", {}).get("Agent Assigned", {}).get("select")
-        return prop.get("name") if prop else None
+        arr = results[0].get("properties", {}).get("Agent Assigned", {}).get("multi_select", [])
+        return arr[0].get("name") if arr else None
     except Exception as e:
         log.error(f"get_last_assigned_agent failed: {e}")
         return None
@@ -164,11 +167,10 @@ async def create_ticket(
         "Name":                   {"title": [{"text": {"content": phone}}]},
         "Phone Number":           {"rich_text": [{"text": {"content": phone}}]},
         "Source (Store)":         {"select": {"name": brand}},
-        "Status":                 {"multi_select": [{"name": "Waiting"}]},
         "Outcome":                {"select": {"name": "Pending"}},
         "Created At":             {"date": {"start": created_at_iso}},
         "Last Customer Message":  {"date": {"start": created_at_iso}},
-        "Agent Assigned":         {"select": {"name": agent_name}},
+        "Agent Assigned":         {"multi_select": [{"name": agent_name}]},
     }
     payload = {"parent": {"database_id": LEADS_DB_ID}, "properties": properties}
     try:
@@ -225,14 +227,26 @@ async def stamp_customer_message(
     )
 
 
-async def reassign_agent(
+async def stamp_closed_date(
     client: httpx.AsyncClient,
     page_id: str,
-    agent_name: str,
+    closed_at_iso: str,
 ) -> bool:
-    """Update Agent Assigned to a new agent name."""
+    """Stamp Closed Date when the Closed label transitions from absent to present."""
     return await _update_page(
-        client, page_id, {"Agent Assigned": {"select": {"name": agent_name}}}
+        client, page_id, {"Closed Date": {"date": {"start": closed_at_iso}}}
+    )
+
+
+async def update_agent_assigned_list(
+    client: httpx.AsyncClient,
+    page_id: str,
+    ordered_agents: list[str],
+) -> bool:
+    """Write Agent Assigned as a multi-select array. Position [0] = latest replier."""
+    ms_value = [{"name": n} for n in ordered_agents]
+    return await _update_page(
+        client, page_id, {"Agent Assigned": {"multi_select": ms_value}}
     )
 
 
@@ -283,6 +297,13 @@ def ticket_status_names(ticket: dict) -> list[str]:
     return [s.get("name", "") for s in status_arr]
 
 
+def ticket_agent_assigned_list(ticket: dict) -> list[str]:
+    """Return the Agent Assigned multi-select array as a list of names. Position [0] = latest."""
+    arr = ticket.get("properties", {}).get("Agent Assigned", {}).get("multi_select", [])
+    return [o.get("name", "") for o in arr if o.get("name")]
+
+
 def ticket_agent_assigned(ticket: dict) -> Optional[str]:
-    prop = ticket.get("properties", {}).get("Agent Assigned", {}).get("select")
-    return prop.get("name") if prop else None
+    """Return position [0] of the Agent Assigned multi-select (the latest replier), or None."""
+    arr = ticket_agent_assigned_list(ticket)
+    return arr[0] if arr else None

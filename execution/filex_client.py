@@ -136,7 +136,11 @@ class FilexClient:
             json={"list": orders},
             timeout=120,
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            # Surface Filex's response body so we can see what they rejected.
+            raise RuntimeError(
+                f"Filex placebulk HTTP {r.status_code}: {r.text[:800]}"
+            )
         body = r.json()
         if body.get("data") != "success":
             raise RuntimeError(f"Filex placebulk did not return success: {body}")
