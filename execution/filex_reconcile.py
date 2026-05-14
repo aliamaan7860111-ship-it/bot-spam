@@ -111,6 +111,14 @@ def reconcile_active_orders(cutoff_iso: str | None = None):
                     order["order_id"], order.get("filex_status"), mapped,
                 )
                 nc.set_filex_status(order["page_id"], mapped)
+                # Also promote to the main ORDER STATUS for Shipped/Delivered/RTO.
+                promoted = filex_status_mapper.order_status_from_filex(mapped)
+                if promoted:
+                    nc.update_order_status(order["page_id"], promoted)
+                    log.info(
+                        "  ↳ ORDER STATUS promoted to %r for %s",
+                        promoted, order["order_id"],
+                    )
                 event_iso = r.get("eventTime")
                 if event_iso:
                     # Filex eventTime is naive PKT; tag as +05:00 so stored UTC matches reality.

@@ -24,10 +24,12 @@ IN_OPS_COMPOUND = {
 }
 
 # Promotion of mapped FILEX STATUS into the main ORDER STATUS select.
+# Values must match the EXACT option names in the Notion ORDER STATUS dropdown
+# (including emoji prefixes — Notion silently no-ops if an option doesn't exist).
 # Anything not listed here leaves ORDER STATUS untouched.
 ORDER_STATUS_FROM_FILEX = {
-    "Shipped":          "Shipped",
-    "Delivered":        "Delivered",
+    "Shipped":          "\U0001F69A SHIPPED",   # 🚚 SHIPPED
+    "Delivered":        "✅ DELIVERED",     # ✅ DELIVERED
     "Return to Origin": "RTO",
 }
 
