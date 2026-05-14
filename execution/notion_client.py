@@ -95,6 +95,8 @@ FIELD_EMAIL = "EMAIL"
 FIELD_PLATFORM_SOURCE = "PLATFORM SOURCE"
 FIELD_SOURCING_NOTIFIED = "SOURCING NOTIFIED"
 FIELD_FULFILLMENT_NOTIFIED = "FULFILLMENT NOTIFIED"
+FIELD_ALBUMS_SENT = "ALBUMS SENT"
+FIELD_FULFILLMENT_MESSAGE_ID = "FULFILLMENT MESSAGE ID"
 FIELD_WHATSAPP_SENT = "Confirmation Sent"
 STATUS_CONFIRMATION_SENT = "Confirmation Sent"
 FIELD_TELEGRAM_FILE_IDS = "TELEGRAM FILE IDS"
@@ -138,6 +140,20 @@ def _get_number(props: dict, field: str) -> float | None:
         return props[field]["number"]
     except (KeyError, TypeError):
         return None
+
+
+def _get_number_or_default(props: dict, field: str, default: int = 0) -> int:
+    """Extract an int from a number property; return default if unset or non-numeric."""
+    try:
+        n = props[field]["number"]
+    except (KeyError, TypeError):
+        return default
+    if n is None:
+        return default
+    try:
+        return int(n)
+    except (TypeError, ValueError):
+        return default
 
 
 def _get_select(props: dict, field: str) -> str:
@@ -252,6 +268,8 @@ def parse_order(page: dict) -> dict:
         "whatsapp_sent": _get_checkbox(props, FIELD_WHATSAPP_SENT),
         "telegram_file_ids": _parse_telegram_file_ids(_get_rich_text(props, FIELD_TELEGRAM_FILE_IDS)),
         "file_ids_saved": _get_checkbox(props, FIELD_FILE_IDS_SAVED),
+        "albums_sent": _get_number_or_default(props, FIELD_ALBUMS_SENT, default=0),
+        "fulfillment_message_id": _get_number_or_default(props, FIELD_FULFILLMENT_MESSAGE_ID, default=0) or None,
         "filex_status": _get_select(props, FIELD_FILEX_STATUS),
         "last_update": _get_date(props, FIELD_LAST_UPDATE),
         "tracking_number": _get_rich_text(props, FIELD_TRACKING_NUMBER),
@@ -565,6 +583,20 @@ def mark_sourcing_notified(page_id: str) -> bool:
     """Check the SOURCING NOTIFIED box in Notion."""
     return _update_page(page_id, {
         FIELD_SOURCING_NOTIFIED: {"checkbox": True},
+    })
+
+
+def update_albums_sent(page_id: str, count: int) -> bool:
+    """Set the ALBUMS SENT number on the order page."""
+    return _update_page(page_id, {
+        FIELD_ALBUMS_SENT: {"number": int(count)},
+    })
+
+
+def update_fulfillment_message_id(page_id: str, message_id: int) -> bool:
+    """Set the FULFILLMENT MESSAGE ID number on the order page."""
+    return _update_page(page_id, {
+        FIELD_FULFILLMENT_MESSAGE_ID: {"number": int(message_id)},
     })
 
 
