@@ -318,6 +318,36 @@ def truncate_caption_with_overflow(caption: str, max_length: int = TELEGRAM_CAPT
     return caption[:max_length], caption[max_length:]
 
 
+def resume_range(start_album_index: int, total_albums: int) -> list[tuple[int, bool]]:
+    """Return the list of (album_index, is_last) tuples for albums still to send.
+
+    Empty list when everything has already been sent or there is nothing to send.
+    is_last is True only for the final album in the order (where the caption goes).
+    """
+    if total_albums <= 0 or start_album_index >= total_albums:
+        return []
+    return [(i, i == total_albums - 1) for i in range(start_album_index, total_albums)]
+
+
+def sort_orders_for_label_replies(orders: list[dict]) -> list[dict]:
+    """Sort orders for /print label dispatch.
+
+    Orders with a stored fulfillment_message_id go first, ascending by that id
+    (Telegram message_ids are monotonic per chat, so this is chronological).
+    Legacy orders (no message_id) go last, alphabetical by order_id for determinism.
+    """
+    anchored = [o for o in orders if o.get("fulfillment_message_id")]
+    legacy = [o for o in orders if not o.get("fulfillment_message_id")]
+    anchored.sort(key=lambda o: o["fulfillment_message_id"])
+    legacy.sort(key=lambda o: o.get("order_id", ""))
+    return anchored + legacy
+
+
+def legacy_label_caption(order_id: str) -> str:
+    """Caption for label PDFs sent for legacy orders (no message_id anchor)."""
+    return f"📄 {order_id.strip()} — legacy order, no thread anchor"
+
+
 def format_sourcing_message(order: dict) -> str:
     """
     Minimal message for the sourcing group.
