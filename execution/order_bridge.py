@@ -1038,6 +1038,10 @@ async def cmd_print_all(update, context):
     # 4. Build payloads — validation errors collected, not sent per-order.
     payloads: list[dict] = []
     page_ids_by_ref: dict[str, list[str]] = {}
+    # Parallel mapping: ref -> list of original order dicts. For merged
+    # shipments this gives us per-merged-order access to fulfillment_message_id
+    # so we can post the same label PDF as a reply in EACH order's thread.
+    orders_by_ref: dict[str, list[dict]] = {}
 
     def _record_skip(order_id: str, err_msg: str) -> None:
         category = _categorize_validation_error(err_msg)
@@ -1053,6 +1057,7 @@ async def cmd_print_all(update, context):
                 continue
             payloads.append(payload)
             page_ids_by_ref[payload["ShipperRef"]] = [order["page_id"]]
+            orders_by_ref[payload["ShipperRef"]] = [order]
         else:
             try:
                 merged_payload = build_merged_payload(group)
@@ -1063,6 +1068,7 @@ async def cmd_print_all(update, context):
                 continue
             payloads.append(merged_payload)
             page_ids_by_ref[merged_payload["ShipperRef"]] = [o["page_id"] for o in group]
+            orders_by_ref[merged_payload["ShipperRef"]] = list(group)
             log.info(
                 f"  ↳ Merging {len(group)} orders for phone {phone}: "
                 f"{[o.get('order_id') for o in group]}"
@@ -1076,6 +1082,7 @@ async def cmd_print_all(update, context):
             continue
         payloads.append(payload)
         page_ids_by_ref[payload["ShipperRef"]] = [order["page_id"]]
+        orders_by_ref[payload["ShipperRef"]] = [order]
 
     # 5. Send the two skip messages (single API call each).
     if skips_by_category:
@@ -1111,17 +1118,24 @@ async def cmd_print_all(update, context):
         )
         return
 
-    # Build (order_dict, tracking_number) pairs, looking up each order from Notion
-    # so we have fulfillment_message_id and order_id available.
-    # Filex returns entries shaped like {"barcode": ref, "tracking_no": tn}.
+    # Build (order_dict, tracking_number) pairs. Filex returns entries shaped
+    # like {"barcode": ref, "tracking_no": tn}. For merged shipments, one ref
+    # corresponds to multiple Notion orders — we want a label reply in EACH
+    # order's thread, sharing the same tracking number.
     order_pairs: list[tuple[dict, str]] = []
     for entry in tracking_pairs:
         ref = entry.get("barcode")
         tn = entry.get("tracking_no")
         if not tn:
             continue
-        order = notion.find_order_by_shipper_ref(ref) or {"order_id": ref}
-        order_pairs.append((order, tn))
+        merged_orders = orders_by_ref.get(ref)
+        if merged_orders:
+            for o in merged_orders:
+                order_pairs.append((o, tn))
+        else:
+            # Fallback: ref not in our locked set (shouldn't normally happen).
+            fallback = notion.find_order_by_shipper_ref(ref) or {"order_id": ref}
+            order_pairs.append((fallback, tn))
 
     # Sort: anchored orders by fulfillment_message_id asc; legacy go last.
     order_pairs_sorted = sorted(
