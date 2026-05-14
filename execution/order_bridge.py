@@ -1113,8 +1113,11 @@ async def cmd_print_all(update, context):
 
     # Build (order_dict, tracking_number) pairs, looking up each order from Notion
     # so we have fulfillment_message_id and order_id available.
+    # Filex returns entries shaped like {"barcode": ref, "tracking_no": tn}.
     order_pairs: list[tuple[dict, str]] = []
-    for ref, tn in tracking_pairs:
+    for entry in tracking_pairs:
+        ref = entry.get("barcode")
+        tn = entry.get("tracking_no")
         if not tn:
             continue
         order = notion.find_order_by_shipper_ref(ref) or {"order_id": ref}
