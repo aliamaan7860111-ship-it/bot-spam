@@ -112,7 +112,11 @@ def reconcile_active_orders(cutoff_iso: str | None = None):
                 )
                 nc.set_filex_status(order["page_id"], mapped)
                 # Also promote to the main ORDER STATUS for Shipped/Delivered/RTO.
-                promoted = filex_status_mapper.order_status_from_filex(mapped)
+                # Pass current ORDER STATUS so we don't stomp downstream manual moves
+                # (e.g. ops marked the order as ↩️ RETURNED after verifying the return).
+                promoted = filex_status_mapper.order_status_from_filex(
+                    mapped, order.get("order_status"),
+                )
                 if promoted:
                     nc.update_order_status(order["page_id"], promoted)
                     log.info(

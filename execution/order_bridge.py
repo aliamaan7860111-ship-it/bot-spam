@@ -596,7 +596,9 @@ async def start_health_server():
                     # 7. Map status and update Notion (across all linked rows)
                     current_filex_status = order.get("filex_status")
                     new_status = filex_status_mapper.map_status(status_text, current_filex_status)
-                    new_order_status = filex_status_mapper.order_status_from_filex(new_status)
+                    new_order_status = filex_status_mapper.order_status_from_filex(
+                        new_status, order.get("order_status"),
+                    )
 
                     for target in all_orders_to_update:
                         page_id = target["page_id"]

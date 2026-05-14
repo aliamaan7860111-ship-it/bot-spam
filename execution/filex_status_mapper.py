@@ -33,13 +33,37 @@ ORDER_STATUS_FROM_FILEX = {
     "Return to Origin": "RTO",
 }
 
+# Downstream states that supersede a promotion target. If the order's current
+# ORDER STATUS is one of these, do NOT promote — an operator has progressed it
+# forward and we must not stomp their manual change on the next poll tick.
+#
+# Example: RTO -> ↩️ RETURNED is a manual transition done by ops after they
+# physically verify the return. The 5-min Filex poller keeps reporting
+# "Return to Origin", so without this guard it would keep reverting to RTO.
+PROMOTION_DOWNSTREAM_STATES = {
+    "RTO": {"↩️ RETURNED"},   # ↩️ RETURNED
+}
 
-def order_status_from_filex(filex_status: str | None) -> str | None:
+
+def order_status_from_filex(
+    filex_status: str | None,
+    current_order_status: str | None = None,
+) -> str | None:
     """Return the ORDER STATUS value to promote to (Shipped / Delivered / RTO),
-    or None if this Filex status should not change the main ORDER STATUS."""
+    or None if this Filex status should not change the main ORDER STATUS.
+
+    If the order is already in a downstream state (e.g. manually moved from
+    RTO to ↩️ RETURNED), returns None so the promotion is skipped.
+    """
     if not filex_status:
         return None
-    return ORDER_STATUS_FROM_FILEX.get(filex_status.strip())
+    target = ORDER_STATUS_FROM_FILEX.get(filex_status.strip())
+    if not target:
+        return None
+    downstream = PROMOTION_DOWNSTREAM_STATES.get(target, set())
+    if current_order_status and current_order_status.strip() in downstream:
+        return None
+    return target
 
 
 def map_status(filex_status: str | None, current_notion_status: str | None) -> str:
