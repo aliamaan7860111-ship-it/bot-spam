@@ -23,6 +23,7 @@ Requires in .env:
 """
 
 import os
+import io
 import sys
 import json
 import asyncio
@@ -1102,36 +1103,85 @@ async def cmd_print_all(update, context):
     tracking_pairs = result.get("trackingnos", [])
     tracking_numbers = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs)
 
-    # 7. Fetch combined PDF.
+    # 7. Per-order label dispatch as replies to each order's fulfillment message.
     if not tracking_numbers:
         await _safe_send_message(
             bot, chat_id,
             "⚠️ Filex returned 'success' but no tracking numbers — verify in Filex portal.",
         )
         return
-    try:
-        pdf_bytes = client.get_label_pdf(tracking_numbers)
-    except Exception as e:
-        await _safe_send_message(
-            bot, chat_id,
-            f"✅ Placed {len(tracking_numbers)} orders, but label PDF fetch failed: {e}\n"
-            f"Use /print <ID> for each order to retrieve the label.",
-        )
-        log.error("filex label pdf fetch failed", exc_info=True)
-        return
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    filename = f"filex_labels_{today}_{len(tracking_numbers)}.pdf"
-    await _safe_send_document(
-        bot, chat_id,
-        document=pdf_bytes,
-        filename=filename,
-        caption=f"✅ Placed {len(tracking_numbers)} order(s). Filex labels attached.",
+    # Build (order_dict, tracking_number) pairs, looking up each order from Notion
+    # so we have fulfillment_message_id and order_id available.
+    order_pairs: list[tuple[dict, str]] = []
+    for ref, tn in tracking_pairs:
+        if not tn:
+            continue
+        order = notion.find_order_by_shipper_ref(ref) or {"order_id": ref}
+        order_pairs.append((order, tn))
+
+    # Sort: anchored orders by fulfillment_message_id asc; legacy go last.
+    order_pairs_sorted = sorted(
+        order_pairs,
+        key=lambda p: (
+            0 if p[0].get("fulfillment_message_id") else 1,
+            p[0].get("fulfillment_message_id") or 0,
+            p[0].get("order_id", ""),
+        ),
     )
-    log.info(
-        "/print all completed: %d orders, PDF %d bytes",
-        len(tracking_numbers), len(pdf_bytes),
-    )
+
+    sent_count = 0
+    fail_count = 0
+    for order, tn in order_pairs_sorted:
+        oid = order.get("order_id", "?")
+        msg_id = order.get("fulfillment_message_id")
+
+        try:
+            pdf_bytes = client.get_label_pdf([tn])
+        except Exception as e:
+            log.error("/print all: get_label_pdf failed for %s (%s): %s", oid, tn, e, exc_info=True)
+            await _safe_send_message(
+                bot, chat_id,
+                f"⚠️ {oid}: label fetch failed (see logs)",
+            )
+            fail_count += 1
+            continue
+
+        try:
+            if msg_id:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=io.BytesIO(pdf_bytes),
+                    filename=f"{oid}.pdf",
+                    reply_to_message_id=int(msg_id),
+                    read_timeout=60, write_timeout=60,
+                )
+            else:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=io.BytesIO(pdf_bytes),
+                    filename=f"{oid}.pdf",
+                    caption=tg.legacy_label_caption(oid),
+                    read_timeout=60, write_timeout=60,
+                )
+            sent_count += 1
+        except Exception as e:
+            log.error("/print all: send_document failed for %s: %s", oid, e, exc_info=True)
+            await _safe_send_message(
+                bot, chat_id,
+                f"⚠️ {oid}: label send failed (see logs)",
+            )
+            fail_count += 1
+            continue
+
+        # Light rate-limit cushion between sends.
+        await asyncio.sleep(0.5)
+
+    summary = f"✅ Sent {sent_count} label(s)."
+    if fail_count:
+        summary += f" ⚠️ {fail_count} failed."
+    await _safe_send_message(bot, chat_id, summary)
+    log.info("/print all completed: %d sent, %d failed", sent_count, fail_count)
 
 
 def _resolve_order_id(raw: str) -> dict | None:
