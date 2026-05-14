@@ -596,6 +596,7 @@ async def start_health_server():
                     # 7. Map status and update Notion (across all linked rows)
                     current_filex_status = order.get("filex_status")
                     new_status = filex_status_mapper.map_status(status_text, current_filex_status)
+                    new_order_status = filex_status_mapper.order_status_from_filex(new_status)
 
                     for target in all_orders_to_update:
                         page_id = target["page_id"]
@@ -606,9 +607,12 @@ async def start_health_server():
                             nc.set_filex_notes(page_id, notes)
                             if incoming_dt:
                                 nc.set_last_update(page_id, incoming_dt.isoformat())
+                            if new_order_status:
+                                nc.update_order_status(page_id, new_order_status)
                             log.info(
                                 f"  ✓ Notion updated for {target_ref}: "
                                 f"FILEX STATUS → {new_status!r}"
+                                + (f", ORDER STATUS → {new_order_status!r}" if new_order_status else "")
                             )
                         except Exception as e:
                             log.error(

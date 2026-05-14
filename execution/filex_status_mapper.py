@@ -23,6 +23,22 @@ IN_OPS_COMPOUND = {
     "FD":  "FD-OPS",
 }
 
+# Promotion of mapped FILEX STATUS into the main ORDER STATUS select.
+# Anything not listed here leaves ORDER STATUS untouched.
+ORDER_STATUS_FROM_FILEX = {
+    "Shipped":          "Shipped",
+    "Delivered":        "Delivered",
+    "Return to Origin": "RTO",
+}
+
+
+def order_status_from_filex(filex_status: str | None) -> str | None:
+    """Return the ORDER STATUS value to promote to (Shipped / Delivered / RTO),
+    or None if this Filex status should not change the main ORDER STATUS."""
+    if not filex_status:
+        return None
+    return ORDER_STATUS_FROM_FILEX.get(filex_status.strip())
+
 
 def map_status(filex_status: str | None, current_notion_status: str | None) -> str:
     """
