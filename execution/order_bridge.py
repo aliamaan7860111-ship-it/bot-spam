@@ -6,7 +6,7 @@ Main bridge script: connects Notion CRM to Telegram for order management.
 Runs two concurrent tasks:
     1. Notion Poller — checks for newly confirmed orders every 30s,
        sends them to the Telegram sourcing group
-    2. Telegram Bot — listens for #ready, #cost, #note commands
+    2. Telegram Bot — listens for #cost, #note, #reset, #status commands and /print
        in the sourcing group
 
 Uses a local JSON file (.tmp/notified_orders.json) to track which orders
@@ -1411,7 +1411,7 @@ async def run_bridge():
     log.info("")
     log.info("🚀 Bridge is running! Listening for orders...")
     log.info(f"   Polling Notion every {POLL_INTERVAL_SECONDS}s for Confirmed orders")
-    log.info("   Listening for #ready, #cost, #note, #reset, #status commands in Telegram")
+    log.info("   Listening for #cost, #note, #reset, #status commands and /print in Telegram")
     log.info("   Press Ctrl+C to stop")
     log.info("")
 
