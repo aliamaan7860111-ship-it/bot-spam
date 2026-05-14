@@ -23,10 +23,12 @@ from typing import TypedDict
 
 
 class SendOrderResult(TypedDict):
-    success: bool
-    file_ids: list[str]
-    image_count: int        # actually delivered
-    expected_count: int     # from items in Notion
+    success: bool                # True if ALL planned albums in this call sent
+    albums_sent_this_call: int   # Number of albums delivered in THIS invocation
+    total_albums: int            # Total albums planned for the order
+    caption_message_id: int | None   # First msg_id of the caption-bearing album (only set when last sent)
+    image_count: int             # Images successfully delivered in this call
+    expected_count: int          # Parsed from order's item_qty field
 
 # Separator image for visual divider between orders
 SEPARATOR_PATH = Path(__file__).parent / "assets" / "separator.png"
@@ -430,17 +432,25 @@ async def send_order_to_group(
     bot: Bot,
     group_id: str | int,
     order: dict,
-    header: str = "📦 NEW ORDER FOR SOURCING",
+    header: str = "✅ READY FOR FULFILLMENT",
+    start_album_index: int = 0,
+    on_album_sent=None,  # async callable: (new_albums_sent_count, caption_message_id_or_None) -> None
 ) -> SendOrderResult:
     """
-    Send order as ONE atomic media group (or multiple if >10 images), with the
-    order caption on the LAST album's first image, then send the separator.
+    Send order as a sequence of atomic media groups (Telegram caps each at 10 items).
+    The caption goes on the FIRST image of the LAST album.
 
-    Returns a SendOrderResult dict with success, file_ids, image_count, expected_count.
+    Resume protocol: if start_album_index > 0, skip the first N albums (the caller has
+    already confirmed they were sent before). After each album sends successfully,
+    invokes on_album_sent(new_count, caption_message_id) so the caller can checkpoint.
+
+    Returns SendOrderResult. success=True only when all planned albums sent.
     """
     result: SendOrderResult = {
         "success": False,
-        "file_ids": [],
+        "albums_sent_this_call": 0,
+        "total_albums": 0,
+        "caption_message_id": None,
         "image_count": 0,
         "expected_count": parse_item_count(order.get("item_qty", "")),
     }
@@ -451,7 +461,7 @@ async def send_order_to_group(
         log.error(f"Invalid Telegram group ID: {group_id}")
         return result
 
-    # Image priority: GraphQL primary, Notion files fallback (already implemented).
+    # Image priority: GraphQL primary, Notion files fallback.
     checkout_url = order.get("order_source_url", "")
     notion_image_urls = order.get("image_urls", [])
     if checkout_url and not order.get("line_items"):
@@ -465,7 +475,7 @@ async def send_order_to_group(
 
     image_urls = order.get("image_urls", [])
 
-    # Download all images upfront so we know the actual delivered count.
+    # Download all images upfront so we know actual delivered count.
     downloaded: list[bytes] = []
     for url in image_urls:
         img_bytes = download_image(url)
@@ -477,34 +487,46 @@ async def send_order_to_group(
     caption_full = format_order_message(order, header)
 
     if not downloaded:
-        # No images to send. Still send the text + separator so the order is visible.
-        log.warning(f"  No images downloaded for {order.get('order_id', '?')}, sending text-only")
+        # No images. Send caption as a plain message + separator so the order is visible.
+        if start_album_index > 0:
+            log.warning(f"  No images for {order.get('order_id', '?')} but start_album_index={start_album_index}; sending text-only fallback")
         try:
-            await bot.send_message(
+            text_msg = await bot.send_message(
                 chat_id=group_id, text=caption_full, parse_mode="Markdown",
                 read_timeout=60, write_timeout=60,
             )
             await _send_separator(bot, group_id)
             result["success"] = True
+            result["total_albums"] = 0
+            result["caption_message_id"] = text_msg.message_id
+            if on_album_sent is not None:
+                await on_album_sent(0, text_msg.message_id)
         except Exception as e:
             log.error(f"Failed to send text-only order: {e}")
         return result
 
     short_caption, overflow_text = truncate_caption_with_overflow(caption_full)
 
-    # Chunk the downloaded image bytes into albums of <=10. Caption goes on
-    # the FIRST image of the LAST album.
+    # Chunk the downloaded bytes into albums of <=10.
     album_chunks = chunk_for_albums(downloaded)
-    last_idx = len(album_chunks) - 1
+    total_albums = len(album_chunks)
+    result["total_albums"] = total_albums
+    result["image_count"] = len(downloaded)
 
-    all_file_ids: list[str] = []
+    # Compute which albums actually need sending.
+    plan = resume_range(start_album_index, total_albums)
+    if not plan:
+        log.info(f"  Skipping send for {order.get('order_id', '?')}: counter {start_album_index} >= total {total_albums}")
+        result["success"] = True
+        return result
+
     last_message_id: int | None = None
     try:
-        for i, chunk in enumerate(album_chunks):
+        for album_index, is_last in plan:
+            chunk = album_chunks[album_index]
             media: list[InputMediaPhoto] = []
             for j, img_bytes in enumerate(chunk):
-                if i == last_idx and j == 0:
-                    # Caption on first image of last album
+                if is_last and j == 0:
                     media.append(InputMediaPhoto(
                         media=io.BytesIO(img_bytes),
                         caption=short_caption,
@@ -514,7 +536,6 @@ async def send_order_to_group(
                     media.append(InputMediaPhoto(media=io.BytesIO(img_bytes)))
 
             if len(media) == 1:
-                # send_media_group requires >=2 items. Use send_photo with caption.
                 first = media[0]
                 photo_msg = await bot.send_photo(
                     chat_id=group_id,
@@ -523,40 +544,46 @@ async def send_order_to_group(
                     parse_mode="Markdown" if getattr(first, "caption", None) else None,
                     read_timeout=60, write_timeout=60,
                 )
-                fid = photo_msg.photo[-1].file_id if photo_msg.photo else None
-                if fid:
-                    all_file_ids.append(fid)
+                first_msg_id_of_album = photo_msg.message_id
                 last_message_id = photo_msg.message_id
             else:
                 msgs = await bot.send_media_group(
                     chat_id=group_id, media=media,
                     read_timeout=60, write_timeout=60,
                 )
-                for m in msgs:
-                    if m.photo:
-                        all_file_ids.append(m.photo[-1].file_id)
+                first_msg_id_of_album = msgs[0].message_id
                 last_message_id = msgs[-1].message_id
 
-        # If caption overflowed, send the overflow as a reply to the LAST sent message.
-        if overflow_text and last_message_id is not None:
-            try:
-                await bot.send_message(
-                    chat_id=group_id,
-                    text=overflow_text,
-                    reply_to_message_id=last_message_id,
-                    parse_mode="Markdown",
-                    read_timeout=60, write_timeout=60,
-                )
-            except Exception as e:
-                log.warning(f"Failed to send overflow reply: {e}")
+            result["albums_sent_this_call"] += 1
+            cap_id_for_callback: int | None = first_msg_id_of_album if is_last else None
+            if is_last:
+                result["caption_message_id"] = first_msg_id_of_album
 
-        log.info(f"  ✓ Sent {len(downloaded)} image(s) in {len(album_chunks)} album(s) to group {group_id}")
-        result["image_count"] = len(downloaded)
-        result["file_ids"] = all_file_ids
+            # Caption overflow handling — fires once, on the LAST album only.
+            if is_last and overflow_text and last_message_id is not None:
+                try:
+                    await bot.send_message(
+                        chat_id=group_id,
+                        text=overflow_text,
+                        reply_to_message_id=last_message_id,
+                        parse_mode="Markdown",
+                        read_timeout=60, write_timeout=60,
+                    )
+                except Exception as e:
+                    log.warning(f"Failed to send overflow reply: {e}")
+
+            # Checkpoint after each successful album.
+            new_count = album_index + 1
+            if on_album_sent is not None:
+                try:
+                    await on_album_sent(new_count, cap_id_for_callback)
+                except Exception as e:
+                    log.error(f"  on_album_sent callback raised: {e}", exc_info=True)
+
+        log.info(f"  ✓ Sent {result['albums_sent_this_call']} album(s) to group {group_id}")
 
     except Exception as e:
         log.error(f"Failed to send album to Telegram: {e}", exc_info=True)
-        # Best-effort fallback: send raw URLs as text so operator still sees the order.
         try:
             await bot.send_message(
                 chat_id=group_id,
@@ -567,9 +594,7 @@ async def send_order_to_group(
             pass
         return result
 
-    # Send separator
     await _send_separator(bot, group_id)
-
     result["success"] = True
     return result
 
