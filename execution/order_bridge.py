@@ -207,106 +207,110 @@ _sending_in_progress: set[str] = set()
 
 async def poll_notion_once(bot: Bot) -> int:
     """
-    Poll Notion for confirmed orders, send to Telegram sourcing group.
-    Returns number of orders processed.
+    Poll Notion for orders with status `Confirmed | Processing`, send each directly
+    to the fulfillment group as an atomic media album (caption on the last album).
+    Resumes from ALBUMS SENT on multi-album orders. Flips status to `Processed`
+    only when all albums for the order have landed.
+
+    Returns number of orders fully delivered this cycle.
     """
-    sourcing_group = tg.TELEGRAM_SOURCING_GROUP_ID
-    if not sourcing_group:
-        log.error("TELEGRAM_SOURCING_GROUP_ID is not set")
+    fulfillment_group = tg.TELEGRAM_FULFILLMENT_GROUP_ID
+    if not fulfillment_group:
+        log.error("TELEGRAM_FULFILLMENT_GROUP_ID is not set")
         return 0
 
-    # Query Notion for confirmed orders
     orders = notion.query_confirmed_orders()
-
     if not orders:
         return 0
 
-    # Filter out already-notified orders AND orders currently being sent
+    # Filter out orders currently being sent (in-memory lock guards against re-poll race).
     new_orders = [
         o for o in orders
-        if not o.get("sourcing_notified", False)
-        and o.get("order_id", "") not in _sending_in_progress
+        if o.get("order_id", "") not in _sending_in_progress
     ]
-
     if not new_orders:
         return 0
 
-    log.info(f"Found {len(new_orders)} new confirmed order(s)")
+    log.info(f"Found {len(new_orders)} order(s) needing fulfillment send")
 
     processed = 0
     for order in new_orders:
         order_id = order.get("order_id", "?")
-
-        # Lock immediately — prevents duplicate if next poll fires fast
         _sending_in_progress.add(order_id)
-        
-        # Update Notion status and tracking FIRST — eliminates race condition window
-        notion.mark_sourcing_notified(order["page_id"])
-        notion.update_order_status(order["page_id"], "SOURCING")
 
-        log.info(f"📤 Sending order {order_id} to sourcing group...")
+        try:
+            start_album_index = order.get("albums_sent", 0) or 0
+            page_id = order["page_id"]
 
-        # Send to Telegram
-        send_result = await tg.send_order_to_group(
-            bot, sourcing_group, order,
-            header="📦 NEW ORDER FOR SOURCING"
-        )
-        success = send_result["success"]
+            # Build the per-album checkpoint callback. Writes ALBUMS SENT (always)
+            # and FULFILLMENT MESSAGE ID (only when the caption-bearing album lands).
+            async def on_album_sent(new_count: int, caption_msg_id):
+                await notion_write_with_retry(
+                    notion.update_albums_sent,
+                    page_id, new_count,
+                    description=f"ALBUMS SENT={new_count} for {order_id}",
+                )
+                if caption_msg_id is not None:
+                    await notion_write_with_retry(
+                        notion.update_fulfillment_message_id,
+                        page_id, caption_msg_id,
+                        description=f"FULFILLMENT MESSAGE ID={caption_msg_id} for {order_id}",
+                    )
 
-        if success:
-            log.info(f"  ✓ Order {order_id} sent, status → SOURCING")
+            log.info(f"📤 Sending order {order_id} to fulfillment group (resume from album {start_album_index})...")
 
-            # Save file_ids returned from Stage 1 send. 3 retries with backoff.
-            file_ids = send_result.get("file_ids", [])
-            if file_ids:
+            send_result = await tg.send_order_to_group(
+                bot, fulfillment_group, order,
+                header="✅ NEW ORDER FOR FULFILLMENT",
+                start_album_index=start_album_index,
+                on_album_sent=on_album_sent,
+            )
+
+            if not send_result["success"]:
+                log.error(f"  ✗ Send failed for {order_id} — will retry next poll")
+                continue
+
+            # Final flip to Processed only when all planned albums are accounted for.
+            total_albums = send_result.get("total_albums", 0)
+            done_count = start_album_index + send_result.get("albums_sent_this_call", 0)
+            if total_albums == 0 or done_count >= total_albums:
                 ok = await notion_write_with_retry(
-                    notion.update_telegram_file_ids,
-                    order["page_id"], file_ids,
-                    description=f"file_ids write for {order_id}",
+                    notion.mark_order_processed,
+                    page_id,
+                    description=f"status->Processed for {order_id}",
                 )
                 if ok:
-                    await notion_write_with_retry(
-                        notion.mark_file_ids_saved,
-                        order["page_id"], True,
-                        description=f"FILE IDS SAVED checkbox for {order_id}",
-                    )
+                    log.info(f"  ✓ Order {order_id} fully delivered, status -> Processed")
+                    processed += 1
                 else:
-                    # Couldn't save file_ids; warn in the chat. Stage 2 will use
-                    # GraphQL fallback automatically when FILE IDS SAVED is false.
                     try:
                         await bot.send_message(
-                            chat_id=sourcing_group,
-                            text=f"⚠️ {order_id}: file IDs not saved after 3 retries, manual fulfillment may be needed",
+                            chat_id=fulfillment_group,
+                            text=f"⚠️ {order_id}: status flip to Processed failed after 3 retries (will retry on next poll)",
                         )
-                    except Exception as e:
-                        log.error(f"  Failed to post file_id warning: {e}")
+                    except Exception:
+                        pass
+            else:
+                log.warning(f"  Partial send for {order_id}: {done_count}/{total_albums} albums sent — next poll resumes")
 
-            # Image count vs items count mismatch warning.
+            # Image count vs items mismatch warning (only once, when fully done)
             delivered = send_result.get("image_count", 0)
             expected = send_result.get("expected_count", 0)
-            if expected > 0 and delivered < expected:
+            if (total_albums == 0 or done_count >= total_albums) and expected > 0 and delivered < expected:
                 missing = expected - delivered
                 try:
                     await bot.send_message(
-                        chat_id=sourcing_group,
+                        chat_id=fulfillment_group,
                         text=f"⚠️ {order_id}: {delivered} of {expected} images sent, {missing} missing",
                     )
                 except Exception as e:
                     log.error(f"  Failed to post image-count warning: {e}")
 
-            processed += 1
-        else:
-            # Revert Notion status and tracking so it retries on next cycle
-            notion.update_order_status(order["page_id"], "CONFIRMED | PROCESSING")
-            notion.unmark_notified(order["page_id"])
-            log.error(f"  ✗ Failed to send order {order_id} to Telegram — will retry")
-
-        # Release the in-memory lock
-        _sending_in_progress.discard(order_id)
-
-        # Rate limit: wait between orders to avoid Telegram API limits
-        if processed < len(new_orders):
-            await asyncio.sleep(1.5)
+        finally:
+            _sending_in_progress.discard(order_id)
+            # Rate limit between orders to keep well below Telegram per-chat limits.
+            if processed < len(new_orders):
+                await asyncio.sleep(1.5)
 
     return processed
 
