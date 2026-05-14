@@ -1255,13 +1255,31 @@ async def cmd_print_one(update, context, order_id: str) -> None:
             )
             log.error("/print %s label fetch failed", canonical_id, exc_info=True)
             return
-        today = datetime.now().strftime("%Y-%m-%d")
-        await _safe_send_document(
-            bot, chat_id,
-            document=pdf_bytes,
-            filename=f"{canonical_id.replace(' ', '_')}_{today}.pdf",
-            caption=f"ℹ️ {canonical_id} already has a Filex label. Status: {filex_status}. Tracking: {tn}.",
-        )
+
+        msg_id = order.get("fulfillment_message_id")
+        try:
+            if msg_id:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=io.BytesIO(pdf_bytes),
+                    filename=f"{canonical_id}.pdf",
+                    reply_to_message_id=int(msg_id),
+                    read_timeout=60, write_timeout=60,
+                )
+            else:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=io.BytesIO(pdf_bytes),
+                    filename=f"{canonical_id}.pdf",
+                    caption=tg.legacy_label_caption(canonical_id),
+                    read_timeout=60, write_timeout=60,
+                )
+        except Exception as e:
+            log.error("/print %s send_document failed: %s", canonical_id, e, exc_info=True)
+            await _safe_send_message(
+                bot, chat_id,
+                f"⚠️ {canonical_id}: label send failed (see logs)",
+            )
         return
 
     # 4. Fresh placement branch.
@@ -1304,13 +1322,30 @@ async def cmd_print_one(update, context, order_id: str) -> None:
         log.error("/print %s label fetch failed after placement", canonical_id, exc_info=True)
         return
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    await _safe_send_document(
-        bot, chat_id,
-        document=pdf_bytes,
-        filename=f"{canonical_id.replace(' ', '_')}_{today}.pdf",
-        caption=f"✅ {canonical_id} placed. Tracking: {tn}.",
-    )
+    msg_id = order.get("fulfillment_message_id")
+    try:
+        if msg_id:
+            await bot.send_document(
+                chat_id=chat_id,
+                document=io.BytesIO(pdf_bytes),
+                filename=f"{canonical_id}.pdf",
+                reply_to_message_id=int(msg_id),
+                read_timeout=60, write_timeout=60,
+            )
+        else:
+            await bot.send_document(
+                chat_id=chat_id,
+                document=io.BytesIO(pdf_bytes),
+                filename=f"{canonical_id}.pdf",
+                caption=tg.legacy_label_caption(canonical_id),
+                read_timeout=60, write_timeout=60,
+            )
+    except Exception as e:
+        log.error("/print %s send_document failed after placement: %s", canonical_id, e, exc_info=True)
+        await _safe_send_message(
+            bot, chat_id,
+            f"⚠️ {canonical_id}: label send failed after placement (see logs)",
+        )
 
 
 # ---------------------------------------------------------------------------
