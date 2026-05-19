@@ -269,7 +269,12 @@ async def shopify_order_created(
 
 
 async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> dict:
-    """Process a checkouts/create or checkouts/update event."""
+    """Process a checkouts/create or checkouts/update event.
+
+    `fresh` only reflects which Shopify endpoint fired. Scheduling is driven by
+    whether the Notion row was newly created (was_created) — so a checkout whose
+    first event we ever see is an `update` still gets a recovery scheduled.
+    """
     assert HTTP is not None
 
     checkout_id = str(payload.get("id") or payload.get("token") or "")
@@ -287,15 +292,15 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
     cart_value = _extract_total(payload)
     cart_items = _extract_cart_items_text(payload)
     checkout_url = payload.get("abandoned_checkout_url")
-    abandoned_at = payload.get("updated_at") or payload.get("created_at") or _now_iso()
+    abandoned_at = payload.get("created_at") or payload.get("updated_at") or _now_iso()
 
-    page_id = await nw.upsert_checkout(
+    page_id, was_created = await nw.upsert_checkout(
         HTTP,
         customer_name=customer_name,
         phone=phone,
         email=email,
         brand=cfg.slug,
-        status="New" if fresh else "New",  # don't overwrite later
+        status="New",
         cart_value=cart_value,
         cart_items=cart_items,
         checkout_id=checkout_id,
@@ -303,15 +308,25 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
         abandoned_at=abandoned_at,
     )
 
-    if fresh:
-        run_at = datetime.now(timezone.utc) + timedelta(seconds=recovery_delay_seconds())
+    if was_created:
+        # Schedule the recovery send 30 min after abandonment, floored 60s out
+        # so pre-existing carts (first seen via `update`) fire shortly rather
+        # than instantly.
+        try:
+            abandoned_dt = datetime.fromisoformat(abandoned_at.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            abandoned_dt = datetime.now(timezone.utc)
+        run_at = abandoned_dt + timedelta(seconds=recovery_delay_seconds())
+        floor = datetime.now(timezone.utc) + timedelta(seconds=60)
+        if run_at < floor:
+            run_at = floor
         _schedule_send(cfg.slug, page_id, phone, run_at)
 
     log.info(
-        "[%s] %s checkout=%s phone=%s page=%s",
-        cfg.slug, "created" if fresh else "updated", checkout_id, phone, page_id,
+        "[%s] %s checkout=%s phone=%s page=%s created=%s",
+        cfg.slug, "create" if fresh else "update", checkout_id, phone, page_id, was_created,
     )
-    return {"status": "ok", "page_id": page_id}
+    return {"status": "ok", "page_id": page_id, "was_created": was_created}
 
 
 async def _handle_order(cfg: BrandConfig, payload: dict) -> dict:

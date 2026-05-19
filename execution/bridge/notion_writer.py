@@ -128,8 +128,14 @@ async def upsert_checkout(
     checkout_id: str,
     checkout_url: str | None,
     abandoned_at: str | None,
-) -> str:
-    """Create or update a row keyed by Shopify Checkout ID. Returns page ID."""
+) -> tuple[str, bool]:
+    """Create or update a row keyed by Shopify Checkout ID.
+
+    Returns (page_id, was_created). `was_created` is True only when this call
+    inserted a brand-new row — the caller uses it to decide whether to schedule
+    the recovery send, so scheduling happens exactly once per checkout
+    regardless of whether the first event we saw was create or update.
+    """
     existing = await find_row_by_checkout_id(client, checkout_id)
     props = build_properties(
         customer_name=customer_name,
@@ -145,7 +151,7 @@ async def upsert_checkout(
     )
 
     if existing:
-        # Don't overwrite status on update — only the original create sets it.
+        # Don't overwrite status on update — only the original insert sets it.
         # Subsequent updates refresh data fields but leave Status alone.
         props.pop("Status", None)
         resp = await client.patch(
@@ -154,7 +160,7 @@ async def upsert_checkout(
             json={"properties": props},
         )
         resp.raise_for_status()
-        return existing
+        return existing, False
 
     resp = await client.post(
         f"{NOTION_BASE}/pages",
@@ -165,7 +171,7 @@ async def upsert_checkout(
         },
     )
     resp.raise_for_status()
-    return resp.json()["id"]
+    return resp.json()["id"], True
 
 
 async def patch_status(client: httpx.AsyncClient, page_id: str, status: str, **extra) -> None:
