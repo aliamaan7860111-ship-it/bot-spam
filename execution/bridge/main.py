@@ -482,9 +482,7 @@ async def whatchimp_confirm_order(brand: str, request: Request):
         body = _json.loads(raw_bytes) if raw_bytes else {}
     except Exception:
         body = {}
-    # Always log the incoming body so we can debug WhatChimp's payload shape
-    # — particularly useful for figuring out which key the phone arrives under.
-    log.info("[%s] confirm-order incoming body: %r", brand, raw_bytes[:1000])
+    log.info("[%s] confirm-order incoming body keys=%s", brand, list(body.keys()))
 
     phone = _extract_caller_phone(body)
     if not phone:
