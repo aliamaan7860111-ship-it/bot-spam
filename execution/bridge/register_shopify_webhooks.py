@@ -55,7 +55,7 @@ def register_for_brand(slug: str) -> None:
     for topic, path in TOPIC_TO_PATH.items():
         address = f"{BRIDGE_BASE_URL}/webhooks/{slug}/{path}"
         if (topic, address) in existing_pairs:
-            print(f"[{slug}] {topic} — already registered → {address}")
+            print(f"[{slug}] {topic} — already registered -> {address}")
             continue
         resp = requests.post(
             f"{base}/webhooks.json",
@@ -71,13 +71,13 @@ def register_for_brand(slug: str) -> None:
         )
         if resp.status_code in (200, 201):
             wid = resp.json()["webhook"]["id"]
-            print(f"[{slug}] {topic} → {address}  (id={wid})")
+            print(f"[{slug}] {topic} -> {address}  (id={wid})")
         else:
             print(f"[{slug}] {topic} FAILED ({resp.status_code}): {resp.text[:200]}")
 
 
 def main() -> int:
-    print(f"Registering webhooks → {BRIDGE_BASE_URL}")
+    print(f"Registering webhooks -> {BRIDGE_BASE_URL}")
     for slug in BRANDS:
         register_for_brand(slug)
     return 0
