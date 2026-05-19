@@ -19,6 +19,35 @@ log = logging.getLogger(__name__)
 WHATCHIMP_BASE = "https://app.whatchimp.com/api/v1"
 
 
+async def upsert_subscriber(
+    client: httpx.AsyncClient, phone: str, brand: BrandConfig, name: str | None
+) -> dict:
+    """Idempotent subscriber create with name. Calls /whatsapp/subscriber/create
+    (camelCase params per the API). 'Already exists' is expected and treated as
+    success — see whatchimp-api skill §12. Sets the subscriber's name so
+    #User-Name# substitutes correctly in templates and flow messages.
+    """
+    if not brand.whatchimp_phone_number_id:
+        return {"status": "skipped_no_phone_number_id"}
+    if not name:
+        # Still call create so the subscriber exists; just no name to set.
+        name = ""
+    payload = {
+        "apiToken": whatchimp_api_token(),
+        "phoneNumberID": brand.whatchimp_phone_number_id,
+        "phoneNumber": phone,
+        "name": name,
+    }
+    resp = await client.post(
+        f"{WHATCHIMP_BASE}/whatsapp/subscriber/create",
+        data=payload,
+        timeout=15.0,
+    )
+    # Don't raise on 4xx — "already exists" comes back with status string;
+    # subscriber is then still present + name updated.
+    return _normalize(resp)
+
+
 async def assign_custom_fields(
     client: httpx.AsyncClient, phone: str, brand: BrandConfig, fields: dict[str, str]
 ) -> dict:

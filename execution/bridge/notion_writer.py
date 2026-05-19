@@ -265,6 +265,20 @@ async def get_phone(client: httpx.AsyncClient, page_id: str) -> str | None:
     return (props.get("Phone") or {}).get("phone_number")
 
 
+async def get_phone_and_name(
+    client: httpx.AsyncClient, page_id: str
+) -> tuple[str | None, str | None]:
+    """Single fetch returning (phone, customer_name) — saves one round trip
+    over calling get_phone() and querying separately for the title."""
+    resp = await client.get(f"{NOTION_BASE}/pages/{page_id}", headers=_headers())
+    resp.raise_for_status()
+    props = resp.json().get("properties", {})
+    phone = (props.get("Phone") or {}).get("phone_number")
+    title_parts = (props.get("Customer Name") or {}).get("title", [])
+    name = "".join(t.get("plain_text", "") for t in title_parts).strip()
+    return phone, (name or None)
+
+
 async def patch_status(client: httpx.AsyncClient, page_id: str, status: str, **extra) -> None:
     """Patch a row's Status (and optionally other timestamps/fields)."""
     props: dict[str, Any] = {"Status": _select(status)}

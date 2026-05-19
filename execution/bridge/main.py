@@ -34,7 +34,7 @@ from config import (
     recovery_delay_seconds,
 )
 from shopify_verify import verify_shopify_hmac
-from whatchimp_sender import send_recovery_template
+from whatchimp_sender import send_recovery_template, upsert_subscriber
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
@@ -132,19 +132,38 @@ def _extract_total(payload: dict) -> float | None:
 async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
     """The actual WhatChimp send fired by the scheduler after the delay.
 
-    Re-reads the phone from Notion at fire time so a correction made after the
-    job was scheduled (via a checkouts/update) is honoured. Falls back to the
-    phone captured when the job was scheduled.
+    Re-reads the phone + customer name from Notion at fire time so any
+    correction made after the job was scheduled (via a later checkouts/update)
+    is honoured. Then:
+      1. Upserts the subscriber with their first name so #User-Name#
+         substitutes correctly in the template + downstream flow messages.
+      2. Sends the recovery template with the brand's button postback IDs,
+         so the Quick Reply buttons fire the right bot flows when tapped.
     """
     assert HTTP is not None
     brand = BRANDS[brand_slug]
     try:
-        current = await nw.get_phone(HTTP, page_id)
+        current_phone, customer_name = await nw.get_phone_and_name(HTTP, page_id)
     except Exception:
-        current = None
-    phone = normalize_phone(current or phone) or phone
-    log.info("[%s] scheduled send firing for page=%s phone=%s", brand_slug, page_id, phone)
-    result = await send_recovery_template(HTTP, brand=brand, phone=phone)
+        current_phone, customer_name = None, None
+    phone = normalize_phone(current_phone or phone) or phone
+    first_name = (customer_name or "").strip().split(" ")[0] or None
+
+    # 1. Make sure the subscriber exists with their first name set.
+    if first_name and brand.whatchimp_phone_number_id:
+        try:
+            up = await upsert_subscriber(HTTP, phone, brand, first_name)
+            log.info("[%s] upsert_subscriber phone=%s name=%s -> %s",
+                     brand_slug, phone, first_name, up.get("status"))
+        except Exception:
+            log.exception("[%s] upsert_subscriber failed (non-fatal)", brand_slug)
+
+    log.info("[%s] scheduled send firing for page=%s phone=%s name=%s",
+             brand_slug, page_id, phone, first_name)
+    result = await send_recovery_template(
+        HTTP, brand=brand, phone=phone,
+        quick_reply_postback_ids=brand.postback_ids,
+    )
 
     if result["status"] == "ok":
         await nw.patch_status(
