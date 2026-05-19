@@ -174,6 +174,15 @@ async def upsert_checkout(
     return resp.json()["id"], True
 
 
+async def get_phone(client: httpx.AsyncClient, page_id: str) -> str | None:
+    """Re-read the current Phone value from a row — used at send time so a
+    phone correction made via checkouts/update is picked up."""
+    resp = await client.get(f"{NOTION_BASE}/pages/{page_id}", headers=_headers())
+    resp.raise_for_status()
+    props = resp.json().get("properties", {})
+    return (props.get("Phone") or {}).get("phone_number")
+
+
 async def patch_status(client: httpx.AsyncClient, page_id: str, status: str, **extra) -> None:
     """Patch a row's Status (and optionally other timestamps/fields)."""
     props: dict[str, Any] = {"Status": _select(status)}

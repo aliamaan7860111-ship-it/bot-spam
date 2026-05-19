@@ -68,6 +68,31 @@ def _extract_phone(payload: dict) -> str | None:
     )
 
 
+def normalize_phone(raw: str | None, default_cc: str = "+971") -> str | None:
+    """Coerce a phone number to E.164.
+
+    - already '+'-prefixed  -> kept as-is (assume correct international format)
+    - '00'-prefixed         -> '00' replaced with '+'
+    - local '0'-prefixed    -> leading 0 dropped, default country code prepended
+    - bare local digits     -> default country code prepended
+
+    default_cc is +971 (UAE) since all 6 stores are UAE-based. A foreign number
+    MUST be entered in international ('+') form — normalization can't infer it.
+    """
+    if not raw:
+        return None
+    s = "".join(c for c in raw.strip() if c.isdigit() or c == "+")
+    if not s:
+        return None
+    if s.startswith("+"):
+        return s
+    if s.startswith("00"):
+        return "+" + s[2:]
+    if s.startswith("0"):
+        return default_cc + s[1:]
+    return default_cc + s
+
+
 def _extract_name(payload: dict) -> str | None:
     cust = payload.get("customer") or {}
     name = " ".join(
@@ -102,9 +127,19 @@ def _extract_total(payload: dict) -> float | None:
 
 
 async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
-    """The actual WhatChimp send fired by the scheduler after the delay."""
+    """The actual WhatChimp send fired by the scheduler after the delay.
+
+    Re-reads the phone from Notion at fire time so a correction made after the
+    job was scheduled (via a checkouts/update) is honoured. Falls back to the
+    phone captured when the job was scheduled.
+    """
     assert HTTP is not None
     brand = BRANDS[brand_slug]
+    try:
+        current = await nw.get_phone(HTTP, page_id)
+    except Exception:
+        current = None
+    phone = normalize_phone(current or phone) or phone
     log.info("[%s] scheduled send firing for page=%s phone=%s", brand_slug, page_id, phone)
     result = await send_recovery_template(HTTP, brand=brand, phone=phone)
 
@@ -282,7 +317,7 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
         log.warning("[%s] checkout event with no id/token, ignoring", cfg.slug)
         return {"status": "ignored", "reason": "no checkout id"}
 
-    phone = _extract_phone(payload)
+    phone = normalize_phone(_extract_phone(payload))
     if not phone:
         log.info("[%s] checkout %s has no phone, ignoring", cfg.slug, checkout_id)
         return {"status": "ignored", "reason": "no phone"}
