@@ -1,0 +1,17 @@
+[Unit]
+Description=grq-ac — Abandoned Checkout Recovery bridge
+After=network.target
+
+[Service]
+Type=simple
+User=bilal
+WorkingDirectory=/home/bilal/automation/execution/bridge
+EnvironmentFile=/home/bilal/automation/.env
+ExecStart=/home/bilal/automation/execution/bridge/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8084
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
