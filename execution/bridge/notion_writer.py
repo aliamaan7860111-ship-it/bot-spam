@@ -100,8 +100,9 @@ def build_properties(
     checkout_id: str,
     checkout_url: str | None,
     abandoned_at: str | None,
+    raw_checkout_data: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    props: dict[str, Any] = {
         "Customer Name": _title(customer_name or "Unknown"),
         "Phone": _phone(phone),
         "Email": _email(email),
@@ -113,6 +114,9 @@ def build_properties(
         "Shopify Checkout URL": _url(checkout_url),
         "Abandoned At": _date(abandoned_at),
     }
+    if raw_checkout_data is not None:
+        props["Raw Checkout Data"] = _rt(raw_checkout_data)
+    return props
 
 
 async def upsert_checkout(
@@ -128,6 +132,7 @@ async def upsert_checkout(
     checkout_id: str,
     checkout_url: str | None,
     abandoned_at: str | None,
+    raw_checkout_data: str | None = None,
 ) -> tuple[str, bool]:
     """Create or update a row keyed by Shopify Checkout ID.
 
@@ -148,6 +153,7 @@ async def upsert_checkout(
         checkout_id=checkout_id,
         checkout_url=checkout_url,
         abandoned_at=abandoned_at,
+        raw_checkout_data=raw_checkout_data,
     )
 
     if existing:
@@ -172,6 +178,82 @@ async def upsert_checkout(
     )
     resp.raise_for_status()
     return resp.json()["id"], True
+
+
+async def find_recent_recovery_sent_by_phone(
+    client: httpx.AsyncClient, *, phone: str, brand: str,
+) -> dict | None:
+    """Find the most recent row for this phone+brand that has had a recovery
+    template sent (status Recovery Sent / Recovery Pending). Returns the row
+    dict or None.
+    """
+    resp = await client.post(
+        f"{NOTION_BASE}/databases/{recovery_db_id()}/query",
+        headers=_headers(),
+        json={
+            "filter": {
+                "and": [
+                    {"property": "Phone", "phone_number": {"equals": phone}},
+                    {"property": "Brand", "select": {"equals": brand.capitalize()}},
+                    {
+                        "or": [
+                            {"property": "Status", "select": {"equals": "Recovery Sent"}},
+                            {"property": "Status", "select": {"equals": "Recovery Pending"}},
+                            {"property": "Status", "select": {"equals": "Customer Completed Order"}},
+                        ]
+                    },
+                ]
+            },
+            "sorts": [{"property": "Abandoned At", "direction": "descending"}],
+            "page_size": 1,
+        },
+    )
+    resp.raise_for_status()
+    results = resp.json().get("results", [])
+    return results[0] if results else None
+
+
+def extract_text(row: dict, prop: str) -> str:
+    return "".join(t.get("plain_text", "") for t in (row.get("properties", {}).get(prop) or {}).get("rich_text", []))
+
+
+def extract_select(row: dict, prop: str) -> str:
+    return ((row.get("properties", {}).get(prop) or {}).get("select") or {}).get("name", "")
+
+
+def extract_phone(row: dict, prop: str = "Phone") -> str:
+    return (row.get("properties", {}).get(prop) or {}).get("phone_number") or ""
+
+
+async def patch_recovery_outcome(
+    client: httpx.AsyncClient,
+    page_id: str,
+    *,
+    status: str,
+    order_number: str | None = None,
+    order_total: float | None = None,
+    discount_applied: bool | None = None,
+    assigned_agent: str | None = None,
+) -> None:
+    """Patch the row after the bridge has acted on a customer button-click —
+    Order Number filled if we placed the order, Assigned Agent if we routed
+    to a human, etc.
+    """
+    props: dict[str, Any] = {"Status": _select(status)}
+    if order_number is not None:
+        props["Order Number"] = _rt(order_number)
+    if order_total is not None:
+        props["Order Total"] = _number(order_total)
+    if discount_applied is not None:
+        props["Discount Applied"] = {"checkbox": bool(discount_applied)}
+    if assigned_agent is not None:
+        props["Assigned Agent"] = _rt(assigned_agent)
+    resp = await client.patch(
+        f"{NOTION_BASE}/pages/{page_id}",
+        headers=_headers(),
+        json={"properties": props},
+    )
+    resp.raise_for_status()
 
 
 async def get_phone(client: httpx.AsyncClient, page_id: str) -> str | None:
