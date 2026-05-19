@@ -447,6 +447,22 @@ def _extract_caller_phone(body: dict) -> str | None:
     return None
 
 
+def _confirm_response(
+    *, status: str = "error", reason: str = "", order_id: str = "", total: str = "",
+    discount_applied: bool = False,
+) -> dict:
+    """All confirm-order responses share a stable shape so the WhatChimp HTTP
+    API mapping UI sees the same keys (order_id, total, discount_applied)
+    on every call — including verify and error paths."""
+    return {
+        "status": status,
+        "reason": reason,
+        "order_id": order_id,
+        "total": total,
+        "discount_applied": discount_applied,
+    }
+
+
 @app.post("/webhooks/whatchimp/{brand}/confirm-order")
 async def whatchimp_confirm_order(brand: str, request: Request):
     """Called by a WhatChimp bot flow when the customer taps Complete Order.
@@ -455,23 +471,30 @@ async def whatchimp_confirm_order(brand: str, request: Request):
     with 10% off, completes it as COD (financial status pending), and returns
     JSON the WhatChimp HTTP API node can capture into custom fields so the
     follow-up Text message renders with the real order number + total.
+
+    The response shape is stable across success/error so the WhatChimp UI's
+    mapping dropdown always sees `order_id` and `total` as available fields.
     """
     cfg = _brand_or_404(brand)
     assert HTTP is not None
+    raw_bytes = await request.body()
     try:
-        body = await request.json()
+        body = _json.loads(raw_bytes) if raw_bytes else {}
     except Exception:
         body = {}
+    # Always log the incoming body so we can debug WhatChimp's payload shape
+    # — particularly useful for figuring out which key the phone arrives under.
+    log.info("[%s] confirm-order incoming body: %r", brand, raw_bytes[:1000])
 
     phone = _extract_caller_phone(body)
     if not phone:
-        log.warning("[%s] confirm-order with no phone in body: %s", brand, body)
-        return {"status": "error", "reason": "no phone in request body"}
+        log.warning("[%s] confirm-order no phone in body keys=%s", brand, list(body.keys()))
+        return _confirm_response(reason="no phone in request body")
 
     row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone, brand=brand)
     if not row:
         log.warning("[%s] confirm-order: no recent Recovery Sent row for %s", brand, phone)
-        return {"status": "error", "reason": "no matching recovery row"}
+        return _confirm_response(reason="no matching recovery row")
 
     page_id = row["id"]
     # Record the click immediately so a Shopify failure leaves a visible state.
@@ -481,19 +504,19 @@ async def whatchimp_confirm_order(brand: str, request: Request):
     if not raw_text:
         log.error("[%s] confirm-order: row %s has no Raw Checkout Data", brand, page_id)
         await nw.patch_recovery_outcome(HTTP, page_id, status="Order Placement Failed")
-        return {"status": "error", "reason": "missing cached checkout data"}
+        return _confirm_response(reason="missing cached checkout data")
 
     try:
         cached = _json.loads(raw_text)
     except Exception:
         log.exception("[%s] failed to parse Raw Checkout Data on %s", brand, page_id)
         await nw.patch_recovery_outcome(HTTP, page_id, status="Order Placement Failed")
-        return {"status": "error", "reason": "checkout data parse error"}
+        return _confirm_response(reason="checkout data parse error")
 
     line_items = cached.get("line_items") or []
     if not line_items:
         await nw.patch_recovery_outcome(HTTP, page_id, status="Order Placement Failed")
-        return {"status": "error", "reason": "no line items"}
+        return _confirm_response(reason="no line items")
 
     shipping_address = cached.get("shipping_address")
     billing_address = cached.get("billing_address") or shipping_address
@@ -519,7 +542,7 @@ async def whatchimp_confirm_order(brand: str, request: Request):
     except Exception:
         log.exception("[%s] confirm-order: Shopify call failed for page=%s", brand, page_id)
         await nw.patch_recovery_outcome(HTTP, page_id, status="Order Placement Failed")
-        return {"status": "error", "reason": "shopify order placement failed"}
+        return _confirm_response(reason="shopify order placement failed")
 
     order_name = order.get("name", f"#{order_id_num}")  # like '#1234'
     try:
@@ -539,15 +562,9 @@ async def whatchimp_confirm_order(brand: str, request: Request):
     )
 
     log.info("[%s] confirm-order OK: page=%s order=%s total=%s", brand, page_id, order_name, order_total_display)
-
-    # Response shape is what the WhatChimp HTTP API node maps into custom
-    # fields on the subscriber. Keep keys snake_case and stable.
-    return {
-        "status": "ok",
-        "order_id": order_name,
-        "total": order_total_display,
-        "discount_applied": True,
-    }
+    return _confirm_response(
+        status="ok", order_id=order_name, total=order_total_display, discount_applied=True,
+    )
 
 
 @app.post("/webhooks/whatchimp/{brand}/talk-with-agent")
