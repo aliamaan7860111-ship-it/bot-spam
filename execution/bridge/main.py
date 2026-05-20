@@ -74,13 +74,16 @@ def _extract_phone(payload: dict) -> str | None:
 def normalize_phone(raw: str | None, default_cc: str = "+971") -> str | None:
     """Coerce a phone number to E.164.
 
-    - already '+'-prefixed  -> kept as-is (assume correct international format)
-    - '00'-prefixed         -> '00' replaced with '+'
-    - local '0'-prefixed    -> leading 0 dropped, default country code prepended
-    - bare local digits     -> default country code prepended
+    - already '+'-prefixed   -> kept as-is
+    - '00'-prefixed          -> '00' replaced with '+'
+    - leading '0' local      -> strip 0, prepend default country code
+    - bare digits, >=11 long -> already includes a country code (WhatsApp Chat
+      IDs are this shape, e.g. 923372461000 or 971503512023) -> just prepend '+'
+    - bare digits, <11 long  -> assume local, prepend default_cc
 
-    default_cc is +971 (UAE) since all 6 stores are UAE-based. A foreign number
-    MUST be entered in international ('+') form — normalization can't infer it.
+    default_cc is +971 (UAE) since all 6 stores are UAE-based. The >=11-digit
+    branch makes us tolerant of WhatChimp's #LEAD_USER_CHAT_ID# which delivers
+    phones in international form without the '+' prefix.
     """
     if not raw:
         return None
@@ -93,6 +96,8 @@ def normalize_phone(raw: str | None, default_cc: str = "+971") -> str | None:
         return "+" + s[2:]
     if s.startswith("0"):
         return default_cc + s[1:]
+    if len(s) >= 11:
+        return "+" + s
     return default_cc + s
 
 
