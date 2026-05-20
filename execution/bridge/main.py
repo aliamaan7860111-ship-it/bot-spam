@@ -483,6 +483,29 @@ def _extract_caller_phone(body: dict) -> str | None:
     return None
 
 
+async def _collect_call_data(request: Request) -> dict:
+    """Merge JSON body + URL query params into one dict the rest of the
+    endpoint can treat uniformly. Query params win on conflict.
+
+    Matches the existing order_bridge.py pattern on port 8080 — WhatChimp's
+    trigger-node 'Send data to Webhook URL' field sends params via the URL
+    query string (e.g. ?phone=#LEAD_USER_CHAT_ID#), and the HTTP API node
+    sends JSON body. We support both.
+    """
+    data: dict = {}
+    try:
+        raw = await request.body()
+        if raw:
+            parsed = _json.loads(raw)
+            if isinstance(parsed, dict):
+                data.update(parsed)
+    except Exception:
+        pass
+    for k, v in request.query_params.items():
+        data[k] = v
+    return data
+
+
 def _confirm_response(
     *, status: str = "error", reason: str = "", order_id: str = "", total: str = "",
     discount_applied: bool = False, order_url: str = "",
@@ -500,7 +523,7 @@ def _confirm_response(
     }
 
 
-@app.post("/webhooks/whatchimp/{brand}/confirm-order")
+@app.api_route("/webhooks/whatchimp/{brand}/confirm-order", methods=["GET", "POST"])
 async def whatchimp_confirm_order(brand: str, request: Request):
     """Called by a WhatChimp bot flow when the customer taps Complete Order.
 
@@ -514,11 +537,7 @@ async def whatchimp_confirm_order(brand: str, request: Request):
     """
     cfg = _brand_or_404(brand)
     assert HTTP is not None
-    raw_bytes = await request.body()
-    try:
-        body = _json.loads(raw_bytes) if raw_bytes else {}
-    except Exception:
-        body = {}
+    body = await _collect_call_data(request)
     log.info("[%s] confirm-order incoming body keys=%s", brand, list(body.keys()))
 
     phone = _extract_caller_phone(body)
@@ -618,7 +637,7 @@ async def whatchimp_confirm_order(brand: str, request: Request):
     )
 
 
-@app.post("/webhooks/whatchimp/{brand}/talk-with-agent")
+@app.api_route("/webhooks/whatchimp/{brand}/talk-with-agent", methods=["GET", "POST"])
 async def whatchimp_talk_with_agent(brand: str, request: Request):
     """Called by the Talk with Agent bot flow. For now we just record the
     handoff in Notion — actual agent assignment via WhatChimp's
@@ -627,10 +646,7 @@ async def whatchimp_talk_with_agent(brand: str, request: Request):
     """
     cfg = _brand_or_404(brand)
     assert HTTP is not None
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _collect_call_data(request)
 
     phone = _extract_caller_phone(body)
     if not phone:
