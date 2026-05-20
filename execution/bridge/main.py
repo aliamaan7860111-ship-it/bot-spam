@@ -454,17 +454,18 @@ def _extract_caller_phone(body: dict) -> str | None:
 
 def _confirm_response(
     *, status: str = "error", reason: str = "", order_id: str = "", total: str = "",
-    discount_applied: bool = False,
+    discount_applied: bool = False, order_url: str = "",
 ) -> dict:
     """All confirm-order responses share a stable shape so the WhatChimp HTTP
-    API mapping UI sees the same keys (order_id, total, discount_applied)
-    on every call — including verify and error paths."""
+    API mapping UI sees the same keys (order_id, total, discount_applied,
+    order_url) on every call — including verify and error paths."""
     return {
         "status": status,
         "reason": reason,
         "order_id": order_id,
         "total": total,
         "discount_applied": discount_applied,
+        "order_url": order_url,
     }
 
 
@@ -565,6 +566,7 @@ async def whatchimp_confirm_order(brand: str, request: Request):
         order_total_value = 0.0
     currency = order.get("currency") or "AED"
     order_total_display = f"{currency} {order_total_value:.2f}"
+    order_url = order.get("order_status_url") or ""
 
     await nw.patch_recovery_outcome(
         HTTP,
@@ -575,9 +577,11 @@ async def whatchimp_confirm_order(brand: str, request: Request):
         discount_applied=True,
     )
 
-    log.info("[%s] confirm-order OK: page=%s order=%s total=%s", brand, page_id, order_name, order_total_display)
+    log.info("[%s] confirm-order OK: page=%s order=%s total=%s url=%s",
+             brand, page_id, order_name, order_total_display, order_url[:80])
     return _confirm_response(
-        status="ok", order_id=order_name, total=order_total_display, discount_applied=True,
+        status="ok", order_id=order_name, total=order_total_display,
+        discount_applied=True, order_url=order_url,
     )
 
 
