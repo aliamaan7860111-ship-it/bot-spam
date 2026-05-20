@@ -181,29 +181,35 @@ async def upsert_checkout(
 
 
 async def find_recent_recovery_sent_by_phone(
-    client: httpx.AsyncClient, *, phone: str, brand: str,
+    client: httpx.AsyncClient, *, phone: str, brand: str | None = None,
 ) -> dict | None:
-    """Find the most recent row for this phone+brand that has had a recovery
-    template sent (status Recovery Sent / Recovery Pending). Returns the row
-    dict or None.
+    """Find the most recent row for this phone (optionally constrained to one
+    brand) that has had a recovery template sent. Returns the row dict or None.
+
+    `brand=None` is the right call when the WhatChimp WABA serves multiple
+    brands (e.g. Virex serves both virex + pelvini): the URL brand is just the
+    bot flow's hardcoded path, but the actual cart could be on any brand sharing
+    that WABA. Callers should use the matched row's Brand property for
+    downstream Shopify operations.
     """
+    and_filters: list[dict] = [
+        {"property": "Phone", "phone_number": {"equals": phone}},
+        {
+            "or": [
+                {"property": "Status", "select": {"equals": "Recovery Sent"}},
+                {"property": "Status", "select": {"equals": "Recovery Pending"}},
+                {"property": "Status", "select": {"equals": "Customer Completed Order"}},
+            ]
+        },
+    ]
+    if brand:
+        and_filters.insert(1, {"property": "Brand", "select": {"equals": brand.capitalize()}})
+
     resp = await client.post(
         f"{NOTION_BASE}/databases/{recovery_db_id()}/query",
         headers=_headers(),
         json={
-            "filter": {
-                "and": [
-                    {"property": "Phone", "phone_number": {"equals": phone}},
-                    {"property": "Brand", "select": {"equals": brand.capitalize()}},
-                    {
-                        "or": [
-                            {"property": "Status", "select": {"equals": "Recovery Sent"}},
-                            {"property": "Status", "select": {"equals": "Recovery Pending"}},
-                            {"property": "Status", "select": {"equals": "Customer Completed Order"}},
-                        ]
-                    },
-                ]
-            },
+            "filter": {"and": and_filters},
             "sorts": [{"property": "Abandoned At", "direction": "descending"}],
             "page_size": 1,
         },

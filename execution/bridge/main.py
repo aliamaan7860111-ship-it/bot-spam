@@ -494,10 +494,21 @@ async def whatchimp_confirm_order(brand: str, request: Request):
         log.warning("[%s] confirm-order no phone in body keys=%s", brand, list(body.keys()))
         return _confirm_response(reason="no phone in request body")
 
-    row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone, brand=brand)
+    # Look up by phone only — when the URL brand's WABA is shared (e.g. Virex's
+    # WABA serves Pelvini too), the row's actual brand may differ from the URL.
+    # The row's Brand property is the authoritative one for downstream Shopify.
+    row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone)
     if not row:
-        log.warning("[%s] confirm-order: no recent Recovery Sent row for %s", brand, phone)
+        log.warning("[%s] confirm-order: no recent recovery row for %s", brand, phone)
         return _confirm_response(reason="no matching recovery row")
+
+    row_brand = nw.extract_select(row, "Brand").lower()
+    if row_brand and row_brand in BRANDS:
+        if row_brand != brand:
+            log.info("[%s] confirm-order: URL brand=%s but row brand=%s — routing to row's brand",
+                     brand, brand, row_brand)
+        cfg = BRANDS[row_brand]
+    # else: fall back to the URL brand's cfg (already loaded above)
 
     page_id = row["id"]
     # Record the click immediately so a Shopify failure leaves a visible state.
@@ -588,7 +599,8 @@ async def whatchimp_talk_with_agent(brand: str, request: Request):
     if not phone:
         return {"status": "error", "reason": "no phone in body"}
 
-    row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone, brand=brand)
+    # Same multi-brand-tolerant lookup as confirm-order (shared WABA case).
+    row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone)
     if not row:
         return {"status": "error", "reason": "no matching recovery row"}
 
