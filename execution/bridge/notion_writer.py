@@ -181,16 +181,15 @@ async def upsert_checkout(
 
 
 async def find_recent_recovery_sent_by_phone(
-    client: httpx.AsyncClient, *, phone: str, brand: str | None = None,
+    client: httpx.AsyncClient, *, phone: str, brands: list[str] | None = None,
 ) -> dict | None:
-    """Find the most recent row for this phone (optionally constrained to one
-    brand) that has had a recovery template sent. Returns the row dict or None.
+    """Find the most recent recovery row for this phone, optionally constrained
+    to one of a set of brands (the URL brand's WABA group). Returns the row
+    dict or None.
 
-    `brand=None` is the right call when the WhatChimp WABA serves multiple
-    brands (e.g. Virex serves both virex + pelvini): the URL brand is just the
-    bot flow's hardcoded path, but the actual cart could be on any brand sharing
-    that WABA. Callers should use the matched row's Brand property for
-    downstream Shopify operations.
+    `brands` is a list — when multiple brands share a WABA (e.g. virex +
+    pelvini share one bot), pass both so the lookup considers either. When the
+    brand has its own dedicated WABA, pass just that one brand.
     """
     and_filters: list[dict] = [
         {"property": "Phone", "phone_number": {"equals": phone}},
@@ -202,8 +201,13 @@ async def find_recent_recovery_sent_by_phone(
             ]
         },
     ]
-    if brand:
-        and_filters.insert(1, {"property": "Brand", "select": {"equals": brand.capitalize()}})
+    if brands:
+        and_filters.insert(1, {
+            "or": [
+                {"property": "Brand", "select": {"equals": b.capitalize()}}
+                for b in brands
+            ]
+        })
 
     resp = await client.post(
         f"{NOTION_BASE}/databases/{recovery_db_id()}/query",
@@ -217,6 +221,51 @@ async def find_recent_recovery_sent_by_phone(
     resp.raise_for_status()
     results = resp.json().get("results", [])
     return results[0] if results else None
+
+
+async def has_recent_completed_recovery(
+    client: httpx.AsyncClient, *, phone: str, brand: str, within_minutes: int = 10,
+) -> bool:
+    """Return True if this phone+brand has had a Recovered or Customer Completed
+    Order row touched within the last `within_minutes`. Used to dedupe the
+    duplicate checkouts/create webhook that Shopify fires for the internal
+    checkout when our bridge completes a draft order.
+    """
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=within_minutes)).isoformat()
+    resp = await client.post(
+        f"{NOTION_BASE}/databases/{recovery_db_id()}/query",
+        headers=_headers(),
+        json={
+            "filter": {
+                "and": [
+                    {"property": "Phone", "phone_number": {"equals": phone}},
+                    {"property": "Brand", "select": {"equals": brand.capitalize()}},
+                    {
+                        "or": [
+                            {"property": "Status", "select": {"equals": "Recovered"}},
+                            {"property": "Status", "select": {"equals": "Customer Completed Order"}},
+                        ]
+                    },
+                ]
+            },
+            "sorts": [{"property": "Recovery Sent At", "direction": "descending"}],
+            "page_size": 1,
+        },
+    )
+    resp.raise_for_status()
+    results = resp.json().get("results", [])
+    if not results:
+        return False
+    sent_at_str = ((results[0].get("properties", {}).get("Recovery Sent At") or {}).get("date") or {}).get("start")
+    if not sent_at_str:
+        # No timestamp but the row exists; treat as recent to be safe
+        return True
+    try:
+        sent_dt = datetime.fromisoformat(sent_at_str.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return True
+    return (datetime.now(timezone.utc) - sent_dt).total_seconds() < within_minutes * 60
 
 
 def extract_text(row: dict, prop: str) -> str:

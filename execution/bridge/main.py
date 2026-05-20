@@ -57,6 +57,23 @@ def _brand_or_404(slug: str) -> BrandConfig:
     return b
 
 
+def _waba_group(brand_slug: str) -> list[str]:
+    """Brands sharing the same WhatChimp phone_number_id form a WABA group.
+    A button tap that arrives via /webhooks/whatchimp/<brand>/... could be for
+    any cart abandoned on any brand in that group (Pelvini's bot is Virex's
+    bot, so a Pelvini cart taps Virex's URL). Brands without a phone_number_id
+    or alone on theirs are a singleton group.
+    """
+    cfg = BRANDS.get(brand_slug)
+    if not cfg or not cfg.whatchimp_phone_number_id:
+        return [brand_slug]
+    same_waba = [
+        slug for slug, c in BRANDS.items()
+        if c.whatchimp_phone_number_id == cfg.whatchimp_phone_number_id
+    ]
+    return same_waba or [brand_slug]
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -349,6 +366,20 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
         log.info("[%s] checkout %s has no phone, ignoring", cfg.slug, checkout_id)
         return {"status": "ignored", "reason": "no phone"}
 
+    # Dedup the noise checkout that Shopify creates internally when our bridge
+    # completes a draft order — fires checkouts/create with a fresh checkout_id
+    # which would otherwise become a stray Notion row with cart-value-only and
+    # no order number. If this phone+brand was just Recovered (or is currently
+    # Customer Completed Order) within the last 10 minutes, skip silently.
+    if fresh:
+        try:
+            if await nw.has_recent_completed_recovery(HTTP, phone=phone, brand=cfg.slug, within_minutes=10):
+                log.info("[%s] checkout %s deduped (recent recovery for %s)",
+                         cfg.slug, checkout_id, phone)
+                return {"status": "deduped"}
+        except Exception:
+            log.exception("[%s] dedup check failed (non-fatal, will create row)", cfg.slug)
+
     customer_name = _extract_name(payload)
     email = payload.get("email") or (payload.get("customer") or {}).get("email")
     cart_value = _extract_total(payload)
@@ -495,12 +526,14 @@ async def whatchimp_confirm_order(brand: str, request: Request):
         log.warning("[%s] confirm-order no phone in body keys=%s", brand, list(body.keys()))
         return _confirm_response(reason="no phone in request body")
 
-    # Look up by phone only — when the URL brand's WABA is shared (e.g. Virex's
-    # WABA serves Pelvini too), the row's actual brand may differ from the URL.
-    # The row's Brand property is the authoritative one for downstream Shopify.
-    row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone)
+    # Look up within the URL brand's WABA group — Pelvini's bot is Virex's
+    # bot, so a tap on /virex/confirm-order could legitimately be a Pelvini
+    # cart. The lookup returns the most recent matching row across the group.
+    allowed_brands = _waba_group(brand)
+    row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone, brands=allowed_brands)
     if not row:
-        log.warning("[%s] confirm-order: no recent recovery row for %s", brand, phone)
+        log.warning("[%s] confirm-order: no recent recovery row for %s in brands=%s",
+                    brand, phone, allowed_brands)
         return _confirm_response(reason="no matching recovery row")
 
     row_brand = nw.extract_select(row, "Brand").lower()
@@ -603,8 +636,10 @@ async def whatchimp_talk_with_agent(brand: str, request: Request):
     if not phone:
         return {"status": "error", "reason": "no phone in body"}
 
-    # Same multi-brand-tolerant lookup as confirm-order (shared WABA case).
-    row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone)
+    # Same WABA-group lookup as confirm-order — limits to brands sharing the
+    # URL brand's WhatChimp WABA so cross-bot routing stays correct.
+    allowed_brands = _waba_group(brand)
+    row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone, brands=allowed_brands)
     if not row:
         return {"status": "error", "reason": "no matching recovery row"}
 
