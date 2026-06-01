@@ -106,6 +106,11 @@ FIELD_FILEX_NOTES = "FILEX NOTES"
 FIELD_FILEX_SUBMITTED = "Filex Submitted"
 FIELD_DISPATCHED_AT = "Dispatched At"
 FIELD_LAST_UPDATE = "Last Update"
+FIELD_OUT_FOR_DELIVERY_SENT = "Out For Delivery Sent"
+
+# Main ORDER STATUS value an order reaches when shipped. MUST stay identical to
+# filex_status_mapper.ORDER_STATUS_FROM_FILEX["Shipped"] (guarded by a unit test).
+STATUS_SHIPPED = "\U0001F69A SHIPPED"  # 🚚 SHIPPED
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +264,7 @@ def parse_order(page: dict) -> dict:
         "last_update": _get_date(props, FIELD_LAST_UPDATE),
         "tracking_number": _get_rich_text(props, FIELD_TRACKING_NUMBER),
         "filex_submitted": _get_checkbox(props, FIELD_FILEX_SUBMITTED),
+        "out_for_delivery_sent": _get_checkbox(props, FIELD_OUT_FOR_DELIVERY_SENT),
     }
 
 
@@ -679,6 +685,13 @@ def mark_filex_submitted(page_id: str, submitted: bool = True) -> bool:
     })
 
 
+def mark_out_for_delivery_sent(page_id: str, sent: bool = True) -> bool:
+    """Set the 'Out For Delivery Sent' dedup checkbox."""
+    return _update_page(page_id, {
+        FIELD_OUT_FOR_DELIVERY_SENT: {"checkbox": sent},
+    })
+
+
 def find_order_by_shipper_ref(shipper_ref: str) -> dict | None:
     """
     Look up a Notion order by its ORDER ID (which equals Filex's ShipperRef).
@@ -782,6 +795,32 @@ def query_filex_active_since(cutoff_iso: str) -> list[dict]:
             {"property": FIELD_FILEX_SUBMITTED, "checkbox": {"equals": True}},
             {"property": FIELD_FILEX_STATUS,    "select":   {"does_not_equal": "Return to Origin"}},
             {"property": FIELD_DISPATCHED_AT,   "date":     {"on_or_after": cutoff_iso}},
+        ]},
+    }
+    return _run_query(payload)
+
+
+def query_shipped_unnotified(grace_minutes: int = 2) -> list[dict]:
+    """Orders ready for an out-for-delivery message:
+        ORDER STATUS == 🚚 SHIPPED
+        AND Out For Delivery Sent == false
+        AND (Last Update is older than grace_minutes OR is empty)
+
+    The grace window keeps the poller from racing the at-source send in
+    filex_reconcile: a fresh auto-promotion sets Last Update to ~now, so the
+    poller waits one grace window before treating the row as a missed send
+    (manual edit, or a failed at-source attempt).
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=grace_minutes)).isoformat()
+    payload = {
+        "filter": {"and": [
+            {"property": FIELD_ORDER_STATUS,            "select":   {"equals": STATUS_SHIPPED}},
+            {"property": FIELD_OUT_FOR_DELIVERY_SENT,   "checkbox": {"equals": False}},
+            {"or": [
+                {"property": FIELD_LAST_UPDATE, "date": {"on_or_before": cutoff}},
+                {"property": FIELD_LAST_UPDATE, "date": {"is_empty": True}},
+            ]},
         ]},
     }
     return _run_query(payload)

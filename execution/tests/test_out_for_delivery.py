@@ -70,5 +70,33 @@ class TestBuildOfdPayload(unittest.TestCase):
         self.assertEqual(p["template_id"], "377951")
 
 
+import notion_client as nc
+import filex_status_mapper
+
+
+class TestStatusShippedConstant(unittest.TestCase):
+    def test_matches_filex_mapper(self):
+        # The at-source hook compares the promoted status to nc.STATUS_SHIPPED;
+        # it must stay identical to what the mapper actually writes.
+        self.assertEqual(
+            nc.STATUS_SHIPPED,
+            filex_status_mapper.ORDER_STATUS_FROM_FILEX["Shipped"],
+        )
+
+
+class TestParseOutForDeliverySent(unittest.TestCase):
+    def test_absent_checkbox_is_false(self):
+        page = {"id": "p1", "properties": {}}
+        order = nc.parse_order(page)
+        self.assertFalse(order["out_for_delivery_sent"])
+
+    def test_checked_is_true(self):
+        page = {"id": "p1", "properties": {
+            nc.FIELD_OUT_FOR_DELIVERY_SENT: {"type": "checkbox", "checkbox": True},
+        }}
+        order = nc.parse_order(page)
+        self.assertTrue(order["out_for_delivery_sent"])
+
+
 if __name__ == "__main__":
     unittest.main()
