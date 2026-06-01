@@ -98,5 +98,54 @@ class TestParseOutForDeliverySent(unittest.TestCase):
         self.assertTrue(order["out_for_delivery_sent"])
 
 
+from unittest import mock
+
+import out_for_delivery as ofd
+
+
+def _order(**over):
+    base = {
+        "page_id": "pg1", "order_id": "PT1793", "phone": "971500000000",
+        "out_for_delivery_sent": False,
+    }
+    base.update(over)
+    return base
+
+
+class TestSendOutForDeliveryGate(unittest.TestCase):
+    def test_skips_when_already_sent(self):
+        with mock.patch.object(ofd.wc, "send_out_for_delivery_template") as send:
+            result = ofd.send_out_for_delivery(_order(out_for_delivery_sent=True))
+        self.assertFalse(result)
+        send.assert_not_called()
+
+    def test_skips_unknown_brand(self):
+        with mock.patch.object(ofd.wc, "send_out_for_delivery_template") as send:
+            result = ofd.send_out_for_delivery(_order(order_id="ZZ9"))
+        self.assertFalse(result)
+        send.assert_not_called()
+
+    def test_skips_when_no_phone(self):
+        with mock.patch.object(ofd.wc, "send_out_for_delivery_template") as send:
+            result = ofd.send_out_for_delivery(_order(phone=""))
+        self.assertFalse(result)
+        send.assert_not_called()
+
+    def test_sends_and_marks_on_success(self):
+        with mock.patch.object(ofd.wc, "send_out_for_delivery_template", return_value=True) as send, \
+             mock.patch.object(ofd.nc, "mark_out_for_delivery_sent") as mark:
+            result = ofd.send_out_for_delivery(_order())
+        self.assertTrue(result)
+        send.assert_called_once()
+        mark.assert_called_once_with("pg1")
+
+    def test_does_not_mark_on_send_failure(self):
+        with mock.patch.object(ofd.wc, "send_out_for_delivery_template", return_value=False), \
+             mock.patch.object(ofd.nc, "mark_out_for_delivery_sent") as mark:
+            result = ofd.send_out_for_delivery(_order())
+        self.assertFalse(result)
+        mark.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
