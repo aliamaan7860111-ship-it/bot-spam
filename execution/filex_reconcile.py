@@ -26,6 +26,7 @@ load_dotenv()
 
 import notion_client as nc
 import filex_status_mapper
+import out_for_delivery as ofd
 from filex_client import FilexClient
 
 FILEX_USERNAME       = os.getenv("FILEX_USERNAME")
@@ -123,6 +124,18 @@ def reconcile_active_orders(cutoff_iso: str | None = None):
                         "  ↳ ORDER STATUS promoted to %r for %s",
                         promoted, order["order_id"],
                     )
+                    if promoted == nc.STATUS_SHIPPED:
+                        # Fire the out-for-delivery WhatsApp the instant we auto-promote
+                        # to SHIPPED. `order` was queried while not-yet-shipped, so its
+                        # out_for_delivery_sent is False; send_out_for_delivery's own guard
+                        # + the success-set checkbox prevent any double-send vs. the poller.
+                        try:
+                            ofd.send_out_for_delivery(order)
+                        except Exception as e:
+                            log.error(
+                                "OFD at-source send failed for %s: %s",
+                                order["order_id"], e,
+                            )
                 event_iso = r.get("eventTime")
                 if event_iso:
                     # Filex eventTime is naive PKT; tag as +05:00 so stored UTC matches reality.
