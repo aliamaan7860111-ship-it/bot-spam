@@ -46,8 +46,8 @@ class TestGetOfdConfig(unittest.TestCase):
         am = wc.get_ofd_config("AM9")
         self.assertTrue(am.get("no_vars"))
         self.assertEqual(am["ofd_template_id"], "377951")
-        # Amara is currently disabled (template not approved in en_US).
-        self.assertTrue(am.get("pending"))
+        # Amara is enabled (template now approved in en_US), no body variables.
+        self.assertFalse(am.get("pending"))
 
     def test_unknown_is_none(self):
         self.assertIsNone(wc.get_ofd_config("ZZ1"))
@@ -119,9 +119,11 @@ class TestSendOutForDeliveryGate(unittest.TestCase):
         ofd._skip_this_run.clear()
 
     def test_skips_pending_brand(self):
-        # Amara is pending (template not approved in en_US) — must not attempt a send.
-        with mock.patch.object(ofd.wc, "send_out_for_delivery_template") as send:
-            result = ofd.send_out_for_delivery(_order(order_id="AM3577", page_id="am1"))
+        # A brand flagged pending (e.g. template not yet approved) must not attempt a send.
+        pending_cfg = {"phone_number_id": "1", "ofd_template_id": "999", "brand_display": "X", "pending": True}
+        with mock.patch.object(ofd.wc, "get_ofd_config", return_value=pending_cfg), \
+             mock.patch.object(ofd.wc, "send_out_for_delivery_template") as send:
+            result = ofd.send_out_for_delivery(_order(page_id="x1"))
         self.assertFalse(result)
         send.assert_not_called()
 
