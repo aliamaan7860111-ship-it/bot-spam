@@ -1,0 +1,74 @@
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import whatchimp_client as wc
+
+
+class TestResolveOfdPrefix(unittest.TestCase):
+    def test_two_char_prefixes(self):
+        self.assertEqual(wc.resolve_ofd_prefix("PT1793"), "PT")
+        self.assertEqual(wc.resolve_ofd_prefix("Di500"), "Di")
+        self.assertEqual(wc.resolve_ofd_prefix("LU10"), "LU")
+        self.assertEqual(wc.resolve_ofd_prefix("PV7"), "PV")
+        self.assertEqual(wc.resolve_ofd_prefix("VX9"), "VX")
+        self.assertEqual(wc.resolve_ofd_prefix("AM55"), "AM")
+
+    def test_one_char_orlento_not_shadowed(self):
+        # 'O' must resolve to Orlento, and must NOT swallow 2-char prefixes.
+        self.assertEqual(wc.resolve_ofd_prefix("O123"), "O")
+        self.assertEqual(wc.resolve_ofd_prefix("VX1"), "VX")
+
+    def test_unknown_and_empty(self):
+        self.assertIsNone(wc.resolve_ofd_prefix("ZZ9"))
+        self.assertIsNone(wc.resolve_ofd_prefix(""))
+        self.assertIsNone(wc.resolve_ofd_prefix(None))
+
+
+class TestGetOfdConfig(unittest.TestCase):
+    def test_pelvini_shares_lune(self):
+        pv = wc.get_ofd_config("PV1")
+        lu = wc.get_ofd_config("LU1")
+        self.assertEqual(pv["phone_number_id"], lu["phone_number_id"])
+        self.assertEqual(pv["ofd_template_id"], lu["ofd_template_id"])
+        self.assertEqual(pv["brand_display"], "Pelvini")
+
+    def test_orlento_shares_virex(self):
+        o = wc.get_ofd_config("O5")
+        vx = wc.get_ofd_config("VX5")
+        self.assertEqual(o["phone_number_id"], vx["phone_number_id"])
+        self.assertEqual(o["ofd_template_id"], vx["ofd_template_id"])
+        self.assertEqual(o["brand_display"], "Orlento")
+
+    def test_amara_no_vars(self):
+        am = wc.get_ofd_config("AM9")
+        self.assertTrue(am.get("no_vars"))
+        self.assertEqual(am["ofd_template_id"], "377951")
+
+    def test_unknown_is_none(self):
+        self.assertIsNone(wc.get_ofd_config("ZZ1"))
+
+
+class TestBuildOfdPayload(unittest.TestCase):
+    def test_standard_brand_includes_variables(self):
+        cfg = wc.get_ofd_config("PT1")
+        p = wc.build_ofd_payload(cfg, "PT1793", "971500000000", "TOK")
+        self.assertEqual(p["apiToken"], "TOK")
+        self.assertEqual(p["template_id"], "377952")
+        self.assertEqual(p["phone_number_id"], "1031340813395459")
+        self.assertEqual(p["phone_number"], "971500000000")
+        self.assertEqual(p["templateVariable-brand-2"], "Elara UAE")
+        self.assertEqual(p["templateVariable-id-3"], "PT1793")
+
+    def test_amara_omits_variables(self):
+        cfg = wc.get_ofd_config("AM9")
+        p = wc.build_ofd_payload(cfg, "AM9", "971500000000", "TOK")
+        self.assertNotIn("templateVariable-brand-2", p)
+        self.assertNotIn("templateVariable-id-3", p)
+        self.assertEqual(p["template_id"], "377951")
+
+
+if __name__ == "__main__":
+    unittest.main()

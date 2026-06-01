@@ -67,6 +67,102 @@ POSTBACK_TO_PREFIX    = {cfg["confirm_button_qr"]: prefix for prefix, cfg in BRA
 SENDER_PHONE_TO_PREFIX = {cfg["sender_phone"]:     prefix for prefix, cfg in BRAND_CONFIG.items()}
 
 
+# ---------------------------------------------------------------------------
+# Out-for-Delivery routing (separate from BRAND_CONFIG on purpose: Pelvini and
+# Orlento share another brand's WhatsApp number and have no confirm-button /
+# sender-phone of their own, so they must not enter the BRAND_CONFIG comprehensions).
+# Key = ORDER ID prefix. brand_display fills the #!brand!# template variable.
+# ---------------------------------------------------------------------------
+OFD_CONFIG = {
+    "PT": {"phone_number_id": "1031340813395459", "ofd_template_id": "377952", "brand_display": "Elara UAE"},
+    "Di": {"phone_number_id": "1002123586328400", "ofd_template_id": "377954", "brand_display": "Dialo UAE"},
+    "LU": {"phone_number_id": "1138942462625909", "ofd_template_id": "377955", "brand_display": "Lune Collection"},
+    "PV": {"phone_number_id": "1138942462625909", "ofd_template_id": "377955", "brand_display": "Pelvini"},
+    "VX": {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Virex UAE"},
+    "O":  {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Orlento"},
+    "AM": {"phone_number_id": "1045332455333591", "ofd_template_id": "377951", "brand_display": "Amara's Room", "no_vars": True},
+}
+
+# Match longest prefix first so the 1-char "O" (Orlento) never shadows a 2-char prefix.
+_OFD_PREFIXES = sorted(OFD_CONFIG.keys(), key=len, reverse=True)
+
+
+def resolve_ofd_prefix(order_id: str) -> str | None:
+    """Return the known OFD prefix an order_id starts with, or None. Case-sensitive."""
+    oid = (order_id or "").strip()
+    for prefix in _OFD_PREFIXES:
+        if oid.startswith(prefix):
+            return prefix
+    return None
+
+
+def get_ofd_config(order_id: str) -> dict | None:
+    """Resolve the OFD routing config from an order_id, or None for unknown brands."""
+    prefix = resolve_ofd_prefix(order_id)
+    return OFD_CONFIG[prefix] if prefix is not None else None
+
+
+def build_ofd_payload(cfg: dict, order_id: str, cleaned_phone: str, api_token: str) -> dict:
+    """Build the /send/template POST body for an out-for-delivery message.
+    Amara's legacy template (no_vars) carries no body variables; every other
+    brand fills #!brand!# (templateVariable-brand-2) and #!id!# (templateVariable-id-3)."""
+    payload = {
+        "apiToken":        api_token,
+        "phone_number_id": cfg["phone_number_id"],
+        "template_id":     cfg["ofd_template_id"],
+        "phone_number":    cleaned_phone,
+    }
+    if not cfg.get("no_vars"):
+        payload["templateVariable-brand-2"] = cfg["brand_display"]
+        payload["templateVariable-id-3"]    = order_id
+    return payload
+
+
+def send_out_for_delivery_template(phone_number: str, order_id: str, cfg: dict) -> bool:
+    """Send one out-for-delivery WhatsApp template via WhatChimp.
+
+    `cfg` must come from get_ofd_config(order_id). Pre-syncs the subscriber on the
+    brand's own phone_number_id (matches the confirmation flow), then posts the
+    template. Returns True only on WhatChimp status == "1".
+    """
+    if not WHATCHIMP_API_TOKEN:
+        log.error("Missing WHATCHIMP_API_TOKEN in .env")
+        return False
+
+    phone_number_id = cfg["phone_number_id"]
+    template_id     = cfg["ofd_template_id"]
+    display_brand   = cfg["brand_display"]
+
+    cleaned_phone = clean_phone_number(phone_number)
+    if not cleaned_phone.startswith("971") or len(cleaned_phone) != 12:
+        log.error(
+            f"Phone '{phone_number}' failed UAE normalization "
+            f"(got '{cleaned_phone}') — skipping OFD {order_id}"
+        )
+        return False
+
+    # Pre-sync custom fields so #!id!# / #!brand!# resolve; harmless for Amara's no-var template.
+    create_or_update_subscriber(phone_number, "", order_id, display_brand, phone_number_id)
+
+    payload = build_ofd_payload(cfg, order_id, cleaned_phone, WHATCHIMP_API_TOKEN)
+    url = f"{API_BASE}/send/template"
+    try:
+        log.info(
+            f"🚚 OFD template {template_id} → {cleaned_phone} via {phone_number_id} "
+            f"({display_brand}, order {order_id})"
+        )
+        resp = requests.post(url, data=payload, timeout=15)
+        data = resp.json()
+        if str(data.get("status")) == "1":
+            log.info(f"✅ OFD delivered: {order_id}")
+            return True
+        log.error(f"❌ OFD rejected ({display_brand}): {data.get('message', data)}")
+        return False
+    except Exception as e:
+        log.error(f"OFD request failed: {e}")
+        return False
+
+
 def get_brand_config(order_id_or_prefix: str) -> dict:
     """Look up the brand config from an order_id or its 2-char prefix. Defaults to PT (Elara)."""
     prefix = (order_id_or_prefix or "")[:2]
