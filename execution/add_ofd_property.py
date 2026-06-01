@@ -1,43 +1,39 @@
 """
 One-shot: add the 'Out For Delivery Sent' checkbox property to the main CRM
-Notion database. Idempotent — re-running is a no-op patch if it already exists.
+Notion data source. Idempotent — re-running just confirms it.
+
+The main CRM database has MULTIPLE data sources (Notion 2025-09-03 model), so the
+legacy /databases/{id} PATCH (Notion-Version 2022-06-28) is rejected. We instead
+PATCH the exact data source that notion_client queries/writes — _get_data_source_id()
+— using its 2025-09-03 headers, so the new checkbox is visible to the OFD poller.
+
 Run once before deploying the OFD notifier.
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
-import requests
-from dotenv import load_dotenv
+import httpx
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-DB_ID = os.environ["NOTION_DATABASE_ID"]
-TOKEN = os.environ["NOTION_API_KEY"]
+import notion_client as nc
 
 
 def main() -> int:
-    headers = {
-        "Authorization": f"Bearer {TOKEN}",
-        "Notion-Version": "2022-06-28",
-        "Content-Type": "application/json",
-    }
-    props_patch = {
-        "Out For Delivery Sent": {"checkbox": {}},
-    }
-    r = requests.patch(
-        f"https://api.notion.com/v1/databases/{DB_ID}",
-        headers=headers,
-        json={"properties": props_patch},
-        timeout=20,
-    )
-    if r.status_code != 200:
-        print(f"ERROR {r.status_code}: {r.text[:600]}", file=sys.stderr)
+    ds_id = nc._get_data_source_id()
+    props_patch = {"Out For Delivery Sent": {"checkbox": {}}}
+    with httpx.Client(timeout=20) as client:
+        resp = client.patch(
+            f"{nc.NOTION_API_BASE}/data_sources/{ds_id}",
+            headers=nc._headers(),
+            json={"properties": props_patch},
+        )
+    if resp.status_code != 200:
+        print(f"ERROR {resp.status_code}: {resp.text[:600]}", file=sys.stderr)
         return 1
-    print("OK: 'Out For Delivery Sent' checkbox added/confirmed.")
+    print(f"OK: 'Out For Delivery Sent' checkbox added/confirmed on data source {ds_id}.")
     return 0
 
 
