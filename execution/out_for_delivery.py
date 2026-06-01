@@ -26,40 +26,62 @@ logging.basicConfig(
 )
 log = logging.getLogger("order_bridge.ofd")
 
+# Orders we've already tried-and-failed or can't route this process run. Without this,
+# a permanent error (rejected template, unknown brand, missing phone) would be re-attempted
+# every poll tick forever — hammering WhatChimp and churning subscriber custom fields.
+# Keyed by Notion page_id. Cleared on process restart (e.g. after a config redeploy), so a
+# fixed template / transient failure gets one fresh attempt per restart.
+_skip_this_run: set[str] = set()
+
 
 def send_out_for_delivery(order: dict) -> bool:
     """Idempotently send the OFD template for one parsed order.
 
     Returns True only if a message was sent on this call. Skips (returns False)
-    when already sent, brand unknown, template pending, or phone missing. On a
-    confirmed send it sets the 'Out For Delivery Sent' checkbox.
+    when already sent, brand unknown/pending, phone missing, or already failed
+    this run. On a confirmed send it sets the 'Out For Delivery Sent' checkbox.
     """
     order_id = order.get("order_id", "")
+    page_id = order.get("page_id", "")
 
     if order.get("out_for_delivery_sent"):
         return False
 
-    cfg = wc.get_ofd_config(order_id)
-    if cfg is None:
-        log.warning("OFD: unknown brand prefix for order %r — skipping", order_id)
+    # Already handled (and logged) once this run — don't re-hit the API every tick.
+    if page_id in _skip_this_run:
         return False
 
-    if not cfg.get("ofd_template_id"):
-        # Future brand with no approved template yet: no-op, leave checkbox unset
-        # so it sends automatically once the template_id is filled in OFD_CONFIG.
-        log.info("OFD: template pending for %r — skipping", order_id)
+    cfg = wc.get_ofd_config(order_id)
+    if cfg is None:
+        log.warning("OFD: unknown brand prefix for order %r — skipping (no retry this run)", order_id)
+        _skip_this_run.add(page_id)
+        return False
+
+    if not cfg.get("ofd_template_id") or cfg.get("pending"):
+        # No approved template yet (or brand disabled): no-op, leave checkbox unset so it
+        # sends automatically once the template is filled/enabled in OFD_CONFIG (next restart).
+        log.info("OFD: template pending for brand of %r — skipping", order_id)
+        _skip_this_run.add(page_id)
         return False
 
     phone = order.get("phone", "")
     if not phone:
-        log.warning("OFD: no phone on order %r — skipping", order_id)
+        log.warning("OFD: no phone on order %r — skipping (no retry this run)", order_id)
+        _skip_this_run.add(page_id)
         return False
 
     sent = wc.send_out_for_delivery_template(phone, order_id, cfg)
     if sent:
-        nc.mark_out_for_delivery_sent(order["page_id"])
+        nc.mark_out_for_delivery_sent(page_id)
         log.info("OFD: sent + marked %r", order_id)
-    return sent
+        return True
+
+    # Rejected by WhatChimp (template/locale error, bad number, etc.). The client already
+    # logged the reason — give up on this order until the next service restart rather than
+    # re-attempting every 30s.
+    log.error("OFD: send failed for %r — no retry until service restart", order_id)
+    _skip_this_run.add(page_id)
+    return False
 
 
 def poll_once(grace_minutes: int = 2) -> int:

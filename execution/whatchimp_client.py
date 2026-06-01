@@ -80,7 +80,10 @@ OFD_CONFIG = {
     "PV": {"phone_number_id": "1138942462625909", "ofd_template_id": "377955", "brand_display": "Pelvini"},
     "VX": {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Virex UAE"},
     "O":  {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Orlento"},
-    "AM": {"phone_number_id": "1045332455333591", "ofd_template_id": "377951", "brand_display": "Amara's Room", "no_vars": True},
+    # Amara DISABLED: template 377951 (ofd_amara) is not approved in en_US, so every
+    # /send/template is rejected. `pending` makes the sender skip Amara cleanly (no send,
+    # no subscriber churn) until a working en_US template is approved — then remove `pending`.
+    "AM": {"phone_number_id": "1045332455333591", "ofd_template_id": "377951", "brand_display": "Amara's Room", "no_vars": True, "pending": True},
 }
 
 # Match longest prefix first so the 1-char "O" (Orlento) never shadows a 2-char prefix.

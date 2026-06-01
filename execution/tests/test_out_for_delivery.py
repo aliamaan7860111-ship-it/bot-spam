@@ -46,6 +46,8 @@ class TestGetOfdConfig(unittest.TestCase):
         am = wc.get_ofd_config("AM9")
         self.assertTrue(am.get("no_vars"))
         self.assertEqual(am["ofd_template_id"], "377951")
+        # Amara is currently disabled (template not approved in en_US).
+        self.assertTrue(am.get("pending"))
 
     def test_unknown_is_none(self):
         self.assertIsNone(wc.get_ofd_config("ZZ1"))
@@ -113,6 +115,28 @@ def _order(**over):
 
 
 class TestSendOutForDeliveryGate(unittest.TestCase):
+    def setUp(self):
+        ofd._skip_this_run.clear()
+
+    def test_skips_pending_brand(self):
+        # Amara is pending (template not approved in en_US) — must not attempt a send.
+        with mock.patch.object(ofd.wc, "send_out_for_delivery_template") as send:
+            result = ofd.send_out_for_delivery(_order(order_id="AM3577", page_id="am1"))
+        self.assertFalse(result)
+        send.assert_not_called()
+
+    def test_failed_send_not_retried_same_run(self):
+        # A rejected send must be attempted ONCE, then skipped for the rest of the run.
+        with mock.patch.object(ofd.wc, "send_out_for_delivery_template", return_value=False) as send, \
+             mock.patch.object(ofd.nc, "mark_out_for_delivery_sent") as mark:
+            o = _order()
+            r1 = ofd.send_out_for_delivery(o)
+            r2 = ofd.send_out_for_delivery(o)
+        self.assertFalse(r1)
+        self.assertFalse(r2)
+        self.assertEqual(send.call_count, 1)
+        mark.assert_not_called()
+
     def test_skips_when_already_sent(self):
         with mock.patch.object(ofd.wc, "send_out_for_delivery_template") as send:
             result = ofd.send_out_for_delivery(_order(out_for_delivery_sent=True))
