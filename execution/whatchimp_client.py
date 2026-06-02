@@ -80,8 +80,8 @@ OFD_CONFIG = {
     "PV": {"phone_number_id": "1138942462625909", "ofd_template_id": "377955", "brand_display": "Pelvini"},
     "VX": {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Virex UAE"},
     "O":  {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Orlento"},
-    # Amara: template 377951 (ofd_amara) has no body variables — send with no #!id!#/#!brand!#.
-    "AM": {"phone_number_id": "1045332455333591", "ofd_template_id": "377951", "brand_display": "Amara's Room", "no_vars": True},
+    # Amara: template 377951 has the same {{1}}=id / {{2}}=brand body as the others.
+    "AM": {"phone_number_id": "1045332455333591", "ofd_template_id": "377951", "brand_display": "Amara's Room"},
 }
 
 # Match longest prefix first so the 1-char "O" (Orlento) never shadows a 2-char prefix.
@@ -114,8 +114,11 @@ def build_ofd_payload(cfg: dict, order_id: str, cleaned_phone: str, api_token: s
         "phone_number":    cleaned_phone,
     }
     if not cfg.get("no_vars"):
+        # OFD template body is "your order {{1}} from {{2}}":
+        #   {{1}} = order id (position 1), {{2}} = brand display (position 2).
+        # Position MUST match the body, or the unfilled {{N}} renders literally.
+        payload["templateVariable-id-1"]    = order_id
         payload["templateVariable-brand-2"] = cfg["brand_display"]
-        payload["templateVariable-id-3"]    = order_id
     return payload
 
 

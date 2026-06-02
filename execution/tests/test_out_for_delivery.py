@@ -42,11 +42,12 @@ class TestGetOfdConfig(unittest.TestCase):
         self.assertEqual(o["ofd_template_id"], vx["ofd_template_id"])
         self.assertEqual(o["brand_display"], "Orlento")
 
-    def test_amara_no_vars(self):
+    def test_amara_enabled_with_vars(self):
         am = wc.get_ofd_config("AM9")
-        self.assertTrue(am.get("no_vars"))
         self.assertEqual(am["ofd_template_id"], "377951")
-        # Amara is enabled (template now approved in en_US), no body variables.
+        self.assertEqual(am["brand_display"], "Amara's Room")
+        # Amara's template has the same {{1}}/{{2}} body — NOT a no-vars template.
+        self.assertFalse(am.get("no_vars"))
         self.assertFalse(am.get("pending"))
 
     def test_unknown_is_none(self):
@@ -61,15 +62,24 @@ class TestBuildOfdPayload(unittest.TestCase):
         self.assertEqual(p["template_id"], "377952")
         self.assertEqual(p["phone_number_id"], "1031340813395459")
         self.assertEqual(p["phone_number"], "971500000000")
+        # {{1}} = order id (position 1), {{2}} = brand (position 2).
+        self.assertEqual(p["templateVariable-id-1"], "PT1793")
         self.assertEqual(p["templateVariable-brand-2"], "Elara UAE")
-        self.assertEqual(p["templateVariable-id-3"], "PT1793")
-
-    def test_amara_omits_variables(self):
-        cfg = wc.get_ofd_config("AM9")
-        p = wc.build_ofd_payload(cfg, "AM9", "971500000000", "TOK")
-        self.assertNotIn("templateVariable-brand-2", p)
         self.assertNotIn("templateVariable-id-3", p)
+
+    def test_amara_includes_variables(self):
+        cfg = wc.get_ofd_config("AM9")
+        p = wc.build_ofd_payload(cfg, "AM3609", "971500000000", "TOK")
         self.assertEqual(p["template_id"], "377951")
+        self.assertEqual(p["templateVariable-id-1"], "AM3609")
+        self.assertEqual(p["templateVariable-brand-2"], "Amara's Room")
+
+    def test_no_vars_cfg_omits_variables(self):
+        # Defensive: a cfg explicitly flagged no_vars sends zero body variables.
+        cfg = {"phone_number_id": "1", "ofd_template_id": "9", "brand_display": "X", "no_vars": True}
+        p = wc.build_ofd_payload(cfg, "X1", "971500000000", "TOK")
+        self.assertNotIn("templateVariable-id-1", p)
+        self.assertNotIn("templateVariable-brand-2", p)
 
 
 import notion_client as nc
