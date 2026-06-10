@@ -42,11 +42,15 @@ Code: `execution/rescue_server.py`, `execution/rescue_store.py`, tee in
 
 | Brand | whatsapp_bot_id | phone_number_id | bot_flow_unique_id | enabled |
 |---|---|---|---|---|
-| VIREX UAE | 381990 | 1073890042476443 | _(fill after UI setup)_ | no |
-| DIALO UAE | 382073 | 1002123586328400 | _(fill)_ | no |
-| AMARA | 382036 | 1045332455333591 | _(fill)_ | no |
-| ELARA | 352261 | 1031340813395459 | _(fill)_ | no |
-| LUNE | _(not yet captured — watch rescue log)_ | 1138942462625909 | _(fill)_ | no |
+| VIREX UAE | 381990 | 1073890042476443 | 1900212 | no |
+| DIALO UAE | 382073 | 1002123586328400 | 1900210 | no |
+| AMARA | 382036 | 1045332455333591 | 1900209 | no |
+| ELARA | 352261 | 1031340813395459 | 1900207 | no |
+| LUNE | _(unknown — config keyed by phone_number_id; `resolve_config` falls back)_ | 1138942462625909 | 1900211 | no |
+
+Flow IDs provided by user 2026-06-10 after building all 5 flows in the UI.
+`/user/myInfo` confirms the bot roster but does NOT return `whatsapp_bot_id` —
+only `phone_number_id` — hence the LUNE fallback.
 
 ## Go-live checklist (per brand — pilot first, then the rest)
 

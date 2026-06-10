@@ -63,16 +63,32 @@ API_BASE = "https://app.whatchimp.com/api/v1/whatsapp"
 # the flow exists AND its button payloads have been captured live.
 RESCUE_CONFIG = {
     "381990": {"brand": "VIREX UAE", "phone_number_id": "1073890042476443",
-               "bot_flow_unique_id": "", "enabled": False},
+               "bot_flow_unique_id": "1900212", "enabled": False},
     "382073": {"brand": "DIALO UAE", "phone_number_id": "1002123586328400",
-               "bot_flow_unique_id": "", "enabled": False},
+               "bot_flow_unique_id": "1900210", "enabled": False},
     "382036": {"brand": "AMARA", "phone_number_id": "1045332455333591",
-               "bot_flow_unique_id": "", "enabled": False},
+               "bot_flow_unique_id": "1900209", "enabled": False},
     "352261": {"brand": "ELARA", "phone_number_id": "1031340813395459",
-               "bot_flow_unique_id": "", "enabled": False},
-    # LUNE: whatsapp_bot_id never captured (phone_number_id is 1138942462625909).
-    # Add its entry when the first Lune event shows up in the rescue log.
+               "bot_flow_unique_id": "1900207", "enabled": False},
+    # LUNE: numeric whatsapp_bot_id never captured, so it's keyed by its
+    # phone_number_id — webhook payloads sometimes carry that in the bot-id
+    # field (rpgrq's brand mapping has the same fallback). If Lune events show
+    # a different bot_id in the rescue log, re-key this entry to it.
+    "1138942462625909": {"brand": "LUNE", "phone_number_id": "1138942462625909",
+                         "bot_flow_unique_id": "1900211", "enabled": False},
 }
+
+def resolve_config(bot_id: str) -> dict | None:
+    """Resolve brand config by whatsapp_bot_id, falling back to phone_number_id —
+    payloads from some bots put phone_number_id where whatsapp_bot_id usually goes
+    (rpgrq's brand mapping has the same fallback)."""
+    cfg = RESCUE_CONFIG.get(bot_id)
+    if cfg:
+        return cfg
+    for c in RESCUE_CONFIG.values():
+        if c["phone_number_id"] == bot_id:
+            return c
+    return None
 
 # Inbound texts that are rescue-button taps, not real customer messages.
 # Button labels by default; live-captured postback hashes are appended via env
@@ -172,7 +188,7 @@ async def run_tick(conn: sqlite3.Connection, trigger_fn, now: float | None = Non
     now = time.time() if now is None else now
     fired = 0
     for row in store.eligible(conn, now, FIRE_AFTER_S, MAX_AGE_S):
-        cfg = RESCUE_CONFIG.get(row["bot_id"])
+        cfg = resolve_config(row["bot_id"])
         if not cfg or not cfg["enabled"] or not cfg["bot_flow_unique_id"]:
             continue
         ok = await trigger_fn(row["phone"], cfg["phone_number_id"], cfg["bot_flow_unique_id"])

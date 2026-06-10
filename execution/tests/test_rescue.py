@@ -204,6 +204,13 @@ class TestRunTick(unittest.TestCase):
         fired = asyncio.run(rs.run_tick(self.conn, self.fake_trigger_ok, now=1000.0 + MIN_AGE + 60))
         self.assertEqual(fired, 0)
 
+    def test_config_resolves_by_phone_number_id_fallback(self):
+        # some bots' payloads carry phone_number_id in the bot-id field (LUNE case)
+        store.record_real_inbound(self.conn, "1073890042476443", "9715551234", "VIREX UAE", ts=1000.0)
+        fired = asyncio.run(rs.run_tick(self.conn, self.fake_trigger_ok, now=1000.0 + MIN_AGE + 60))
+        self.assertEqual(fired, 1)
+        self.assertEqual(self.calls, [("9715551234", "1073890042476443", "flow_virex_rescue")])
+
     def test_failed_trigger_bumps_attempts_and_caps_at_max(self):
         store.record_real_inbound(self.conn, "381990", "9715551234", "VIREX UAE", ts=1000.0)
         now = 1000.0 + MIN_AGE + 60
