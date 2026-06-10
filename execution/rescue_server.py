@@ -144,6 +144,10 @@ def handle_event(conn: sqlite3.Connection, direction: str, payload: dict, now: f
         return
     if ev["kind"] == "real_inbound":
         store.record_real_inbound(conn, ev["bot_id"], ev["phone"], ev["brand"], now)
+        # INFO on purpose: this line is how button postback strings get captured
+        # during go-live (directive step 2) — a tap that logs here instead of as
+        # a button tap means its string belongs in RESCUE_EXTRA_BUTTON_TEXTS.
+        log.info(f"📥 inbound on {ev['brand']} / {ev['phone']} (bot_id={ev['bot_id']}): {ev['text'][:80]!r}")
     elif ev["kind"] == "button_tap":
         store.record_button_tap(conn, ev["bot_id"], ev["phone"], ev["brand"], now)
         log.info(f"🔘 button tap on {ev['brand']} / {ev['phone']}: {ev['text']!r}")
