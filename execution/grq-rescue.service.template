@@ -1,0 +1,17 @@
+[Unit]
+Description=GRQ 24h Window Rescue Service
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_LINUX_USERNAME
+WorkingDirectory=/home/YOUR_LINUX_USERNAME/automation
+ExecStart=/usr/bin/python3 execution/rescue_server.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/YOUR_LINUX_USERNAME/automation/rescue.log
+StandardError=append:/home/YOUR_LINUX_USERNAME/automation/rescue.log
+Environment=RESCUE_PORT=8085
+
+[Install]
+WantedBy=multi-user.target
