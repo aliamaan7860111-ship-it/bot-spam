@@ -133,3 +133,67 @@ def handle_event(conn: sqlite3.Connection, direction: str, payload: dict, now: f
         log.info(f"🔘 button tap on {ev['brand']} / {ev['phone']}: {ev['text']!r}")
     else:
         store.record_outbound(conn, ev["bot_id"], ev["phone"], ev["brand"], now)
+
+
+# ────────────────────────────────────────────────────────────
+# Trigger + scheduler
+# ────────────────────────────────────────────────────────────
+
+_http: httpx.AsyncClient | None = None  # created in main()
+
+
+async def trigger_bot_flow(phone: str, phone_number_id: str, bot_flow_unique_id: str) -> bool:
+    """Fire a bot flow at a subscriber via POST /trigger-bot (JSON body, 10 Feb 2026 API batch)."""
+    body = {
+        "apiToken": WHATCHIMP_API_TOKEN,
+        "phone_number_id": phone_number_id,
+        "bot_flow_unique_id": bot_flow_unique_id,
+        "phone_number": phone,
+    }
+    try:
+        resp = await _http.post(f"{API_BASE}/trigger-bot", json=body)
+        data = resp.json()
+    except Exception as e:
+        log.error(f"trigger-bot request failed for {phone}: {e}")
+        return False
+    # Success message is "Bot has been trigger successfully." (their typo) — key on status only.
+    if str(data.get("status")) == "1":
+        return True
+    log.error(f"trigger-bot rejected for {phone}: {data}")
+    return False
+
+
+async def run_tick(conn: sqlite3.Connection, trigger_fn, now: float | None = None) -> int:
+    """One scheduler pass. Returns the number of rescues fired.
+
+    trigger_fn is injected so tests can fake the WhatChimp call; production
+    passes trigger_bot_flow.
+    """
+    now = time.time() if now is None else now
+    fired = 0
+    for row in store.eligible(conn, now, FIRE_AFTER_S, MAX_AGE_S):
+        cfg = RESCUE_CONFIG.get(row["bot_id"])
+        if not cfg or not cfg["enabled"] or not cfg["bot_flow_unique_id"]:
+            continue
+        ok = await trigger_fn(row["phone"], cfg["phone_number_id"], cfg["bot_flow_unique_id"])
+        if ok:
+            store.mark_rescued(conn, row["bot_id"], row["phone"], now)
+            log.info(f"🛟 rescue fired: {cfg['brand']} / {row['phone']}")
+            fired += 1
+        else:
+            store.bump_attempts(conn, row["bot_id"], row["phone"], now)
+            log.warning(
+                f"rescue failed: {cfg['brand']} / {row['phone']} "
+                f"(attempt {row['attempts'] + 1}/{store.MAX_ATTEMPTS})"
+            )
+    return fired
+
+
+async def scheduler_loop(conn: sqlite3.Connection) -> None:
+    while True:
+        try:
+            await run_tick(conn, trigger_bot_flow)
+        except Exception as e:
+            import traceback
+            log.error(f"scheduler tick crashed: {e}\n{traceback.format_exc()}")
+        await asyncio.sleep(POLL_SECONDS)

@@ -153,5 +153,63 @@ class TestClassifyEvent(unittest.TestCase):
         self.assertIsNone(rs.classify_event("in", {"chat_id": "9715551234"}))
 
 
+import asyncio
+
+
+class TestRunTick(unittest.TestCase):
+    def setUp(self):
+        self.conn = fresh_conn()
+        self.calls = []
+        # restore module config after each test
+        self._old_config = rs.RESCUE_CONFIG
+        rs.RESCUE_CONFIG = {
+            "381990": {"brand": "VIREX UAE", "phone_number_id": "1073890042476443",
+                       "bot_flow_unique_id": "flow_virex_rescue", "enabled": True},
+            "382073": {"brand": "DIALO UAE", "phone_number_id": "1002123586328400",
+                       "bot_flow_unique_id": "", "enabled": False},
+        }
+
+    def tearDown(self):
+        rs.RESCUE_CONFIG = self._old_config
+
+    async def fake_trigger_ok(self, phone, phone_number_id, flow_id):
+        self.calls.append((phone, phone_number_id, flow_id))
+        return True
+
+    async def fake_trigger_fail(self, phone, phone_number_id, flow_id):
+        self.calls.append((phone, phone_number_id, flow_id))
+        return False
+
+    def test_fires_for_eligible_enabled_brand_and_marks_rescued(self):
+        store.record_real_inbound(self.conn, "381990", "9715551234", "VIREX UAE", ts=1000.0)
+        now = 1000.0 + MIN_AGE + 60
+        fired = asyncio.run(rs.run_tick(self.conn, self.fake_trigger_ok, now=now))
+        self.assertEqual(fired, 1)
+        self.assertEqual(self.calls, [("9715551234", "1073890042476443", "flow_virex_rescue")])
+        # second tick: rescued_at set → no re-fire
+        fired = asyncio.run(rs.run_tick(self.conn, self.fake_trigger_ok, now=now + 60))
+        self.assertEqual(fired, 0)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_disabled_brand_is_skipped(self):
+        store.record_real_inbound(self.conn, "382073", "9715551234", "DIALO UAE", ts=1000.0)
+        fired = asyncio.run(rs.run_tick(self.conn, self.fake_trigger_ok, now=1000.0 + MIN_AGE + 60))
+        self.assertEqual(fired, 0)
+        self.assertEqual(self.calls, [])
+
+    def test_unknown_bot_id_is_skipped(self):
+        store.record_real_inbound(self.conn, "999999", "9715551234", "???", ts=1000.0)
+        fired = asyncio.run(rs.run_tick(self.conn, self.fake_trigger_ok, now=1000.0 + MIN_AGE + 60))
+        self.assertEqual(fired, 0)
+
+    def test_failed_trigger_bumps_attempts_and_caps_at_max(self):
+        store.record_real_inbound(self.conn, "381990", "9715551234", "VIREX UAE", ts=1000.0)
+        now = 1000.0 + MIN_AGE + 60
+        for _ in range(store.MAX_ATTEMPTS + 2):  # more ticks than the cap
+            asyncio.run(rs.run_tick(self.conn, self.fake_trigger_fail, now=now))
+        # called exactly MAX_ATTEMPTS times, then silenced
+        self.assertEqual(len(self.calls), store.MAX_ATTEMPTS)
+
+
 if __name__ == "__main__":
     unittest.main()
