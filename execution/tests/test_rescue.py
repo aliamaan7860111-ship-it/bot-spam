@@ -98,5 +98,60 @@ class TestStoreEligibility(unittest.TestCase):
         self.assertEqual(rows[0]["bot_id"], "381990")
 
 
+import rescue_server as rs
+
+
+class TestClassifyEvent(unittest.TestCase):
+    BASE = {
+        "chat_id": "9715551234",
+        "whatsapp_bot_id": "381990",
+        "whatsapp_bot_name": "Virex UAE",
+        "wa_message_id": "wamid.test1",
+    }
+
+    def test_incoming_text_is_real_inbound(self):
+        ev = rs.classify_event("in", {**self.BASE, "message": "where is my order?"})
+        self.assertEqual(ev["kind"], "real_inbound")
+        self.assertEqual(ev["bot_id"], "381990")
+        self.assertEqual(ev["phone"], "9715551234")
+
+    def test_incoming_button_label_is_button_tap(self):
+        ev = rs.classify_event("in", {**self.BASE, "message": "Connect with Agent"})
+        self.assertEqual(ev["kind"], "button_tap")
+
+    def test_button_match_is_case_insensitive(self):
+        ev = rs.classify_event("in", {**self.BASE, "message": "not interested"})
+        self.assertEqual(ev["kind"], "button_tap")
+
+    def test_extra_button_texts_from_env(self):
+        # postback hashes captured live get added via RESCUE_EXTRA_BUTTON_TEXTS
+        old = rs.BUTTON_TEXTS
+        rs.BUTTON_TEXTS = rs.BUTTON_TEXTS | {"q9d4f8y6gzrkw_4"}
+        try:
+            ev = rs.classify_event("in", {**self.BASE, "message": "q9D4f8Y6gzRKW_4"})
+            self.assertEqual(ev["kind"], "button_tap")
+        finally:
+            rs.BUTTON_TEXTS = old
+
+    def test_text_extracted_from_alternate_keys(self):
+        # exact field name is unconfirmed until live capture — accept common variants
+        for key in ("message", "message_text", "text", "user_message", "msg"):
+            ev = rs.classify_event("in", {**self.BASE, key: "hello"})
+            self.assertEqual(ev["kind"], "real_inbound", f"key={key}")
+
+    def test_incoming_without_text_is_real_inbound(self):
+        # media-only message: still a real customer message
+        ev = rs.classify_event("in", dict(self.BASE))
+        self.assertEqual(ev["kind"], "real_inbound")
+
+    def test_outgoing_is_outbound(self):
+        ev = rs.classify_event("out", {**self.BASE, "message": "hi, agent here"})
+        self.assertEqual(ev["kind"], "outbound")
+
+    def test_missing_phone_or_bot_id_returns_none(self):
+        self.assertIsNone(rs.classify_event("in", {"whatsapp_bot_id": "381990"}))
+        self.assertIsNone(rs.classify_event("in", {"chat_id": "9715551234"}))
+
+
 if __name__ == "__main__":
     unittest.main()
