@@ -43,6 +43,10 @@ log = logging.getLogger("rpgrq")
 
 PORT = int(os.getenv("RPGRQ_PORT", "8082"))
 
+# grq-rescue tee: every message event is copied (fire-and-forget) to the 24h
+# window rescue service on the same VM. Empty URL disables the tee entirely.
+RESCUE_EVENTS_URL = os.getenv("RESCUE_EVENTS_URL", "http://127.0.0.1:8085/events")
+
 # ── Label mapping (WhatChimp name → Notion Status value) ──
 LABEL_MAP = {
     "Confirmed": "Confirmation",
@@ -385,6 +389,21 @@ async def handle_outgoing(
         )
 
 
+async def tee_to_rescue(http_client: httpx.AsyncClient, direction: str, payload: dict) -> None:
+    """Copy one webhook event to grq-rescue. Failures are logged and swallowed —
+    the rescue service being down must never affect the leads pipeline."""
+    if not RESCUE_EVENTS_URL:
+        return
+    try:
+        await http_client.post(
+            RESCUE_EVENTS_URL,
+            json={"direction": direction, "payload": payload},
+            timeout=2.0,
+        )
+    except Exception as e:
+        log.warning(f"rescue tee failed (ignored): {e}")
+
+
 # ────────────────────────────────────────────────────────────
 # HTTP server
 # ────────────────────────────────────────────────────────────
@@ -469,8 +488,10 @@ async def handle_connection(
         writer.close()
 
         if path_only == "/rpgrq/incoming":
+            asyncio.create_task(tee_to_rescue(http_client, "in", payload))
             await handle_incoming(http_client, rr, payload)
         elif path_only == "/rpgrq/outgoing":
+            asyncio.create_task(tee_to_rescue(http_client, "out", payload))
             await handle_outgoing(http_client, payload)
         else:
             log.debug(f"Unknown path: {path_only}")

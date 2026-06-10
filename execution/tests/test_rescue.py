@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# repo root too — rpgrq_webhook_server imports itself as `from execution import ...`
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import rescue_store as store
 
@@ -209,6 +211,33 @@ class TestRunTick(unittest.TestCase):
             asyncio.run(rs.run_tick(self.conn, self.fake_trigger_fail, now=now))
         # called exactly MAX_ATTEMPTS times, then silenced
         self.assertEqual(len(self.calls), store.MAX_ATTEMPTS)
+
+
+class TestRescueTee(unittest.TestCase):
+    def test_tee_swallows_connection_errors(self):
+        # The tee must NEVER raise into the leads pipeline — even with rescue down.
+        from execution import rpgrq_webhook_server as rws
+
+        class ExplodingClient:
+            async def post(self, *a, **kw):
+                raise OSError("connection refused")
+
+        # must not raise
+        asyncio.run(rws.tee_to_rescue(ExplodingClient(), "in", {"chat_id": "x"}))
+
+    def test_tee_disabled_when_url_empty(self):
+        from execution import rpgrq_webhook_server as rws
+
+        class MustNotBeCalled:
+            async def post(self, *a, **kw):
+                raise AssertionError("tee should be disabled")
+
+        old = rws.RESCUE_EVENTS_URL
+        rws.RESCUE_EVENTS_URL = ""
+        try:
+            asyncio.run(rws.tee_to_rescue(MustNotBeCalled(), "in", {"chat_id": "x"}))
+        finally:
+            rws.RESCUE_EVENTS_URL = old
 
 
 if __name__ == "__main__":
