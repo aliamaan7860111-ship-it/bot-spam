@@ -197,3 +197,146 @@ async def scheduler_loop(conn: sqlite3.Connection) -> None:
             import traceback
             log.error(f"scheduler tick crashed: {e}\n{traceback.format_exc()}")
         await asyncio.sleep(POLL_SECONDS)
+
+
+# ────────────────────────────────────────────────────────────
+# HTTP server (same raw-asyncio pattern as rpgrq_webhook_server)
+# ────────────────────────────────────────────────────────────
+
+async def handle_connection(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    conn: sqlite3.Connection,
+):
+    try:
+        header_bytes = bytearray()
+        while True:
+            chunk = await reader.read(1024)
+            if not chunk:
+                break
+            header_bytes.extend(chunk)
+            if b"\r\n\r\n" in header_bytes:
+                break
+            if len(header_bytes) > 65536:
+                break
+
+        if b"\r\n\r\n" not in header_bytes:
+            writer.close()
+            return
+
+        head, _, rest = header_bytes.partition(b"\r\n\r\n")
+        lines = head.decode("iso-8859-1", errors="replace").split("\r\n")
+        first_line = lines[0].split()
+        if len(first_line) < 2:
+            writer.close()
+            return
+        method, path = first_line[0].upper(), first_line[1].split("?", 1)[0]
+
+        headers: dict[str, str] = {}
+        for line in lines[1:]:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
+
+        if method in ("GET", "HEAD") and path in ("/", "/health"):
+            body = b"rescue up"
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                b"Connection: close\r\n\r\n" + (b"" if method == "HEAD" else body)
+            )
+            await writer.drain()
+            writer.close()
+            return
+
+        if method != "POST" or path != "/events":
+            writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            writer.close()
+            return
+
+        length = int(headers.get("content-length", "0") or 0)
+        body = bytes(rest)
+        while len(body) < length:
+            chunk = await reader.read(min(65536, length - len(body)))
+            if not chunk:
+                break
+            body += chunk
+
+        # Ack immediately — the tee has a 2s timeout and must never be blocked.
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+        await writer.drain()
+        writer.close()
+
+        try:
+            event = json.loads(body[:length].decode("utf-8", errors="replace"))
+        except Exception as e:
+            log.warning(f"bad /events body: {e}")
+            return
+        direction = str(event.get("direction") or "")
+        payload = event.get("payload") or {}
+        if direction not in ("in", "out") or not isinstance(payload, dict):
+            log.warning(f"malformed event: direction={direction!r}")
+            return
+        log.debug(f"event {direction}: {json.dumps(payload, ensure_ascii=False)[:500]}")
+        handle_event(conn, direction, payload)
+
+    except (ConnectionResetError, asyncio.IncompleteReadError, BrokenPipeError, TimeoutError) as e:
+        log.debug(f"connection dropped: {e}")
+        try:
+            writer.close()
+        except Exception:
+            pass
+    except Exception as e:
+        import traceback
+        log.error(f"connection handler crashed: {e}\n{traceback.format_exc()}")
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+
+async def main():
+    global _http
+    log.info("=" * 60)
+    log.info("  grq-rescue — 24h Window Rescue Service")
+    log.info(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info(f"  Port: {PORT}  DB: {DB_PATH}")
+    log.info(f"  Fire window: {FIRE_AFTER_S / 3600:.2f}h – {MAX_AGE_S / 3600:.2f}h")
+    enabled = [c["brand"] for c in RESCUE_CONFIG.values() if c["enabled"]]
+    log.info(f"  Enabled brands: {enabled or 'NONE (all pending flow setup)'}")
+    log.info("=" * 60)
+
+    conn = store.connect(DB_PATH)
+    _http = httpx.AsyncClient(timeout=30.0)
+
+    async def on_conn(reader, writer):
+        await handle_connection(reader, writer, conn)
+
+    # 127.0.0.1 only: events come from the rpgrq tee on the same VM.
+    server = await asyncio.start_server(on_conn, "127.0.0.1", PORT)
+    log.info(f"🌐 listening on 127.0.0.1:{PORT}")
+
+    scheduler = asyncio.create_task(scheduler_loop(conn))
+
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except NotImplementedError:
+            pass  # Windows: signal handlers unsupported in ProactorEventLoop
+    await stop_event.wait()
+
+    log.info("shutting down")
+    scheduler.cancel()
+    server.close()
+    await server.wait_closed()
+    await _http.aclose()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
