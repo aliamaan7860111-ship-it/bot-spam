@@ -60,7 +60,7 @@ WHATCHIMP_BOT_ID_TO_BRAND = {
     "382073": "DIALO UAE",
     "382036": "AMARA",
     "352261": "ELARA",  # bot name is "Customer Care" in WhatChimp
-    # LUNE bot_id not yet captured; name alias handles it for now.
+    "382778": "LUNE",   # captured 2026-06-10 via grq-rescue inbound log
 }
 
 

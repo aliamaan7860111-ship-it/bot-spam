@@ -70,12 +70,9 @@ RESCUE_CONFIG = {
                "bot_flow_unique_id": "1900209", "enabled": False},
     "352261": {"brand": "ELARA", "phone_number_id": "1031340813395459",
                "bot_flow_unique_id": "1900207", "enabled": False},
-    # LUNE: numeric whatsapp_bot_id never captured, so it's keyed by its
-    # phone_number_id — webhook payloads sometimes carry that in the bot-id
-    # field (rpgrq's brand mapping has the same fallback). If Lune events show
-    # a different bot_id in the rescue log, re-key this entry to it.
-    "1138942462625909": {"brand": "LUNE", "phone_number_id": "1138942462625909",
-                         "bot_flow_unique_id": "1900211", "enabled": False},
+    # LUNE bot_id captured live 2026-06-10 from the rescue log (first teed event).
+    "382778": {"brand": "LUNE", "phone_number_id": "1138942462625909",
+               "bot_flow_unique_id": "1900211", "enabled": False},
 }
 
 def resolve_config(bot_id: str) -> dict | None:
@@ -176,8 +173,12 @@ async def trigger_bot_flow(phone: str, phone_number_id: str, bot_flow_unique_id:
     except Exception as e:
         log.error(f"trigger-bot request failed for {phone}: {e}")
         return False
-    # Success message is "Bot has been trigger successfully." (their typo) — key on status only.
-    if str(data.get("status")) == "1":
+    # Footgun found live 2026-06-10: trigger-bot can return status "1" WITH the
+    # error message "Something went wrong when trigger the bot flow". So status
+    # alone isn't trustworthy here — require the success message too (which is
+    # "Bot has been trigger successfully.", their typo).
+    message = str(data.get("message") or "")
+    if str(data.get("status")) == "1" and "success" in message.lower():
         return True
     log.error(f"trigger-bot rejected for {phone}: {data}")
     return False

@@ -46,11 +46,16 @@ Code: `execution/rescue_server.py`, `execution/rescue_store.py`, tee in
 | DIALO UAE | 382073 | 1002123586328400 | 1900210 | no |
 | AMARA | 382036 | 1045332455333591 | 1900209 | no |
 | ELARA | 352261 | 1031340813395459 | 1900207 | no |
-| LUNE | _(unknown — config keyed by phone_number_id; `resolve_config` falls back)_ | 1138942462625909 | 1900211 | no |
+| LUNE | 382778 | 1138942462625909 | 1900211 | no |
 
 Flow IDs provided by user 2026-06-10 after building all 5 flows in the UI.
-`/user/myInfo` confirms the bot roster but does NOT return `whatsapp_bot_id` —
-only `phone_number_id` — hence the LUNE fallback.
+LUNE's bot_id captured the same day from the rescue inbound log (`/user/myInfo`
+does NOT return `whatsapp_bot_id` — only `phone_number_id`).
+
+**trigger-bot footgun (seen live 2026-06-10):** the endpoint can return
+`status: "1"` together with the error message "Something went wrong when
+trigger the bot flow". `trigger_bot_flow()` therefore requires BOTH status "1"
+AND "success" in the message text.
 
 ## Go-live checklist (per brand — pilot first, then the rest)
 
