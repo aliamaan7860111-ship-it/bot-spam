@@ -58,21 +58,22 @@ API_BASE = "https://app.whatchimp.com/api/v1/whatsapp"
 
 # 24h window rescue routing. Key = whatsapp_bot_id (the stable per-brand ID in
 # webhook payloads — same source of truth as rpgrq_whatchimp.WHATCHIMP_BOT_ID_TO_BRAND).
-# bot_flow_unique_id comes from Bot Manager UI after the "Window Rescue" flow is
-# built for that bot (see directives/window_rescue.md). enabled stays False until
-# the flow exists AND its button payloads have been captured live.
+# bot_flow_unique_id comes from Bot Manager UI ("Chat Rescue" flow per bot; see
+# directives/window_rescue.md). All 5 brands verified and enabled 2026-06-11:
+# flows compiled (trigger keyword required!), trigger-bot tested, button taps
+# captured live. Disable a brand here if its flow is edited/broken.
 RESCUE_CONFIG = {
     "381990": {"brand": "VIREX UAE", "phone_number_id": "1073890042476443",
-               "bot_flow_unique_id": "1900212", "enabled": False},
+               "bot_flow_unique_id": "1900212", "enabled": True},
     "382073": {"brand": "DIALO UAE", "phone_number_id": "1002123586328400",
-               "bot_flow_unique_id": "1900210", "enabled": False},
+               "bot_flow_unique_id": "1900210", "enabled": True},
     "382036": {"brand": "AMARA", "phone_number_id": "1045332455333591",
-               "bot_flow_unique_id": "1900209", "enabled": False},
+               "bot_flow_unique_id": "1900209", "enabled": True},
     "352261": {"brand": "ELARA", "phone_number_id": "1031340813395459",
-               "bot_flow_unique_id": "1900207", "enabled": False},
+               "bot_flow_unique_id": "1900207", "enabled": True},
     # LUNE bot_id captured live 2026-06-10 from the rescue log (first teed event).
     "382778": {"brand": "LUNE", "phone_number_id": "1138942462625909",
-               "bot_flow_unique_id": "1900211", "enabled": False},
+               "bot_flow_unique_id": "1900211", "enabled": True},
 }
 
 def resolve_config(bot_id: str) -> dict | None:
