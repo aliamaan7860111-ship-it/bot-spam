@@ -29,9 +29,25 @@ def _headers() -> dict[str, str]:
 
 
 def _rt(text: str | None) -> dict:
+    """Build a Notion rich_text property value.
+
+    Notion limits each rich_text element's text.content to 2000 chars, but a
+    rich_text array can have up to 100 elements. We chunk long strings across
+    multiple text elements so cached JSON blobs (Raw Checkout Data, line item
+    descriptions) aren't silently truncated mid-object — which previously cut
+    off the shipping_address tail and produced draft orders with incomplete
+    addresses. extract_text() reads back by concatenating plain_text across
+    all elements, so the reconstruction is lossless.
+    """
     if not text:
         return {"rich_text": []}
-    return {"rich_text": [{"type": "text", "text": {"content": str(text)[:2000]}}]}
+    s = str(text)
+    if len(s) <= 2000:
+        return {"rich_text": [{"type": "text", "text": {"content": s}}]}
+    chunks = [s[i:i + 2000] for i in range(0, len(s), 2000)]
+    if len(chunks) > 100:
+        chunks = chunks[:100]  # Notion's max elements per rich_text property
+    return {"rich_text": [{"type": "text", "text": {"content": c}} for c in chunks]}
 
 
 def _title(text: str | None) -> dict:

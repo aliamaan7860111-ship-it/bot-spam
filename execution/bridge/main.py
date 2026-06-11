@@ -387,8 +387,11 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
     abandoned_at = payload.get("created_at") or payload.get("updated_at") or _now_iso()
 
     # Cache the pieces we'll need to rebuild a draft order if the customer
-    # eventually taps Complete Order — line items + addresses. Stored as a
-    # compact JSON blob in the row's Raw Checkout Data property.
+    # eventually taps Complete Order — line items + addresses + customer name.
+    # Stored as a JSON blob in the row's Raw Checkout Data property; _rt now
+    # chunks long content across multiple rich_text elements so the address
+    # tail no longer gets truncated.
+    cust = payload.get("customer") or {}
     raw_blob = _json.dumps({
         "line_items": [
             {
@@ -401,9 +404,16 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
         ],
         "shipping_address": payload.get("shipping_address"),
         "billing_address": payload.get("billing_address"),
+        "customer": {
+            "first_name": cust.get("first_name"),
+            "last_name": cust.get("last_name"),
+            "email": cust.get("email"),
+            "phone": cust.get("phone"),
+        } if cust else None,
         "email": email,
         "phone": phone,
-    }, default=str)[:1900]  # keep under Notion rich_text limit
+        "note": payload.get("note"),
+    }, default=str)
 
     # Phone+brand consolidation: if this customer already has an active
     # recovery cycle (New/Recovery Sent/Pending/Customer Completed Order) for
@@ -636,10 +646,44 @@ async def whatchimp_confirm_order(brand: str, request: Request):
         await nw.patch_recovery_outcome(HTTP, page_id, status="Order Placement Failed")
         return _confirm_response(reason="no line items")
 
-    shipping_address = cached.get("shipping_address")
+    # Address fallbacks: prefer the dedicated shipping_address, but if only
+    # billing was captured (or vice versa), use whichever exists for both.
+    shipping_address = cached.get("shipping_address") or cached.get("billing_address")
     billing_address = cached.get("billing_address") or shipping_address
-    customer_email = cached.get("email")
-    customer_phone = cached.get("phone") or phone
+
+    # Enrich missing name fields on the address from the cached customer
+    # object so Shopify's draft order has the proper recipient name. Same
+    # for phone — fall back to the WhatsApp phone we receive in the body.
+    cust_cache = cached.get("customer") or {}
+    customer_email = cached.get("email") or cust_cache.get("email")
+    customer_phone = cached.get("phone") or cust_cache.get("phone") or phone
+
+    def _enrich(addr: dict | None) -> dict | None:
+        if not addr or not isinstance(addr, dict):
+            return addr
+        addr = dict(addr)  # don't mutate the cache
+        if not addr.get("first_name") and cust_cache.get("first_name"):
+            addr["first_name"] = cust_cache["first_name"]
+        if not addr.get("last_name") and cust_cache.get("last_name"):
+            addr["last_name"] = cust_cache["last_name"]
+        if not addr.get("phone") and customer_phone:
+            addr["phone"] = customer_phone
+        return addr
+
+    shipping_address = _enrich(shipping_address)
+    billing_address = _enrich(billing_address)
+
+    # Log what's being passed to Shopify so missing fields are visible in
+    # journalctl if a draft order looks wrong post-placement.
+    def _addr_summary(a):
+        if not a:
+            return "None"
+        return (f"name={a.get('first_name')} {a.get('last_name')} "
+                f"addr1={a.get('address1')!r} city={a.get('city')!r} "
+                f"country={a.get('country') or a.get('country_code')!r} "
+                f"phone={a.get('phone')!r}")
+    log.info("[%s] confirm-order address shipping=[%s] billing=[%s]",
+             brand, _addr_summary(shipping_address), _addr_summary(billing_address))
 
     payload = sc.build_draft_order_payload(
         line_items=line_items,
