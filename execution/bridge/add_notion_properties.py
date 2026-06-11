@@ -54,6 +54,7 @@ def main() -> int:
         "Order Total": {"number": {"format": "number"}},
         "Discount Applied": {"checkbox": {}},
         "Raw Checkout Data": {"rich_text": {}},
+        "Order URL": {"url": {}},
         "Status": {"select": {"options": merged_status}},
     }
 

@@ -289,6 +289,8 @@ async def patch_recovery_outcome(
     order_total: float | None = None,
     discount_applied: bool | None = None,
     assigned_agent: str | None = None,
+    order_url: str | None = None,
+    recovery_sent_at: str | None = None,
 ) -> None:
     """Patch the row after the bridge has acted on a customer button-click —
     Order Number filled if we placed the order, Assigned Agent if we routed
@@ -303,6 +305,120 @@ async def patch_recovery_outcome(
         props["Discount Applied"] = {"checkbox": bool(discount_applied)}
     if assigned_agent is not None:
         props["Assigned Agent"] = _rt(assigned_agent)
+    if order_url is not None:
+        props["Order URL"] = _url(order_url) if order_url else _url(None)
+    if recovery_sent_at is not None:
+        props["Recovery Sent At"] = _date(recovery_sent_at)
+    resp = await client.patch(
+        f"{NOTION_BASE}/pages/{page_id}",
+        headers=_headers(),
+        json={"properties": props},
+    )
+    resp.raise_for_status()
+
+
+async def find_active_recovery_row(
+    client: httpx.AsyncClient, *, phone: str, brand: str,
+) -> dict | None:
+    """Find any non-final row for this phone+brand (status in New, Recovery
+    Sent/Pending, or Customer Completed Order). Used to consolidate multiple
+    abandonments of the same customer on the same brand into one row instead
+    of creating a fresh one per Shopify Checkout ID.
+    """
+    resp = await client.post(
+        f"{NOTION_BASE}/databases/{recovery_db_id()}/query",
+        headers=_headers(),
+        json={
+            "filter": {
+                "and": [
+                    {"property": "Phone", "phone_number": {"equals": phone}},
+                    {"property": "Brand", "select": {"equals": brand.capitalize()}},
+                    {"or": [
+                        {"property": "Status", "select": {"equals": "New"}},
+                        {"property": "Status", "select": {"equals": "Recovery Sent"}},
+                        {"property": "Status", "select": {"equals": "Recovery Pending"}},
+                        {"property": "Status", "select": {"equals": "Customer Completed Order"}},
+                    ]},
+                ]
+            },
+            "sorts": [{"property": "Abandoned At", "direction": "descending"}],
+            "page_size": 1,
+        },
+    )
+    resp.raise_for_status()
+    results = resp.json().get("results", [])
+    return results[0] if results else None
+
+
+async def find_recent_recovered_row(
+    client: httpx.AsyncClient, *, phone: str, brands: list[str], within_minutes: int = 60,
+) -> dict | None:
+    """Find a recently-Recovered row for this phone within the given WABA-group
+    brands. Used by confirm-order for idempotency — if a customer already had
+    an order placed for them in the last `within_minutes`, return that order's
+    cached data instead of placing another Shopify draft order.
+    """
+    from datetime import datetime, timezone, timedelta
+    resp = await client.post(
+        f"{NOTION_BASE}/databases/{recovery_db_id()}/query",
+        headers=_headers(),
+        json={
+            "filter": {
+                "and": [
+                    {"property": "Phone", "phone_number": {"equals": phone}},
+                    {"or": [
+                        {"property": "Brand", "select": {"equals": b.capitalize()}}
+                        for b in brands
+                    ]},
+                    {"property": "Status", "select": {"equals": "Recovered"}},
+                ]
+            },
+            "sorts": [{"property": "Recovery Sent At", "direction": "descending"}],
+            "page_size": 1,
+        },
+    )
+    resp.raise_for_status()
+    results = resp.json().get("results", [])
+    if not results:
+        return None
+    sent_at_str = ((results[0].get("properties", {}).get("Recovery Sent At") or {}).get("date") or {}).get("start")
+    if not sent_at_str:
+        return None
+    try:
+        sent_dt = datetime.fromisoformat(sent_at_str.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    if (datetime.now(timezone.utc) - sent_dt).total_seconds() > within_minutes * 60:
+        return None
+    return results[0]
+
+
+async def patch_active_row_update(
+    client: httpx.AsyncClient, page_id: str, *,
+    checkout_id: str | None = None,
+    checkout_url: str | None = None,
+    cart_value: float | None = None,
+    cart_items: str | None = None,
+    raw_checkout_data: str | None = None,
+) -> None:
+    """Refresh an existing active row with the latest cart data without
+    touching its Status, Abandoned At, or Phone fields. Used when a customer
+    re-abandons a cart and we want to update the existing row instead of
+    creating a duplicate.
+    """
+    props: dict[str, Any] = {}
+    if checkout_id is not None:
+        props["Shopify Checkout ID"] = _rt(checkout_id)
+    if checkout_url is not None:
+        props["Shopify Checkout URL"] = _url(checkout_url)
+    if cart_value is not None:
+        props["Cart Value"] = _number(cart_value)
+    if cart_items is not None:
+        props["Cart Items"] = _rt(cart_items)
+    if raw_checkout_data is not None:
+        props["Raw Checkout Data"] = _rt(raw_checkout_data)
+    if not props:
+        return
     resp = await client.patch(
         f"{NOTION_BASE}/pages/{page_id}",
         headers=_headers(),

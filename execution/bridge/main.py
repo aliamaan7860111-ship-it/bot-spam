@@ -368,12 +368,11 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
 
     # Dedup the noise checkout that Shopify creates internally when our bridge
     # completes a draft order — fires checkouts/create with a fresh checkout_id
-    # which would otherwise become a stray Notion row with cart-value-only and
-    # no order number. If this phone+brand was just Recovered (or is currently
-    # Customer Completed Order) within the last 10 minutes, skip silently.
+    # which would otherwise become a stray Notion row. Window extended to 60
+    # min to catch the long tail of late draft-order webhooks.
     if fresh:
         try:
-            if await nw.has_recent_completed_recovery(HTTP, phone=phone, brand=cfg.slug, within_minutes=10):
+            if await nw.has_recent_completed_recovery(HTTP, phone=phone, brand=cfg.slug, within_minutes=60):
                 log.info("[%s] checkout %s deduped (recent recovery for %s)",
                          cfg.slug, checkout_id, phone)
                 return {"status": "deduped"}
@@ -406,20 +405,45 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
         "phone": phone,
     }, default=str)[:1900]  # keep under Notion rich_text limit
 
-    page_id, was_created = await nw.upsert_checkout(
-        HTTP,
-        customer_name=customer_name,
-        phone=phone,
-        email=email,
-        brand=cfg.slug,
-        status="New",
-        cart_value=cart_value,
-        cart_items=cart_items,
-        checkout_id=checkout_id,
-        checkout_url=checkout_url,
-        abandoned_at=abandoned_at,
-        raw_checkout_data=raw_blob,
-    )
+    # Phone+brand consolidation: if this customer already has an active
+    # recovery cycle (New/Recovery Sent/Pending/Customer Completed Order) for
+    # this brand, update THAT row with the latest cart data instead of
+    # creating a parallel one keyed by a fresh checkout_id. Keeps the database
+    # clean: one active row per customer per brand at any time.
+    active_row = None
+    try:
+        active_row = await nw.find_active_recovery_row(HTTP, phone=phone, brand=cfg.slug)
+    except Exception:
+        log.exception("[%s] active-row lookup failed (non-fatal, will fall through to upsert)", cfg.slug)
+
+    if active_row:
+        page_id = active_row["id"]
+        was_created = False
+        await nw.patch_active_row_update(
+            HTTP, page_id,
+            checkout_id=checkout_id,
+            checkout_url=checkout_url,
+            cart_value=cart_value,
+            cart_items=cart_items,
+            raw_checkout_data=raw_blob,
+        )
+        log.info("[%s] consolidated checkout=%s into existing active row=%s for phone=%s",
+                 cfg.slug, checkout_id, page_id, phone)
+    else:
+        page_id, was_created = await nw.upsert_checkout(
+            HTTP,
+            customer_name=customer_name,
+            phone=phone,
+            email=email,
+            brand=cfg.slug,
+            status="New",
+            cart_value=cart_value,
+            cart_items=cart_items,
+            checkout_id=checkout_id,
+            checkout_url=checkout_url,
+            abandoned_at=abandoned_at,
+            raw_checkout_data=raw_blob,
+        )
 
     if was_created:
         # Schedule the recovery send 30 min after abandonment, floored 60s out
@@ -545,10 +569,37 @@ async def whatchimp_confirm_order(brand: str, request: Request):
         log.warning("[%s] confirm-order no phone in body keys=%s", brand, list(body.keys()))
         return _confirm_response(reason="no phone in request body")
 
+    allowed_brands = _waba_group(brand)
+
+    # IDEMPOTENCY: if this phone already had a Recovered row in the last 60
+    # minutes (across any WABA-group brand), return that order's cached data
+    # instead of placing another Shopify draft order. Prevents duplicate orders
+    # when WhatChimp retries or the button is double-tapped.
+    try:
+        already = await nw.find_recent_recovered_row(
+            HTTP, phone=phone, brands=allowed_brands, within_minutes=60,
+        )
+    except Exception:
+        log.exception("[%s] idempotency lookup failed (non-fatal, will proceed)", brand)
+        already = None
+
+    if already:
+        order_number = nw.extract_text(already, "Order Number")
+        order_total_num = (already.get("properties", {}).get("Order Total") or {}).get("number") or 0.0
+        order_url_existing = ((already.get("properties", {}).get("Order URL") or {}).get("url")) or ""
+        log.info("[%s] confirm-order idempotent: returning cached order %s for phone=%s",
+                 brand, order_number, phone)
+        return _confirm_response(
+            status="ok",
+            order_id=order_number,
+            total=f"AED {order_total_num:.2f}" if order_total_num else "",
+            discount_applied=True,
+            order_url=order_url_existing,
+        )
+
     # Look up within the URL brand's WABA group — Pelvini's bot is Virex's
     # bot, so a tap on /virex/confirm-order could legitimately be a Pelvini
     # cart. The lookup returns the most recent matching row across the group.
-    allowed_brands = _waba_group(brand)
     row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone, brands=allowed_brands)
     if not row:
         log.warning("[%s] confirm-order: no recent recovery row for %s in brands=%s",
@@ -627,6 +678,8 @@ async def whatchimp_confirm_order(brand: str, request: Request):
         order_number=order_name,
         order_total=order_total_value,
         discount_applied=True,
+        order_url=order_url,
+        recovery_sent_at=_now_iso(),
     )
 
     log.info("[%s] confirm-order OK: page=%s order=%s total=%s url=%s",
