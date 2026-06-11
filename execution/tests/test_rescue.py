@@ -121,6 +121,18 @@ class TestClassifyEvent(unittest.TestCase):
         ev = rs.classify_event("in", {**self.BASE, "message": "Connect with Agent"})
         self.assertEqual(ev["kind"], "button_tap")
 
+    def test_button_reply_prefix_is_button_tap(self):
+        # live-captured format 2026-06-11: '#Button Reply#<button title>'
+        ev = rs.classify_event("in", {**self.BASE, "message": "#Button Reply#Connect with Agent"})
+        self.assertEqual(ev["kind"], "button_tap")
+        ev = rs.classify_event("in", {**self.BASE, "message": "#Button Reply#Not Interested"})
+        self.assertEqual(ev["kind"], "button_tap")
+
+    def test_other_flows_button_taps_stay_real_inbound(self):
+        # a tap on some other flow's button (e.g. AC recovery) is a genuine interaction
+        ev = rs.classify_event("in", {**self.BASE, "message": "#Button Reply#Complete Order"})
+        self.assertEqual(ev["kind"], "real_inbound")
+
     def test_button_match_is_case_insensitive(self):
         ev = rs.classify_event("in", {**self.BASE, "message": "not interested"})
         self.assertEqual(ev["kind"], "button_tap")

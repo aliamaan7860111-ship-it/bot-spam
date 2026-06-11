@@ -125,11 +125,19 @@ def classify_event(direction: str, payload: dict) -> dict | None:
 
     if direction == "out":
         kind = "outbound"
-    elif text.lower() in BUTTON_TEXTS:
-        kind = "button_tap"
     else:
-        # No extractable text (e.g. media) still counts as a real message.
-        kind = "real_inbound"
+        # Captured live 2026-06-11: button taps arrive as '#Button Reply#<button title>'.
+        # Only OUR rescue buttons are non-arming; other flows' taps (e.g. AC recovery
+        # 'Complete Order') stay real inbounds — they're genuine customer interactions.
+        norm = text.lower().strip()
+        if norm.startswith("#button reply#"):
+            norm = norm[len("#button reply#"):].strip()
+            kind = "button_tap" if norm in BUTTON_TEXTS else "real_inbound"
+        elif norm in BUTTON_TEXTS:
+            kind = "button_tap"
+        else:
+            # No extractable text (e.g. media) still counts as a real message.
+            kind = "real_inbound"
     return {"kind": kind, "bot_id": bot_id, "phone": phone, "brand": brand, "text": text}
 
 
