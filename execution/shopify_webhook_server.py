@@ -167,6 +167,50 @@ def get_store_prefix(path: str, headers: dict) -> str:
     # Fallback default
     return "PT"
 
+# Formatting rules for each store to strip specific prefix/suffix and map to target CRM format.
+BRAND_FORMATTING = {
+    "AM": {
+        "strip_prefixes": ["AM"],
+        "strip_suffixes": ["777"],
+        "crm_prefix": "AM"
+    },
+    "O": {
+        "strip_prefixes": ["O"],
+        "strip_suffixes": [],
+        "crm_prefix": "O"
+    },
+    "VX": {
+        "strip_prefixes": ["V"],
+        "strip_suffixes": ["433"],
+        "crm_prefix": "VX"
+    },
+    "R": {
+        "strip_prefixes": ["RM"],
+        "strip_suffixes": ["6"],
+        "crm_prefix": "R"
+    },
+    "PT": {
+        "strip_prefixes": ["SHD"],
+        "strip_suffixes": ["767"],
+        "crm_prefix": "PT"
+    },
+    "PV": {
+        "strip_prefixes": ["PV23"],
+        "strip_suffixes": ["232"],
+        "crm_prefix": "PV"
+    },
+    "Di": {
+        "strip_prefixes": ["Di"],
+        "strip_suffixes": [],
+        "crm_prefix": "Di"
+    },
+    "LU": {
+        "strip_prefixes": ["LN7"],
+        "strip_suffixes": ["76"],
+        "crm_prefix": "LU"
+    }
+}
+
 def parse_shopify_order(payload: dict, prefix: str) -> dict:
     """Extract and map relevant fields from Shopify order JSON payload and apply store prefix."""
     raw_name = str(payload.get("name") or payload.get("id") or "").strip()
@@ -174,11 +218,31 @@ def parse_shopify_order(payload: dict, prefix: str) -> dict:
     # Format order ID according to CRM requirement: prefix + order_number (e.g. AM1234)
     clean_name = raw_name.lstrip('#').strip()
     
-    # Avoid prepending the prefix if it is already present in the Shopify order name
-    if clean_name.upper().startswith(prefix.upper()):
-        order_id = clean_name
+    # Apply store-specific formatting rules (strip prefixes/suffixes and apply target CRM prefix)
+    cfg = BRAND_FORMATTING.get(prefix)
+    if cfg:
+        crm_prefix = cfg["crm_prefix"]
+        
+        # 1. Strip prefix if present (case-insensitive)
+        for pfx in cfg["strip_prefixes"]:
+            if clean_name.upper().startswith(pfx.upper()):
+                clean_name = clean_name[len(pfx):].strip()
+                break
+                
+        # 2. Strip suffix if present (case-insensitive)
+        for sfx in cfg["strip_suffixes"]:
+            if clean_name.upper().endswith(sfx.upper()):
+                clean_name = clean_name[:-len(sfx)].strip()
+                break
+                
+        order_id = f"{crm_prefix}{clean_name}"
     else:
-        order_id = f"{prefix}{clean_name}"
+        # Fallback if prefix is not configured
+        if clean_name.upper().startswith(prefix.upper()):
+            order_id = clean_name
+        else:
+            order_id = f"{prefix}{clean_name}"
+
 
     
     # Customer Info
