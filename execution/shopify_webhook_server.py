@@ -173,7 +173,13 @@ def parse_shopify_order(payload: dict, prefix: str) -> dict:
     
     # Format order ID according to CRM requirement: prefix + order_number (e.g. AM1234)
     clean_name = raw_name.lstrip('#').strip()
-    order_id = f"{prefix}{clean_name}"
+    
+    # Avoid prepending the prefix if it is already present in the Shopify order name
+    if clean_name.upper().startswith(prefix.upper()):
+        order_id = clean_name
+    else:
+        order_id = f"{prefix}{clean_name}"
+
     
     # Customer Info
     customer = payload.get("customer") or {}
