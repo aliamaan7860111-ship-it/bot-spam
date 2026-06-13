@@ -1,0 +1,17 @@
+[Unit]
+Description=Shopify Notion Webhook Receiver
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_LINUX_USERNAME
+WorkingDirectory=/home/YOUR_LINUX_USERNAME/automation
+ExecStart=/usr/bin/python3 execution/shopify_webhook_server.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/YOUR_LINUX_USERNAME/automation/.tmp/shopify_webhook.log
+StandardError=append:/home/YOUR_LINUX_USERNAME/automation/.tmp/shopify_webhook.log
+Environment=SHOPIFY_WEBHOOK_PORT=8085
+
+[Install]
+WantedBy=multi-user.target
