@@ -67,6 +67,8 @@ async def find_order_by_id(client: httpx.AsyncClient, order_id: str) -> bool:
         return len(results) > 0
     except Exception as e:
         log.error(f"Error checking order ID {order_id} in Notion: {e}")
+        # Return False to avoid blocking order creation on Notion query errors,
+        # but in a critical production system we might want to fail-safe.
         return False
 
 async def find_recent_duplicate(client: httpx.AsyncClient, customer_name: str, ip_address: str) -> bool:
@@ -77,6 +79,7 @@ async def find_recent_duplicate(client: httpx.AsyncClient, customer_name: str, i
     if not customer_name or not ip_address:
         return False
         
+    # 5 minutes ago in ISO format
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
     cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
     
@@ -356,6 +359,10 @@ def build_notion_properties(data: dict) -> dict:
         }
     }
     
+    # Note: If the database CREATED property is a system created_time property,
+    # we don't write it (Notion sets it automatically). If it's a date property, we could.
+    # We will let Notion handle the created_time system CREATED property automatically.
+    
     return props
 
 # ---------------------------------------------------------------------------
@@ -376,13 +383,15 @@ async def process_shopify_webhook(http_client: httpx.AsyncClient, payload: dict,
     
     log.info(f"Processing webhook for Order ID: {order_id} (Customer: {customer_name}, IP: {ip_address})")
 
-    # 1. Bounded memory cache duplicate check
+    # 1. Bounded memory cache duplicate check (guards against immediate concurrency)
     if order_id in _recently_processed_order_ids:
         log.warning(f"Duplicate Order ID detected in memory cache: {order_id}. Skipping.")
         return 200, "Duplicate Order (memory cache)"
         
+    # Add to memory cache temporarily (keep size bounded)
     _recently_processed_order_ids.add(order_id)
     if len(_recently_processed_order_ids) > 1000:
+        # Evict some items
         _recently_processed_order_ids.clear()
         _recently_processed_order_ids.add(order_id)
 
@@ -392,15 +401,7 @@ async def process_shopify_webhook(http_client: httpx.AsyncClient, payload: dict,
         log.warning(f"Duplicate Order ID detected in Notion DB: {order_id}. Skipping.")
         return 200, "Duplicate Order (Notion ID check)"
 
-    # 3. Customer name + IP address rapid duplicate check (within last 5 minutes)
-    if customer_name and ip_address:
-        recent_duplicate = await find_recent_duplicate(http_client, customer_name, ip_address)
-        if recent_duplicate:
-            log.warning(
-                f"Rapid duplicate detected (same Name & IP within 5 mins): "
-                f"{customer_name} / {ip_address}. Skipping insertion."
-            )
-            return 200, "Duplicate Order (rapid double submission check)"
+    # 3. Customer name + IP address rapid duplicate check is removed to prevent dropping legitimate consecutive orders from the same customer/IP.
 
     # 4. Insert to Notion database
     properties = build_notion_properties(data)
