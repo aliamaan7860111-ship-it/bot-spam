@@ -108,6 +108,10 @@ FIELD_DISPATCHED_AT = "Dispatched At"
 FIELD_LAST_UPDATE = "Last Update"
 FIELD_OUT_FOR_DELIVERY_SENT = "Out For Delivery Sent"
 
+# TJR Logistics routing flags (own-driver fulfilment, separate from Filex)
+FIELD_PRIVATE_DRIVER = "Private Driver"
+FIELD_PRIVATE_LABEL_CREATED = "Private Label Created"
+
 # Main ORDER STATUS value an order reaches when shipped. MUST stay identical to
 # filex_status_mapper.ORDER_STATUS_FROM_FILEX["Shipped"] (guarded by a unit test).
 STATUS_SHIPPED = "\U0001F69A SHIPPED"  # 🚚 SHIPPED
@@ -760,7 +764,10 @@ def query_filex_processed() -> list[dict]:
     and validation result to decide what to do with each row).
     """
     payload = {
-        "filter": {"property": FIELD_ORDER_STATUS, "select": {"equals": "Processed"}},
+        "filter": {"and": [
+            {"property": FIELD_ORDER_STATUS,   "select":   {"equals": "Processed"}},
+            {"property": FIELD_PRIVATE_DRIVER, "checkbox": {"equals": False}},
+        ]},
     }
     return _run_query(payload)
 

@@ -44,6 +44,18 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Local imports
 import notion_client as notion
 import telegram_client as tg
+
+# --- TJR Logistics integration (own-driver labels, separate from Filex) ---
+# Defensive: if the TJR package isn't deployed yet, the bot still starts and the
+# TJR step is simply skipped (guarded by _TJR_AVAILABLE in cmd_print_all).
+try:
+    sys.path.insert(0, os.environ.get("TJR_PACKAGE_PATH", r"C:\Users\PMLS\Desktop\Personal\tjr-logistics"))
+    from tjr_core.run_print import process_private_driver_orders
+    from tjr_core.supabase_repo import SupabaseOrderRepository
+    _TJR_AVAILABLE = True
+except Exception as _tjr_err:
+    _TJR_AVAILABLE = False
+    logging.getLogger("order_bridge").warning("TJR integration unavailable: %s", _tjr_err)
 import whatchimp_client as wc
 import filex_status_mapper
 
@@ -1006,6 +1018,24 @@ async def cmd_print_all(update, context):
 
     user_id = update.effective_user.id if update.effective_user else "?"
     log.info("/print all triggered by %s in chat %s", user_id, chat_id)
+
+    # 0. TJR Logistics: own-driver labels first (independent of Filex, before any early return).
+    if _TJR_AVAILABLE:
+        try:
+            _tjr = process_private_driver_orders(SupabaseOrderRepository(), os.environ["TJR_TENANT_ID"])
+            if _tjr["pdf"]:
+                await _safe_send_document(
+                    bot, chat_id,
+                    document=_tjr["pdf"],
+                    filename=f"TJR_labels_{datetime.now().strftime('%Y-%m-%d')}_{len(_tjr['created'])}.pdf",
+                    caption=f"✅ TJR Logistics: {len(_tjr['created'])} private-driver label(s).",
+                )
+            if _tjr["skipped"]:
+                _lines = "\n".join(f"• {s['ref']}: {s['reason']}" for s in _tjr["skipped"])
+                await _safe_send_message(bot, chat_id, f"⚠️ TJR skipped {len(_tjr['skipped'])} order(s):\n{_lines}")
+        except Exception as e:
+            await _safe_send_message(bot, chat_id, f"⚠️ TJR label step failed: {e}")
+            log.error("TJR label step failed", exc_info=True)
 
     # 1. Query every Processed order — no checkbox gates.
     eligible = nc.query_filex_processed()
