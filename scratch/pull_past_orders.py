@@ -76,8 +76,19 @@ async def main():
         "Content-Type": "application/json",
     }
     
-    # Fetch the past 50 orders (10 for Orlento) (any status: open, closed, cancelled)
-    limit = 10 if BRAND_PREFIX == "O" else 50
+    # Fetch limit from env if defined, otherwise use default
+    limit_val = os.getenv(f"SHOPIFY_BACKFILL_LIMIT_{env_suffix}")
+    if not limit_val:
+        limit_val = os.getenv("SHOPIFY_BACKFILL_LIMIT")
+    
+    if limit_val:
+        try:
+            limit = int(limit_val.strip())
+        except ValueError:
+            limit = 10 if BRAND_PREFIX == "O" else 50
+    else:
+        limit = 10 if BRAND_PREFIX == "O" else 50
+        
     params = {
         "limit": limit,
         "status": "any"
@@ -99,6 +110,12 @@ async def main():
         for idx, order in enumerate(orders, 1):
             raw_name = order.get("name")
             order_id_raw = order.get("id")
+            
+            # Skip cancelled or voided orders
+            if order.get("cancelled_at") or order.get("financial_status") == "voided":
+                print(f"[{idx}] Shopify Order Name: {raw_name} (ID: {order_id_raw}) -> [SKIP] Cancelled or Voided.")
+                continue
+                
             print(f"[{idx}] Shopify Order Name: {raw_name} (ID: {order_id_raw})")
             
             # 1. Parse and format order data using the Orlento brand prefix rules
