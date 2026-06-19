@@ -73,9 +73,10 @@ async def main():
         "Content-Type": "application/json",
     }
     
-    # Fetch the past 50 orders (any status: open, closed, cancelled)
+    # Fetch the past 50 orders (10 for Orlento) (any status: open, closed, cancelled)
+    limit = 10 if BRAND_PREFIX == "O" else 50
     params = {
-        "limit": 50,
+        "limit": limit,
         "status": "any"
     }
     
