@@ -44,6 +44,9 @@ BRANDS = {
     
     "ORLENTO": {"prefix": "O", "env_suffix": "ORLENTO"},
     "O": {"prefix": "O", "env_suffix": "ORLENTO"},
+
+    "VIRESTA": {"prefix": "VS", "env_suffix": "VIRESTA"},
+    "VS": {"prefix": "VS", "env_suffix": "VIRESTA"},
 }
 
 # Command line selection of brand (e.g. python pull_past_orders.py AM)

@@ -146,7 +146,8 @@ DOMAIN_TO_PREFIX = {
     "rimal": "R",
     "orlento": "O",
     "dialo": "Di",
-    "lune": "LU"
+    "lune": "LU",
+    "viresta": "VS"
 }
 
 def get_store_prefix(path: str, headers: dict) -> str:
@@ -211,6 +212,11 @@ BRAND_FORMATTING = {
         "strip_prefixes": ["LN7"],
         "strip_suffixes": ["76"],
         "crm_prefix": "LU"
+    },
+    "VS": {
+        "strip_prefixes": ["7"],
+        "strip_suffixes": ["76"],
+        "crm_prefix": "VS"
     }
 }
 
@@ -533,7 +539,7 @@ async def main():
     async with server:
         await server.serve_forever()
 
-    await http_client.aclose()
+    http_client.aclose()
 
 if __name__ == "__main__":
     try:
