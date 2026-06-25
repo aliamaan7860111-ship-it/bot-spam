@@ -193,9 +193,9 @@ BRAND_FORMATTING = {
         "crm_prefix": "O"
     },
     "VX": {
-        "strip_prefixes": ["V"],
+        "strip_prefixes": ["V", "C"],
         "strip_suffixes": ["433"],
-        "crm_prefix": "VX"
+        "crm_prefix": "C"
     },
     "R": {
         "strip_prefixes": ["RM"],
