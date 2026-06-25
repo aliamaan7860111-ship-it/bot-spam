@@ -140,14 +140,23 @@ async def create_notion_order(client: httpx.AsyncClient, properties: dict) -> bo
 # Store prefix mappings based on database formats
 DOMAIN_TO_PREFIX = {
     "amara": "AM",
+    "ghu1xv-x0": "AM",       # Amara
     "virex": "VX",
+    "3wawhe-zf": "VX",       # Virex
     "pelvini": "PV",
+    "rngttp-0k": "PV",       # Pelvini
     "elara": "PT",
+    "vner5g-2p": "PT",       # Elara
     "rimal": "R",
+    "1jrhmy-ep": "R",        # Rimal
     "orlento": "O",
+    "wv0sxe-me": "O",        # Orlento
     "dialo": "Di",
+    "tr00cx-kz": "Di",       # Dialo
     "lune": "LU",
-    "viresta": "VS"
+    "xe6vwe-4q": "LU",       # Lune
+    "viresta": "VS",
+    "r0h0yn-ku": "VS"        # Viresta
 }
 
 def get_store_prefix(path: str, headers: dict) -> str:
@@ -517,6 +526,88 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
         except Exception:
             pass
 
+async def run_backfill_loop(http_client: httpx.AsyncClient):
+    """Periodically backfill orders for all stores in the background to prevent missed webhooks."""
+    log.info("⏰ Background backfill loop started (running every 2 minutes)")
+    
+    # Mapping of prefixes to their suffixes for env configuration
+    brands_info = {
+        "AM": "AMARA",
+        "PV": "PELVINI",
+        "PT": "ELARA",
+        "Di": "DIALO",
+        "LU": "LUNE",
+        "VX": "VIREX",
+        "R": "RIMAL",
+        "O": "ORLENTO",
+        "VS": "VIRESTA"
+    }
+
+    while True:
+        try:
+            await asyncio.sleep(120)  # Run every 2 minutes
+            log.info("⏰ Starting background backfill cycle for all stores...")
+            
+            for prefix, env_suffix in brands_info.items():
+                shopify_domain = os.getenv(f"SHOPIFY_DOMAIN_{env_suffix}", "").strip()
+                shopify_token = os.getenv(f"SHOPIFY_TOKEN_{env_suffix}", "").strip()
+                
+                if not shopify_domain or not shopify_token:
+                    continue
+                    
+                # Get limit for this store
+                limit_val = os.getenv(f"SHOPIFY_BACKFILL_LIMIT_{env_suffix}")
+                if not limit_val:
+                    limit_val = os.getenv("SHOPIFY_BACKFILL_LIMIT", "5")
+                try:
+                    limit = int(limit_val.strip())
+                except ValueError:
+                    limit = 5
+                    
+                shopify_url = f"https://{shopify_domain}/admin/api/2024-04/orders.json"
+                shopify_headers = {
+                    "X-Shopify-Access-Token": shopify_token,
+                    "Content-Type": "application/json",
+                }
+                params = {
+                    "limit": limit,
+                    "status": "any"
+                }
+                
+                try:
+                    resp = await http_client.get(shopify_url, headers=shopify_headers, params=params, timeout=20)
+                    resp.raise_for_status()
+                    orders = resp.json().get("orders", [])
+                except Exception as e:
+                    log.error(f"⏰ Error fetching backfill orders for {env_suffix}: {e}")
+                    continue
+                    
+                for order in orders:
+                    # Check if order is cancelled or voided
+                    if order.get("cancelled_at") or order.get("financial_status") == "voided":
+                        continue
+                        
+                    try:
+                        data = parse_shopify_order(order, prefix)
+                    except Exception as pe:
+                        log.error(f"⏰ Error parsing backfill order for {env_suffix}: {pe}")
+                        continue
+                        
+                    order_id = data["order_id"]
+                    
+                    # Check database to see if it exists
+                    id_exists = await find_order_by_id(http_client, order_id)
+                    if id_exists:
+                        continue
+                        
+                    log.info(f"⏰ Found missing order {order_id} in backfill for {env_suffix}. Pushing to Notion...")
+                    properties = build_notion_properties(data)
+                    await create_notion_order(http_client, properties)
+                    
+            log.info("⏰ Background backfill cycle complete.")
+        except Exception as loop_err:
+            log.error(f"⏰ Error in background backfill loop: {loop_err}", exc_info=True)
+
 async def main():
     log.info("=" * 60)
     log.info("  Shopify Webhook Receiver to Notion CRM")
@@ -530,6 +621,9 @@ async def main():
 
     http_client = httpx.AsyncClient(timeout=30.0)
 
+    # Start the periodic background backfill loop
+    asyncio.create_task(run_backfill_loop(http_client))
+
     async def on_conn(reader, writer):
         await handle_connection(reader, writer, http_client)
 
@@ -539,7 +633,7 @@ async def main():
     async with server:
         await server.serve_forever()
 
-    http_client.aclose()
+    await http_client.aclose()
 
 if __name__ == "__main__":
     try:
