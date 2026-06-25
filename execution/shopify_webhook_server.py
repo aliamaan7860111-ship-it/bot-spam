@@ -519,6 +519,12 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
         await writer.drain()
         writer.close()
 
+    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, asyncio.IncompleteReadError) as e:
+        log.debug(f"Connection dropped by peer: {e}")
+        try:
+            writer.close()
+        except Exception:
+            pass
     except Exception as e:
         log.error(f"Error handling connection: {e}", exc_info=True)
         try:
