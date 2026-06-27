@@ -47,6 +47,9 @@ BRANDS = {
 
     "VIRESTA": {"prefix": "VS", "env_suffix": "VIRESTA"},
     "VS": {"prefix": "VS", "env_suffix": "VIRESTA"},
+
+    "DIWAN": {"prefix": "DX", "env_suffix": "DIWAN"},
+    "DX": {"prefix": "DX", "env_suffix": "DIWAN"},
 }
 
 # Command line selection of brand (e.g. python pull_past_orders.py AM)

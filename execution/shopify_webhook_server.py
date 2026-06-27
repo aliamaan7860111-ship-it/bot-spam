@@ -156,7 +156,9 @@ DOMAIN_TO_PREFIX = {
     "lune": "LU",
     "xe6vwe-4q": "LU",       # Lune
     "viresta": "VS",
-    "r0h0yn-ku": "VS"        # Viresta
+    "r0h0yn-ku": "VS",        # Viresta
+    "diwan": "DX",
+    "wq2usc-du": "DX"         # Diwan
 }
 
 def get_store_prefix(path: str, headers: dict) -> str:
@@ -226,6 +228,11 @@ BRAND_FORMATTING = {
         "strip_prefixes": ["7"],
         "strip_suffixes": ["76"],
         "crm_prefix": "VS"
+    },
+    "DX": {
+        "strip_prefixes": ["D"],
+        "strip_suffixes": ["28"],
+        "crm_prefix": "DX"
     }
 }
 
@@ -546,7 +553,8 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
         "VX": "VIREX",
         "R": "RIMAL",
         "O": "ORLENTO",
-        "VS": "VIRESTA"
+        "VS": "VIRESTA",
+        "DX": "DIWAN"
     }
 
     while True:
