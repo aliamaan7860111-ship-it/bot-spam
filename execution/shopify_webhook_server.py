@@ -143,6 +143,7 @@ DOMAIN_TO_PREFIX = {
     "ghu1xv-x0": "AM",       # Amara
     "virex": "VX",
     "3wawhe-zf": "VX",       # Virex
+    "chronova": "VX",        # Chronova (Virex)
     "pelvini": "PV",
     "rngttp-0k": "PV",       # Pelvini
     "elara": "PT",
