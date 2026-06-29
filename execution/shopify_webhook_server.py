@@ -334,6 +334,7 @@ def parse_shopify_order(payload: dict, prefix: str) -> dict:
         "full_address": full_address,
         "item_qty": item_qty_str,
         "total": total_str,
+        "total_price": total_price,
         "ip_address": ip_address,
         "source_url": source_url,
         "created_at": created_at
@@ -343,6 +344,11 @@ def build_notion_properties(data: dict) -> dict:
     """Build Notion API properties object from parsed order data."""
     now_iso = datetime.now(timezone.utc).isoformat()
     
+    try:
+        total_val = float(data.get("total_price") or "0.00")
+    except ValueError:
+        total_val = 0.0
+
     props = {
         "ORDER ID": {
             "title": [{"text": {"content": data["order_id"]}}]
@@ -363,7 +369,7 @@ def build_notion_properties(data: dict) -> dict:
             "rich_text": [{"text": {"content": data["item_qty"]}}]
         },
         "TOTAL ": {
-            "rich_text": [{"text": {"content": data["total"]}}]
+            "number": total_val
         },
         "IP ADDRESS": {
             "rich_text": [{"text": {"content": data["ip_address"]}}]
