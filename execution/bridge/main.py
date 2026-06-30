@@ -159,17 +159,22 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
     is honoured. Then:
       1. Upserts the subscriber with their first name so #User-Name#
          substitutes correctly in the template + downstream flow messages.
-      2. Sends the recovery template with the brand's button postback IDs,
-         so the Quick Reply buttons fire the right bot flows when tapped.
+      2. Sends the recovery template with the checkout url (with discount).
     """
     assert HTTP is not None
     brand = BRANDS[brand_slug]
     try:
-        current_phone, customer_name = await nw.get_phone_and_name(HTTP, page_id)
+        current_phone, customer_name, db_checkout_url = await nw.get_phone_name_and_url(HTTP, page_id)
     except Exception:
-        current_phone, customer_name = None, None
+        current_phone, customer_name, db_checkout_url = None, None, None
     phone = normalize_phone(current_phone or phone) or phone
     first_name = (customer_name or "").strip().split(" ")[0] or None
+
+    discount_code = brand.checkout_discount_code
+    final_checkout_url = db_checkout_url or ""
+    if final_checkout_url and discount_code:
+        sep = "&" if "?" in final_checkout_url else "?"
+        final_checkout_url += f"{sep}discount={discount_code}"
 
     # 1. Make sure the subscriber exists with their first name set.
     if first_name and brand.whatchimp_phone_number_id:
@@ -184,7 +189,7 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
              brand_slug, page_id, phone, first_name)
     result = await send_recovery_template(
         HTTP, brand=brand, phone=phone,
-        quick_reply_postback_ids=brand.postback_ids,
+        checkout_url=final_checkout_url,
     )
 
     if result["status"] == "ok":
@@ -366,18 +371,7 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
         log.info("[%s] checkout %s has no phone, ignoring", cfg.slug, checkout_id)
         return {"status": "ignored", "reason": "no phone"}
 
-    # Dedup the noise checkout that Shopify creates internally when our bridge
-    # completes a draft order — fires checkouts/create with a fresh checkout_id
-    # which would otherwise become a stray Notion row. Window extended to 60
-    # min to catch the long tail of late draft-order webhooks.
-    if fresh:
-        try:
-            if await nw.has_recent_completed_recovery(HTTP, phone=phone, brand=cfg.slug, within_minutes=60):
-                log.info("[%s] checkout %s deduped (recent recovery for %s)",
-                         cfg.slug, checkout_id, phone)
-                return {"status": "deduped"}
-        except Exception:
-            log.exception("[%s] dedup check failed (non-fatal, will create row)", cfg.slug)
+
 
     customer_name = _extract_name(payload)
     email = payload.get("email") or (payload.get("customer") or {}).get("email")
@@ -557,181 +551,7 @@ def _confirm_response(
     }
 
 
-@app.api_route("/webhooks/whatchimp/{brand}/confirm-order", methods=["GET", "POST"])
-async def whatchimp_confirm_order(brand: str, request: Request):
-    """Called by a WhatChimp bot flow when the customer taps Complete Order.
 
-    Looks up their abandoned-checkout row, recreates the cart as a draft order
-    with 10% off, completes it as COD (financial status pending), and returns
-    JSON the WhatChimp HTTP API node can capture into custom fields so the
-    follow-up Text message renders with the real order number + total.
-
-    The response shape is stable across success/error so the WhatChimp UI's
-    mapping dropdown always sees `order_id` and `total` as available fields.
-    """
-    cfg = _brand_or_404(brand)
-    assert HTTP is not None
-    body = await _collect_call_data(request)
-    log.info("[%s] confirm-order incoming body keys=%s", brand, list(body.keys()))
-
-    phone = _extract_caller_phone(body)
-    if not phone:
-        log.warning("[%s] confirm-order no phone in body keys=%s", brand, list(body.keys()))
-        return _confirm_response(reason="no phone in request body")
-
-    allowed_brands = _waba_group(brand)
-
-    # IDEMPOTENCY: if this phone already had a Recovered row in the last 60
-    # minutes (across any WABA-group brand), return that order's cached data
-    # instead of placing another Shopify draft order. Prevents duplicate orders
-    # when WhatChimp retries or the button is double-tapped.
-    try:
-        already = await nw.find_recent_recovered_row(
-            HTTP, phone=phone, brands=allowed_brands, within_minutes=60,
-        )
-    except Exception:
-        log.exception("[%s] idempotency lookup failed (non-fatal, will proceed)", brand)
-        already = None
-
-    if already:
-        order_number = nw.extract_text(already, "Order Number")
-        order_total_num = (already.get("properties", {}).get("Order Total") or {}).get("number") or 0.0
-        order_url_existing = ((already.get("properties", {}).get("Order URL") or {}).get("url")) or ""
-        log.info("[%s] confirm-order idempotent: returning cached order %s for phone=%s",
-                 brand, order_number, phone)
-        return _confirm_response(
-            status="ok",
-            order_id=order_number,
-            total=f"AED {order_total_num:.2f}" if order_total_num else "",
-            discount_applied=True,
-            order_url=order_url_existing,
-        )
-
-    # Look up within the URL brand's WABA group — Pelvini's bot is Virex's
-    # bot, so a tap on /virex/confirm-order could legitimately be a Pelvini
-    # cart. The lookup returns the most recent matching row across the group.
-    row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone, brands=allowed_brands)
-    if not row:
-        log.warning("[%s] confirm-order: no recent recovery row for %s in brands=%s",
-                    brand, phone, allowed_brands)
-        return _confirm_response(reason="no matching recovery row")
-
-    row_brand = nw.extract_select(row, "Brand").lower()
-    if row_brand and row_brand in BRANDS:
-        if row_brand != brand:
-            log.info("[%s] confirm-order: URL brand=%s but row brand=%s — routing to row's brand",
-                     brand, brand, row_brand)
-        cfg = BRANDS[row_brand]
-    # else: fall back to the URL brand's cfg (already loaded above)
-
-    page_id = row["id"]
-    # Record the click immediately so a Shopify failure leaves a visible state.
-    await nw.patch_recovery_outcome(HTTP, page_id, status="Customer Completed Order")
-
-    raw_text = nw.extract_text(row, "Raw Checkout Data")
-    if not raw_text:
-        log.error("[%s] confirm-order: row %s has no Raw Checkout Data", brand, page_id)
-        await nw.patch_recovery_outcome(HTTP, page_id, status="Order Placement Failed")
-        return _confirm_response(reason="missing cached checkout data")
-
-    try:
-        cached = _json.loads(raw_text)
-    except Exception:
-        log.exception("[%s] failed to parse Raw Checkout Data on %s", brand, page_id)
-        await nw.patch_recovery_outcome(HTTP, page_id, status="Order Placement Failed")
-        return _confirm_response(reason="checkout data parse error")
-
-    line_items = cached.get("line_items") or []
-    if not line_items:
-        await nw.patch_recovery_outcome(HTTP, page_id, status="Order Placement Failed")
-        return _confirm_response(reason="no line items")
-
-    # Address fallbacks: prefer the dedicated shipping_address, but if only
-    # billing was captured (or vice versa), use whichever exists for both.
-    shipping_address = cached.get("shipping_address") or cached.get("billing_address")
-    billing_address = cached.get("billing_address") or shipping_address
-
-    # Enrich missing name fields on the address from the cached customer
-    # object so Shopify's draft order has the proper recipient name. Same
-    # for phone — fall back to the WhatsApp phone we receive in the body.
-    cust_cache = cached.get("customer") or {}
-    customer_email = cached.get("email") or cust_cache.get("email")
-    customer_phone = cached.get("phone") or cust_cache.get("phone") or phone
-
-    def _enrich(addr: dict | None) -> dict | None:
-        if not addr or not isinstance(addr, dict):
-            return addr
-        addr = dict(addr)  # don't mutate the cache
-        if not addr.get("first_name") and cust_cache.get("first_name"):
-            addr["first_name"] = cust_cache["first_name"]
-        if not addr.get("last_name") and cust_cache.get("last_name"):
-            addr["last_name"] = cust_cache["last_name"]
-        if not addr.get("phone") and customer_phone:
-            addr["phone"] = customer_phone
-        return addr
-
-    shipping_address = _enrich(shipping_address)
-    billing_address = _enrich(billing_address)
-
-    # Log what's being passed to Shopify so missing fields are visible in
-    # journalctl if a draft order looks wrong post-placement.
-    def _addr_summary(a):
-        if not a:
-            return "None"
-        return (f"name={a.get('first_name')} {a.get('last_name')} "
-                f"addr1={a.get('address1')!r} city={a.get('city')!r} "
-                f"country={a.get('country') or a.get('country_code')!r} "
-                f"phone={a.get('phone')!r}")
-    log.info("[%s] confirm-order address shipping=[%s] billing=[%s]",
-             brand, _addr_summary(shipping_address), _addr_summary(billing_address))
-
-    payload = sc.build_draft_order_payload(
-        line_items=line_items,
-        shipping_address=shipping_address,
-        billing_address=billing_address,
-        customer_email=customer_email,
-        customer_phone=customer_phone,
-        discount_percent=10.0,
-    )
-
-    try:
-        draft = await sc.create_draft_order(HTTP, cfg, payload)
-        completed = await sc.complete_draft_order(HTTP, cfg, draft["id"], payment_pending=True)
-        order_id_num = completed.get("order_id")
-        if not order_id_num:
-            raise RuntimeError("draft_order completion returned no order_id")
-        order = await sc.fetch_order(HTTP, cfg, order_id_num)
-    except Exception:
-        log.exception("[%s] confirm-order: Shopify call failed for page=%s", brand, page_id)
-        await nw.patch_recovery_outcome(HTTP, page_id, status="Order Placement Failed")
-        return _confirm_response(reason="shopify order placement failed")
-
-    order_name = order.get("name", f"#{order_id_num}")  # like '#1234'
-    try:
-        order_total_value = float(order.get("total_price") or 0.0)
-    except (TypeError, ValueError):
-        order_total_value = 0.0
-    currency = order.get("currency") or "AED"
-    order_total_display = f"{currency} {order_total_value:.2f}"
-    order_url = order.get("order_status_url") or ""
-
-    await nw.patch_recovery_outcome(
-        HTTP,
-        page_id,
-        status="Recovered",
-        order_number=order_name,
-        order_total=order_total_value,
-        discount_applied=True,
-        order_url=order_url,
-        recovery_sent_at=_now_iso(),
-    )
-
-    log.info("[%s] confirm-order OK: page=%s order=%s total=%s url=%s",
-             brand, page_id, order_name, order_total_display, order_url[:80])
-    return _confirm_response(
-        status="ok", order_id=order_name, total=order_total_display,
-        discount_applied=True, order_url=order_url,
-    )
 
 
 @app.api_route("/webhooks/whatchimp/{brand}/talk-with-agent", methods=["GET", "POST"])

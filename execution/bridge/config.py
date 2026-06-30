@@ -21,8 +21,7 @@ class BrandConfig:
     shopify_api_secret: str | None
     whatchimp_phone_number_id: str | None
     whatchimp_template_id: str | None
-    postback_complete_order: str | None
-    postback_talk_with_agent: str | None
+    checkout_discount_code: str
 
     @property
     def shopify_ready(self) -> bool:
@@ -34,13 +33,6 @@ class BrandConfig:
 
     @property
     def postback_ids(self) -> list[str] | None:
-        """Pair of postback IDs for [Complete Order, Talk with Agent] buttons,
-        passed to /whatsapp/send/template via template_quick_reply_button_values.
-        Returns None if either side is missing — bridge then sends without
-        overriding the template's default postbacks.
-        """
-        if self.postback_complete_order and self.postback_talk_with_agent:
-            return [self.postback_complete_order, self.postback_talk_with_agent]
         return None
 
 
@@ -57,8 +49,7 @@ def load_brand(slug: str) -> BrandConfig:
         shopify_api_secret=_g(u, "SHOPIFY_API_SECRET"),
         whatchimp_phone_number_id=_g(u, "WHATCHIMP_PHONE_NUMBER_ID"),
         whatchimp_template_id=_g(u, "WHATCHIMP_TEMPLATE_ID"),
-        postback_complete_order=_g(u, "WHATCHIMP_POSTBACK_COMPLETE_ORDER"),
-        postback_talk_with_agent=_g(u, "WHATCHIMP_POSTBACK_TALK_WITH_AGENT"),
+        checkout_discount_code=_g(u, "CHECKOUT_DISCOUNT_CODE") or "RECOVER10",
     )
 
 

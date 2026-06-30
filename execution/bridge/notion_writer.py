@@ -239,49 +239,7 @@ async def find_recent_recovery_sent_by_phone(
     return results[0] if results else None
 
 
-async def has_recent_completed_recovery(
-    client: httpx.AsyncClient, *, phone: str, brand: str, within_minutes: int = 10,
-) -> bool:
-    """Return True if this phone+brand has had a Recovered or Customer Completed
-    Order row touched within the last `within_minutes`. Used to dedupe the
-    duplicate checkouts/create webhook that Shopify fires for the internal
-    checkout when our bridge completes a draft order.
-    """
-    from datetime import datetime, timezone, timedelta
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=within_minutes)).isoformat()
-    resp = await client.post(
-        f"{NOTION_BASE}/databases/{recovery_db_id()}/query",
-        headers=_headers(),
-        json={
-            "filter": {
-                "and": [
-                    {"property": "Phone", "phone_number": {"equals": phone}},
-                    {"property": "Brand", "select": {"equals": brand.capitalize()}},
-                    {
-                        "or": [
-                            {"property": "Status", "select": {"equals": "Recovered"}},
-                            {"property": "Status", "select": {"equals": "Customer Completed Order"}},
-                        ]
-                    },
-                ]
-            },
-            "sorts": [{"property": "Recovery Sent At", "direction": "descending"}],
-            "page_size": 1,
-        },
-    )
-    resp.raise_for_status()
-    results = resp.json().get("results", [])
-    if not results:
-        return False
-    sent_at_str = ((results[0].get("properties", {}).get("Recovery Sent At") or {}).get("date") or {}).get("start")
-    if not sent_at_str:
-        # No timestamp but the row exists; treat as recent to be safe
-        return True
-    try:
-        sent_dt = datetime.fromisoformat(sent_at_str.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return True
-    return (datetime.now(timezone.utc) - sent_dt).total_seconds() < within_minutes * 60
+
 
 
 def extract_text(row: dict, prop: str) -> str:
@@ -366,47 +324,7 @@ async def find_active_recovery_row(
     return results[0] if results else None
 
 
-async def find_recent_recovered_row(
-    client: httpx.AsyncClient, *, phone: str, brands: list[str], within_minutes: int = 60,
-) -> dict | None:
-    """Find a recently-Recovered row for this phone within the given WABA-group
-    brands. Used by confirm-order for idempotency — if a customer already had
-    an order placed for them in the last `within_minutes`, return that order's
-    cached data instead of placing another Shopify draft order.
-    """
-    from datetime import datetime, timezone, timedelta
-    resp = await client.post(
-        f"{NOTION_BASE}/databases/{recovery_db_id()}/query",
-        headers=_headers(),
-        json={
-            "filter": {
-                "and": [
-                    {"property": "Phone", "phone_number": {"equals": phone}},
-                    {"or": [
-                        {"property": "Brand", "select": {"equals": b.capitalize()}}
-                        for b in brands
-                    ]},
-                    {"property": "Status", "select": {"equals": "Recovered"}},
-                ]
-            },
-            "sorts": [{"property": "Recovery Sent At", "direction": "descending"}],
-            "page_size": 1,
-        },
-    )
-    resp.raise_for_status()
-    results = resp.json().get("results", [])
-    if not results:
-        return None
-    sent_at_str = ((results[0].get("properties", {}).get("Recovery Sent At") or {}).get("date") or {}).get("start")
-    if not sent_at_str:
-        return None
-    try:
-        sent_dt = datetime.fromisoformat(sent_at_str.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
-    if (datetime.now(timezone.utc) - sent_dt).total_seconds() > within_minutes * 60:
-        return None
-    return results[0]
+
 
 
 async def patch_active_row_update(
@@ -452,18 +370,18 @@ async def get_phone(client: httpx.AsyncClient, page_id: str) -> str | None:
     return (props.get("Phone") or {}).get("phone_number")
 
 
-async def get_phone_and_name(
+async def get_phone_name_and_url(
     client: httpx.AsyncClient, page_id: str
-) -> tuple[str | None, str | None]:
-    """Single fetch returning (phone, customer_name) — saves one round trip
-    over calling get_phone() and querying separately for the title."""
+) -> tuple[str | None, str | None, str | None]:
+    """Single fetch returning (phone, customer_name, checkout_url)."""
     resp = await client.get(f"{NOTION_BASE}/pages/{page_id}", headers=_headers())
     resp.raise_for_status()
     props = resp.json().get("properties", {})
     phone = (props.get("Phone") or {}).get("phone_number")
     title_parts = (props.get("Customer Name") or {}).get("title", [])
     name = "".join(t.get("plain_text", "") for t in title_parts).strip()
-    return phone, (name or None)
+    checkout_url = (props.get("Shopify Checkout URL") or {}).get("url")
+    return phone, (name or None), checkout_url
 
 
 async def patch_status(client: httpx.AsyncClient, page_id: str, status: str, **extra) -> None:

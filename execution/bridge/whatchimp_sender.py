@@ -76,7 +76,7 @@ async def send_recovery_template(
     *,
     brand: BrandConfig,
     phone: str,
-    quick_reply_postback_ids: list[str] | None = None,
+    checkout_url: str,
 ) -> dict:
     """Send the brand's recovery template to a phone number.
     Returns a dict with status info.
@@ -96,9 +96,8 @@ async def send_recovery_template(
         "phone_number_id": brand.whatchimp_phone_number_id,
         "template_id": brand.whatchimp_template_id,
         "phone_number": phone,
+        "templateVariable-url-1": checkout_url,
     }
-    if quick_reply_postback_ids:
-        payload["template_quick_reply_button_values"] = _json.dumps(quick_reply_postback_ids)
 
     resp = await client.post(
         f"{WHATCHIMP_BASE}/whatsapp/send/template",
