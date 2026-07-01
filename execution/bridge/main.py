@@ -185,6 +185,16 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
         except Exception:
             log.exception("[%s] upsert_subscriber failed (non-fatal)", brand_slug)
 
+    # 1b. Assign the checkout URL as a custom field just in case WhatChimp
+    # treats #!url!# as a custom field instead of a template variable.
+    if final_checkout_url and brand.whatchimp_phone_number_id:
+        try:
+            from .whatchimp_sender import assign_custom_fields
+            c_resp = await assign_custom_fields(HTTP, phone=phone, brand=brand, fields={"url": final_checkout_url})
+            log.info("[%s] assign_custom_fields url to %s -> %s", brand_slug, phone, c_resp.get("status"))
+        except Exception:
+            log.exception("[%s] assign_custom_fields failed", brand_slug)
+
     log.info("[%s] scheduled send firing for page=%s phone=%s name=%s",
              brand_slug, page_id, phone, first_name)
     result = await send_recovery_template(
