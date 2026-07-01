@@ -70,9 +70,9 @@ git add execution/notion_client.py execution/telegram_client.py execution/order_
 git commit -m "Brief description of changes"
 git push -u origin main
 ```
-Then SSH into the GCP VM and pull + restart the service:
+Then SSH into the GCP VM and pull + restart the service using this exact command:
 ```bash
-sudo systemctl restart order-bridge
+ssh -i C:\Users\PMLS\.ssh\google_compute_engine -o StrictHostKeyChecking=no bilal@grqholdings.duckdns.org "cd /home/bilal/automation && git pull && sudo systemctl restart grq-ac"
 ```
 Do not wait for the user to ask you to push the code.
 
@@ -121,6 +121,26 @@ Errors are learning opportunities. When something breaks:
 **Key principle:** Local files are only for processing. Deliverables live in cloud services (Google Sheets, Slides, etc.) where the user can access them. Everything in `.tmp/` can be deleted and regenerated.
 
 
+## Superpowers: Specs, Plans, and Execution
+
+To scale automations and maintain code quality, always adhere to the design-spec and plan workflow:
+
+**1. Design Specs (`docs/superpowers/specs/`)**
+- Design Specs are the architectural blueprints. They define goals, data schemas (tables, columns, RLS, indexes), UX models, and API endpoints before code is written.
+- All code implementations must strictly comply with the locked design spec.
+
+**2. Implementation Plans (`docs/superpowers/plans/`)**
+- Implementation Plans are task-by-task, sequential checklists based on the Design Specs.
+- Steps in the plans must use the checkbox (`- [ ]`) syntax to track implementation progress.
+
+**3. Specialized Agent Skills (Superpowers)**
+- Use `subagent-driven-development` or `executing-plans` to step through implementation plans. 
+- Spawning implementer subagents keeps context clean and prevents session history pollution.
+- Follow the two-stage review process (Spec Compliance Review first, then Code Quality Review) after implementing each task.
+- Use `systematic-debugging` to trace, reproduce, and fix bugs rather than ad-hoc guessing.
+- Always use `verification-before-completion` to execute tests/verification scripts and confirm success prior to declaring a task complete.
+
+
 ## Summary
 
 
@@ -128,4 +148,5 @@ You sit between human intent (directives) and deterministic execution (Python sc
 
 
 Be pragmatic. Be reliable. Self-anneal.
+
 
