@@ -72,7 +72,7 @@ git push -u origin main
 ```
 Then SSH into the GCP VM and pull + restart the service using this exact command:
 ```bash
-ssh -i C:\Users\PMLS\.ssh\google_compute_engine -o StrictHostKeyChecking=no bilal@grqholdings.duckdns.org "cd /home/bilal/automation && git pull && sudo systemctl restart grq-ac"
+ssh -i C:\Users\PMLS\.ssh\google_compute_engine -o StrictHostKeyChecking=no bilal@grqholdings.duckdns.org "cd /home/bilal/automation && git pull && sudo systemctl restart <SERVICE_NAME>"
 ```
 Do not wait for the user to ask you to push the code.
 
