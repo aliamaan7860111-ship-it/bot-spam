@@ -59,8 +59,8 @@ OUTPUT_DIR = PROJECT_ROOT / ".tmp" / "cleaner_outputs"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Set in __main__ before app.run()
-HAS_FFMPEG = None
+# Evaluate globally so WSGI servers catch it
+HAS_FFMPEG = check_ffmpeg()
 
 # Job tracking: job_id -> {status, total, done, errors, output_dir, zip_path, created}
 jobs = {}
@@ -337,7 +337,6 @@ if __name__ == "__main__":
     cleanup_thread.start()
 
     log.info(f"Media Cleaner Web UI starting on port {PORT}")
-    HAS_FFMPEG = check_ffmpeg()  # noqa: F841 — reassigns module-level var
     log.info(f"FFmpeg available: {HAS_FFMPEG}")
 
     app.run(host="0.0.0.0", port=PORT, debug=False)
