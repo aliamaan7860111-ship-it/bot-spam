@@ -96,7 +96,7 @@ async def send_recovery_template(
         "phone_number_id": brand.whatchimp_phone_number_id,
         "template_id": brand.whatchimp_template_id,
         "phone_number": phone,
-        "templateVariable-url-1": checkout_url,
+        "templateVariable-url-2": checkout_url,
     }
 
     resp = await client.post(
