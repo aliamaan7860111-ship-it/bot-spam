@@ -1218,7 +1218,22 @@ async def enter_checkout_info(context, customer, page):
         # Wait for confirmation page
         for i in range(10):
             await asyncio.sleep(2)
-            if any(x in page.url for x in ["thank", "orders", "receipt"]):
+            if any(x in page.url for x in ["thank", "orders", "receipt", "checkouts"]):
+                # Try to extract the order number
+                try:
+                    order_text = await page.evaluate("document.body.innerText")
+                    import re
+                    match = re.search(r'Order\s*(#[0-9A-Za-z]+)', order_text, re.IGNORECASE)
+                    if match:
+                        log.info(f"Successfully reached Order Confirmation! Order ID: {match.group(1)} URL: {page.url}")
+                        return True
+                    else:
+                        match2 = re.search(r'(#[0-9]{4,})', order_text)
+                        if match2:
+                            log.info(f"Successfully reached Order Confirmation! Order ID: {match2.group(1)} URL: {page.url}")
+                            return True
+                except:
+                    pass
                 log.info(f"Successfully reached Order Confirmation! URL: {page.url}")
                 return True
 
