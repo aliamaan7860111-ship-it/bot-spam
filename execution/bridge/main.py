@@ -189,7 +189,7 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
     # treats #!url!# as a custom field instead of a template variable.
     if final_checkout_url and brand.whatchimp_phone_number_id:
         try:
-            from .whatchimp_sender import assign_custom_fields
+            from whatchimp_sender import assign_custom_fields
             c_resp = await assign_custom_fields(HTTP, phone=phone, brand=brand, fields={"url": final_checkout_url})
             log.info("[%s] assign_custom_fields url to %s -> %s", brand_slug, phone, c_resp.get("status"))
         except Exception:
@@ -199,6 +199,7 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
              brand_slug, page_id, phone, first_name)
     result = await send_recovery_template(
         HTTP, brand=brand, phone=phone,
+        first_name=first_name,
         checkout_url=final_checkout_url,
     )
 
