@@ -31,10 +31,6 @@ class BrandConfig:
     def whatchimp_ready(self) -> bool:
         return bool(self.whatchimp_phone_number_id and self.whatchimp_template_id)
 
-    @property
-    def postback_ids(self) -> list[str] | None:
-        return None
-
 
 def _g(brand_upper: str, key: str) -> str | None:
     return os.getenv(f"{key}_{brand_upper}")

@@ -1,8 +1,11 @@
 """
 grq-ac — Abandoned Checkout Recovery bridge.
 
-Receives Shopify webhooks for 6 brands, writes to Notion, schedules a 30-min
-delayed WhatChimp template send, suppresses on orders/create.
+Receives Shopify checkout webhooks for 6 brands, writes to Notion, and schedules
+a delayed WhatChimp recovery template (name + discounted checkout link). Suppresses
+the send if the customer completes the order first. Recovery is link-based: the
+template carries the checkout URL with a one-time discount code, so the customer
+completes on Shopify directly — the bridge never builds an order.
 
 Run with:
     uvicorn main:app --host 127.0.0.1 --port 8084
@@ -22,20 +25,16 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 
-import json as _json
-
 import notion_writer as nw
-import shopify_client as sc
 import sent_log
 from config import (
-    BRAND_SLUGS,
     BrandConfig,
     bridge_base_url,
     load_all_brands,
     recovery_delay_seconds,
 )
 from shopify_verify import verify_shopify_hmac
-from whatchimp_sender import send_recovery_template, upsert_subscriber
+from whatchimp_sender import assign_custom_fields, send_recovery_template, upsert_subscriber
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
@@ -56,23 +55,6 @@ def _brand_or_404(slug: str) -> BrandConfig:
     if not b:
         raise HTTPException(404, f"Unknown brand: {slug}")
     return b
-
-
-def _waba_group(brand_slug: str) -> list[str]:
-    """Brands sharing the same WhatChimp phone_number_id form a WABA group.
-    A button tap that arrives via /webhooks/whatchimp/<brand>/... could be for
-    any cart abandoned on any brand in that group (Pelvini's bot is Virex's
-    bot, so a Pelvini cart taps Virex's URL). Brands without a phone_number_id
-    or alone on theirs are a singleton group.
-    """
-    cfg = BRANDS.get(brand_slug)
-    if not cfg or not cfg.whatchimp_phone_number_id:
-        return [brand_slug]
-    same_waba = [
-        slug for slug, c in BRANDS.items()
-        if c.whatchimp_phone_number_id == cfg.whatchimp_phone_number_id
-    ]
-    return same_waba or [brand_slug]
 
 
 def _now_iso() -> str:
@@ -155,12 +137,12 @@ def _extract_total(payload: dict) -> float | None:
 async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
     """The actual WhatChimp send fired by the scheduler after the delay.
 
-    Re-reads the phone + customer name from Notion at fire time so any
-    correction made after the job was scheduled (via a later checkouts/update)
+    Re-reads the phone + customer name + checkout url from Notion at fire time so
+    any correction made after the job was scheduled (via a later checkouts/update)
     is honoured. Then:
-      1. Upserts the subscriber with their first name so #User-Name#
-         substitutes correctly in the template + downstream flow messages.
-      2. Sends the recovery template with the checkout url (with discount).
+      1. Upserts the subscriber with their first name so {{1}} substitutes.
+      2. Sets the `url` custom field so {{2}} renders the discounted checkout link.
+      3. Sends the recovery offer template.
     """
     assert HTTP is not None
     brand = BRANDS[brand_slug]
@@ -191,7 +173,7 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
         sep = "&" if "?" in final_checkout_url else "?"
         final_checkout_url += f"{sep}discount={discount_code}"
 
-    # 1. Make sure the subscriber exists with their first name set.
+    # 1. Make sure the subscriber exists with their first name set (fills {{1}}).
     if first_name and brand.whatchimp_phone_number_id:
         try:
             up = await upsert_subscriber(HTTP, phone, brand, first_name)
@@ -200,11 +182,9 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
         except Exception:
             log.exception("[%s] upsert_subscriber failed (non-fatal)", brand_slug)
 
-    # 1b. Assign the checkout URL as a custom field just in case WhatChimp
-    # treats #!url!# as a custom field instead of a template variable.
+    # 2. Set the `url` custom field so {{2}} = #!url!# renders the discounted link.
     if final_checkout_url and brand.whatchimp_phone_number_id:
         try:
-            from whatchimp_sender import assign_custom_fields
             c_resp = await assign_custom_fields(HTTP, phone=phone, brand=brand, fields={"url": final_checkout_url})
             log.info("[%s] assign_custom_fields url to %s -> %s", brand_slug, phone, c_resp.get("status"))
         except Exception:
@@ -256,9 +236,7 @@ async def _backfill_pending() -> None:
     """
     assert HTTP is not None
     delay = recovery_delay_seconds()
-    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=delay)).isoformat()
 
-    # Pull rows whose abandoned_at <= now (i.e. all New rows; we'll filter by age in code)
     rows = await nw.find_rows_pending_recovery(HTTP, before_iso=_now_iso())
     log.info("backfill: %d rows with Status=New", len(rows))
 
@@ -401,8 +379,6 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
         log.info("[%s] checkout %s has no phone, ignoring", cfg.slug, checkout_id)
         return {"status": "ignored", "reason": "no phone"}
 
-
-
     customer_name = _extract_name(payload)
     email = payload.get("email") or (payload.get("customer") or {}).get("email")
     cart_value = _extract_total(payload)
@@ -410,40 +386,10 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
     checkout_url = payload.get("abandoned_checkout_url")
     abandoned_at = payload.get("created_at") or payload.get("updated_at") or _now_iso()
 
-    # Cache the pieces we'll need to rebuild a draft order if the customer
-    # eventually taps Complete Order — line items + addresses + customer name.
-    # Stored as a JSON blob in the row's Raw Checkout Data property; _rt now
-    # chunks long content across multiple rich_text elements so the address
-    # tail no longer gets truncated.
-    cust = payload.get("customer") or {}
-    raw_blob = _json.dumps({
-        "line_items": [
-            {
-                "variant_id": li.get("variant_id"),
-                "quantity": li.get("quantity", 1),
-                "title": li.get("title") or li.get("name"),
-                "price": li.get("price"),
-            }
-            for li in (payload.get("line_items") or [])
-        ],
-        "shipping_address": payload.get("shipping_address"),
-        "billing_address": payload.get("billing_address"),
-        "customer": {
-            "first_name": cust.get("first_name"),
-            "last_name": cust.get("last_name"),
-            "email": cust.get("email"),
-            "phone": cust.get("phone"),
-        } if cust else None,
-        "email": email,
-        "phone": phone,
-        "note": payload.get("note"),
-    }, default=str)
-
-    # Phone+brand consolidation: if this customer already has an active
-    # recovery cycle (New/Recovery Sent/Pending/Customer Completed Order) for
-    # this brand, update THAT row with the latest cart data instead of
-    # creating a parallel one keyed by a fresh checkout_id. Keeps the database
-    # clean: one active row per customer per brand at any time.
+    # One active row per phone+brand: if this customer already has an active
+    # recovery cycle for this brand, update THAT row with the latest cart data
+    # instead of creating a parallel one keyed by a fresh checkout_id. Keeps the
+    # database clean — no duplicate rows per customer per brand.
     active_row = None
     try:
         active_row = await nw.find_active_recovery_row(HTTP, phone=phone, brand=cfg.slug)
@@ -459,7 +405,6 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
             checkout_url=checkout_url,
             cart_value=cart_value,
             cart_items=cart_items,
-            raw_checkout_data=raw_blob,
         )
         log.info("[%s] consolidated checkout=%s into existing active row=%s for phone=%s",
                  cfg.slug, checkout_id, page_id, phone)
@@ -476,11 +421,10 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
             checkout_id=checkout_id,
             checkout_url=checkout_url,
             abandoned_at=abandoned_at,
-            raw_checkout_data=raw_blob,
         )
 
     if was_created:
-        # Schedule the recovery send 30 min after abandonment, floored 60s out
+        # Schedule the recovery send `delay` after abandonment, floored 60s out
         # so pre-existing carts (first seen via `update`) fire shortly rather
         # than instantly.
         try:
@@ -522,93 +466,6 @@ async def _handle_order(cfg: BrandConfig, payload: dict) -> dict:
 
     await nw.patch_status(HTTP, page_id, "Order Placed")
     return {"status": "suppressed", "page_id": page_id}
-
-
-def _extract_caller_phone(body: dict) -> str | None:
-    """WhatChimp flows can send the subscriber's phone under various keys.
-    Check the ones we've seen + likely fallbacks.
-    """
-    for key in ("phone", "phone_number", "subscriber_phone", "wa_id", "PhoneNumber"):
-        v = body.get(key)
-        if v:
-            return normalize_phone(str(v))
-    # Fallback: try nested 'subscriber'
-    sub = body.get("subscriber") or {}
-    for key in ("phone", "phone_number", "wa_id"):
-        v = sub.get(key)
-        if v:
-            return normalize_phone(str(v))
-    return None
-
-
-async def _collect_call_data(request: Request) -> dict:
-    """Merge JSON body + URL query params into one dict the rest of the
-    endpoint can treat uniformly. Query params win on conflict.
-
-    Matches the existing order_bridge.py pattern on port 8080 — WhatChimp's
-    trigger-node 'Send data to Webhook URL' field sends params via the URL
-    query string (e.g. ?phone=#LEAD_USER_CHAT_ID#), and the HTTP API node
-    sends JSON body. We support both.
-    """
-    data: dict = {}
-    try:
-        raw = await request.body()
-        if raw:
-            parsed = _json.loads(raw)
-            if isinstance(parsed, dict):
-                data.update(parsed)
-    except Exception:
-        pass
-    for k, v in request.query_params.items():
-        data[k] = v
-    return data
-
-
-def _confirm_response(
-    *, status: str = "error", reason: str = "", order_id: str = "", total: str = "",
-    discount_applied: bool = False, order_url: str = "",
-) -> dict:
-    """All confirm-order responses share a stable shape so the WhatChimp HTTP
-    API mapping UI sees the same keys (order_id, total, discount_applied,
-    order_url) on every call — including verify and error paths."""
-    return {
-        "status": status,
-        "reason": reason,
-        "order_id": order_id,
-        "total": total,
-        "discount_applied": discount_applied,
-        "order_url": order_url,
-    }
-
-
-
-
-
-@app.api_route("/webhooks/whatchimp/{brand}/talk-with-agent", methods=["GET", "POST"])
-async def whatchimp_talk_with_agent(brand: str, request: Request):
-    """Called by the Talk with Agent bot flow. For now we just record the
-    handoff in Notion — actual agent assignment via WhatChimp's
-    assign-to-team-member API can be wired in once the agent pool / shift
-    logic is moved into the bridge.
-    """
-    cfg = _brand_or_404(brand)
-    assert HTTP is not None
-    body = await _collect_call_data(request)
-
-    phone = _extract_caller_phone(body)
-    if not phone:
-        return {"status": "error", "reason": "no phone in body"}
-
-    # Same WABA-group lookup as confirm-order — limits to brands sharing the
-    # URL brand's WhatChimp WABA so cross-bot routing stays correct.
-    allowed_brands = _waba_group(brand)
-    row = await nw.find_recent_recovery_sent_by_phone(HTTP, phone=phone, brands=allowed_brands)
-    if not row:
-        return {"status": "error", "reason": "no matching recovery row"}
-
-    await nw.patch_recovery_outcome(HTTP, row["id"], status="Talked to Agent")
-    log.info("[%s] talk-with-agent: page=%s phone=%s flagged for human handoff", brand, row["id"], phone)
-    return {"status": "ok"}
 
 
 @app.get("/")

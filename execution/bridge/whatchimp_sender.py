@@ -76,6 +76,7 @@ async def send_recovery_template(
     *,
     brand: BrandConfig,
     phone: str,
+    first_name: str | None,
     checkout_url: str,
 ) -> dict:
     """Send the brand's recovery template to a phone number.
@@ -96,10 +97,8 @@ async def send_recovery_template(
         "phone_number_id": brand.whatchimp_phone_number_id,
         "template_id": brand.whatchimp_template_id,
         "phone_number": phone,
+        "templateVariable-name-1": first_name or "there",
         "templateVariable-url-2": checkout_url,
-        "templateVariable-#!url!#-2": checkout_url,
-        "templateVariable-url-1": checkout_url,
-        "templateVariable-#!url!#-1": checkout_url,
     }
 
     resp = await client.post(
