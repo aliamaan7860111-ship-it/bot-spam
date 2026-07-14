@@ -26,6 +26,7 @@ import json as _json
 
 import notion_writer as nw
 import shopify_client as sc
+import sent_log
 from config import (
     BRAND_SLUGS,
     BrandConfig,
@@ -170,6 +171,20 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
     phone = normalize_phone(current_phone or phone) or phone
     first_name = (customer_name or "").strip().split(" ")[0] or None
 
+    # DEDUP GUARD: never message the same number twice from the same WhatsApp
+    # sender within the de-dup window. Protects against scheduler re-fires,
+    # retries, and Notion-write failures that leave a row un-marked. Durable
+    # across restarts (SQLite on disk).
+    sender_id = brand.whatchimp_phone_number_id
+    if sender_id and sent_log.already_sent_recently(phone, sender_id):
+        log.info("[%s] DEDUP skip: %s already messaged from sender %s within window",
+                 brand_slug, phone, sender_id)
+        try:
+            await nw.patch_status(HTTP, page_id, "Recovery Sent", recovery_sent_at=_now_iso())
+        except Exception:
+            log.exception("[%s] dedup-skip patch_status failed (non-fatal)", brand_slug)
+        return
+
     discount_code = brand.checkout_discount_code
     final_checkout_url = db_checkout_url or ""
     if final_checkout_url and discount_code:
@@ -204,6 +219,10 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
     )
 
     if result["status"] == "ok":
+        # Record in the durable de-dup log FIRST — before the Notion write — so
+        # even if patch_status fails, this number can never be re-sent later.
+        if sender_id:
+            sent_log.record_sent(phone, sender_id, result.get("message_id"))
         await nw.patch_status(
             HTTP, page_id, "Recovery Sent", recovery_sent_at=_now_iso()
         )

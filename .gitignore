@@ -2,3 +2,8 @@
 .tmp/
 credentials.json
 token.json
+
+# runtime send de-dup DB (created on the VM)
+execution/bridge/sent_log.db
+execution/bridge/sent_log.db-wal
+execution/bridge/sent_log.db-shm
