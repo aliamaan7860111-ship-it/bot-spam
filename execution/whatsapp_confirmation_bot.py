@@ -65,6 +65,10 @@ async def poll_whatsapp_once() -> int:
         prefix = order_id[:2]
         
         if prefix in BRAND_MAP and not o.get("whatsapp_sent"):
+            # Organic orders (e.g. "LU 231", space between initials and number)
+            # are not part of the confirmation flow — skip them.
+            if notion.is_organic_order(order_id):
+                continue
             # Freshness guard: never send a confirmation for a stale/backlogged order.
             if not notion.is_order_fresh(o.get("created"), MAX_CONFIRM_AGE_HOURS):
                 continue

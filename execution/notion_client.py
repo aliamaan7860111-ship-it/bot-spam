@@ -8,6 +8,7 @@ All field names match the user's exact Notion database schema.
 """
 
 import os
+import re
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -294,6 +295,17 @@ def is_order_fresh(created_iso, max_age_hours: int, now: datetime = None) -> boo
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
     return (now - created) <= timedelta(hours=max_age_hours)
+
+
+def is_organic_order(order_id) -> bool:
+    """True for 'organic' orders that must NOT get an auto WhatsApp confirmation.
+
+    Identified by a space between the brand initials and the number
+    (e.g. 'LU 231'), unlike normal orders ('LU1227').
+    """
+    if not order_id:
+        return False
+    return bool(re.match(r"^[A-Za-z]+ +\d", str(order_id).strip()))
 
 
 def query_new_orders(cutoff_date: str = None) -> list[dict]:
