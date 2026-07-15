@@ -9,7 +9,7 @@ All field names match the user's exact Notion database schema.
 
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import httpx
 from dotenv import load_dotenv
@@ -275,6 +275,26 @@ def parse_order(page: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Query Operations
 # ---------------------------------------------------------------------------
+
+def is_order_fresh(created_iso, max_age_hours: int, now: datetime = None) -> bool:
+    """True if an order was created within `max_age_hours`.
+
+    Guards the confirmation bot against sending stale confirmations: an order
+    that has been failing/backlogged longer than this simply ages out and is
+    never confirmed late. Unknown/unparseable created dates return False
+    (safer: never blast a stale confirmation).
+    """
+    if not created_iso:
+        return False
+    now = now or datetime.now(timezone.utc)
+    try:
+        created = datetime.fromisoformat(str(created_iso).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return (now - created) <= timedelta(hours=max_age_hours)
+
 
 def query_new_orders(cutoff_date: str = None) -> list[dict]:
     """

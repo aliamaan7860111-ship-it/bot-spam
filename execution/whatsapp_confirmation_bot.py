@@ -13,7 +13,7 @@ import sys
 import asyncio
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 # Resolve paths
@@ -27,6 +27,10 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Using specific key for WhatsApp
 ORDER_CUTOFF_DATE_STR = os.getenv("WHATSAPP_ORDER_CUTOFF_DATE", os.getenv("ORDER_CUTOFF_DATE", "2026-03-24T18:58:00+05:00"))
 ORDER_CUTOFF_DATE = datetime.fromisoformat(ORDER_CUTOFF_DATE_STR)
+
+# Never send a confirmation for an order older than this. Prevents stale blasts
+# when a backlog of previously-failed orders becomes sendable after a fix.
+MAX_CONFIRM_AGE_HOURS = int(os.getenv("WHATSAPP_MAX_CONFIRM_AGE_HOURS", "24"))
 
 # Local imports
 import notion_client as notion
@@ -47,8 +51,10 @@ async def poll_whatsapp_once() -> int:
     """
     Poll Notion for NEW orders, trigger WhatChimp template delivery.
     """
-    # Pass the specific WhatsApp cutoff string
-    orders = notion.query_new_orders(ORDER_CUTOFF_DATE_STR)
+    # Rolling window: only consider orders from the last MAX_CONFIRM_AGE_HOURS,
+    # so an old backlog is never re-blasted after a fix.
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=MAX_CONFIRM_AGE_HOURS)).isoformat()
+    orders = notion.query_new_orders(cutoff)
     if not orders:
         return 0
 
@@ -59,6 +65,9 @@ async def poll_whatsapp_once() -> int:
         prefix = order_id[:2]
         
         if prefix in BRAND_MAP and not o.get("whatsapp_sent"):
+            # Freshness guard: never send a confirmation for a stale/backlogged order.
+            if not notion.is_order_fresh(o.get("created"), MAX_CONFIRM_AGE_HOURS):
+                continue
             o["brand_name"] = get_brand_from_order_id(order_id)
             new_orders.append(o)
     
