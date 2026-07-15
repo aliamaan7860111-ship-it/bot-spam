@@ -1468,4 +1468,6 @@ Examples:
 
 
 if __name__ == "__main__":
+    import error_reporter
+    error_reporter.install("order-bridge", host="gcp-vm")
     main()

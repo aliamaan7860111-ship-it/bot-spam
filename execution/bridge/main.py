@@ -39,6 +39,13 @@ from whatchimp_sender import assign_custom_fields, send_recovery_template, upser
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
 
+# Centralized error reporting. grq-ac runs from execution/bridge/ under uvicorn,
+# so add execution/ to the path to import the shared reporter, then install at module load.
+import sys as _errlog_sys
+_errlog_sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import error_reporter
+error_reporter.install("grq-ac", host="gcp-vm")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",

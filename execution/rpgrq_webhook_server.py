@@ -558,6 +558,8 @@ async def main():
 
 
 if __name__ == "__main__":
+    import error_reporter
+    error_reporter.install("rpgrq-webhook", host="gcp-vm")
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

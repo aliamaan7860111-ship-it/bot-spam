@@ -171,4 +171,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import error_reporter
+    error_reporter.install("filex-poll", host="gcp-vm")
     main()

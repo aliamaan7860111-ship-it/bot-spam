@@ -115,6 +115,8 @@ async def main_loop():
         await asyncio.sleep(POLL_INTERVAL_SECONDS * 2)
 
 if __name__ == "__main__":
+    import error_reporter
+    error_reporter.install("whatsapp-bot", host="gcp-vm")
     try:
         asyncio.run(main_loop())
     except KeyboardInterrupt:

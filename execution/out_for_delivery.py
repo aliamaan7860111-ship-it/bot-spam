@@ -144,4 +144,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import error_reporter
+    error_reporter.install("grq-ofd", host="gcp-vm")
     main()
