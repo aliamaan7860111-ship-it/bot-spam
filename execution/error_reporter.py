@@ -100,3 +100,68 @@ class _ErrlogHandler(logging.Handler):
                 _local.active = False
         except Exception:
             pass
+
+
+def _load_env_fallback(path="/home/bilal/automation/.env"):
+    """Read ERRLOG_ENDPOINT / ERRLOG_INGEST_KEY straight from a .env file.
+
+    Lets the reporter work regardless of whether the host service loaded
+    its .env into os.environ. Never raises.
+    """
+    endpoint, key = "", ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                v = v.strip().strip('"').strip("'")
+                if k.strip() == "ERRLOG_ENDPOINT":
+                    endpoint = v
+                elif k.strip() == "ERRLOG_INGEST_KEY":
+                    key = v
+    except Exception:
+        pass
+    return endpoint, key
+
+
+def _excepthook(exc_type, exc_value, exc_tb):
+    try:
+        detail = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        location = ""
+        tb = exc_tb
+        while tb and tb.tb_next:
+            tb = tb.tb_next
+        if tb:
+            location = f"{os.path.basename(tb.tb_frame.f_code.co_filename)}:{tb.tb_lineno}"
+        _send("crash", exc_type.__name__, str(exc_value), detail, None, location)
+    except Exception:
+        pass
+    finally:
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+def install(service, host="gcp-vm", level=logging.ERROR, env_path="/home/bilal/automation/.env"):
+    """Wire up auto-capture for a service. Call once, at startup, after env load."""
+    global _SERVICE, _HOST, _ENDPOINT, _KEY
+    _SERVICE, _HOST = service, host
+    _ENDPOINT = os.environ.get("ERRLOG_ENDPOINT", "")
+    _KEY = os.environ.get("ERRLOG_INGEST_KEY", "")
+    if not _ENDPOINT or not _KEY:
+        fe, fk = _load_env_fallback(env_path)
+        _ENDPOINT = _ENDPOINT or fe
+        _KEY = _KEY or fk
+    handler = _ErrlogHandler()
+    handler.setLevel(level)
+    logging.getLogger().addHandler(handler)
+    sys.excepthook = _excepthook
+    try:  # best-effort asyncio capture
+        import asyncio
+
+        def _async_handler(loop, ctx):
+            report(ctx.get("message", "asyncio error"), exc=ctx.get("exception"), severity="crash")
+
+        asyncio.get_event_loop().set_exception_handler(_async_handler)
+    except Exception:
+        pass

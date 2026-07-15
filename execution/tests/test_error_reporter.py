@@ -79,3 +79,22 @@ def test_logging_handler_ignores_info(monkeypatch):
     finally:
         lg.removeHandler(h)
     assert sent == []
+
+
+def test_env_fallback_reads_file(tmp_path, monkeypatch):
+    envfile = tmp_path / ".env"
+    envfile.write_text('ERRLOG_ENDPOINT=http://collector/x\nERRLOG_INGEST_KEY="k123"\n', encoding="utf-8")
+    monkeypatch.delenv("ERRLOG_ENDPOINT", raising=False)
+    monkeypatch.delenv("ERRLOG_INGEST_KEY", raising=False)
+    endpoint, key = er._load_env_fallback(str(envfile))
+    assert endpoint == "http://collector/x"
+    assert key == "k123"  # quotes stripped
+
+
+def test_install_sets_service_and_excepthook(monkeypatch):
+    monkeypatch.setenv("ERRLOG_ENDPOINT", "http://x")
+    monkeypatch.setenv("ERRLOG_INGEST_KEY", "k")
+    er.install("grq-rescue", host="gcp-vm")
+    assert er._SERVICE == "grq-rescue"
+    assert er._ENDPOINT == "http://x"
+    assert sys.excepthook is er._excepthook
