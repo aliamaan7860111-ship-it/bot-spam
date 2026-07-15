@@ -80,3 +80,87 @@ def record_sent(phone: str, sender_id: str, wa_message_id: str | None = None,
     finally:
         if conn is not None:
             conn.close()
+
+
+def claim(phone: str, sender_id: str, within_hours: int | None = None) -> bool:
+    """Atomically reserve a send slot for (phone, sender_id).
+
+    Returns True if this call reserved the slot (caller MUST proceed to send),
+    False if a recent send/reservation already exists (caller MUST skip). The
+    check + insert run in one synchronous call with no await between them, so in
+    the single-threaded asyncio loop two concurrently-firing jobs can never both
+    reserve — this closes the check-then-record race that a plain
+    already_sent_recently()+record_sent() leaves open.
+
+    The reservation row is inserted with wa_message_id=NULL; call set_message_id()
+    after a successful send, or release() if the send fails (so it can retry).
+    Fails OPEN (returns True) on DB error, matching already_sent_recently.
+    """
+    if not phone or not sender_id:
+        return True
+    hrs = DEDUP_HOURS if within_hours is None else within_hours
+    now = time.time()
+    cutoff = now - hrs * 3600
+    conn = None
+    try:
+        conn = _conn()
+        exists = conn.execute(
+            "SELECT 1 FROM sent WHERE phone=? AND sender_id=? AND sent_at>=? LIMIT 1",
+            (phone, sender_id, cutoff),
+        ).fetchone()
+        if exists:
+            return False
+        conn.execute(
+            "INSERT INTO sent(phone, sender_id, wa_message_id, sent_at) VALUES (?,?,?,?)",
+            (phone, sender_id, None, now),
+        )
+        conn.commit()
+        return True
+    except Exception:
+        log.exception("sent_log.claim DB error (failing open, will send)")
+        return True
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def set_message_id(phone: str, sender_id: str, wa_message_id: str | None) -> None:
+    """Backfill the wa_message_id onto the most recent reservation after success."""
+    if not phone or not sender_id or not wa_message_id:
+        return
+    conn = None
+    try:
+        conn = _conn()
+        conn.execute(
+            "UPDATE sent SET wa_message_id=? WHERE rowid IN ("
+            "  SELECT rowid FROM sent WHERE phone=? AND sender_id=? AND wa_message_id IS NULL"
+            "  ORDER BY sent_at DESC LIMIT 1)",
+            (wa_message_id, phone, sender_id),
+        )
+        conn.commit()
+    except Exception:
+        log.exception("sent_log.set_message_id DB error")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def release(phone: str, sender_id: str) -> None:
+    """Undo the most recent reservation (send failed / stubbed) so it can retry."""
+    if not phone or not sender_id:
+        return
+    conn = None
+    try:
+        conn = _conn()
+        conn.execute(
+            "DELETE FROM sent WHERE rowid IN ("
+            "  SELECT rowid FROM sent WHERE phone=? AND sender_id=? AND wa_message_id IS NULL"
+            "  ORDER BY sent_at DESC LIMIT 1)",
+            (phone, sender_id),
+        )
+        conn.commit()
+    except Exception:
+        log.exception("sent_log.release DB error")
+    finally:
+        if conn is not None:
+            conn.close()

@@ -57,6 +57,22 @@ def _brand_or_404(slug: str) -> BrandConfig:
     return b
 
 
+# Per-(brand, phone) async lock so two concurrent checkout webhooks for the same
+# customer can't both "find no active row" and each create a duplicate row. The
+# registry grows with unique customers (tiny Lock objects) — fine at this volume,
+# and it's cleared on restart anyway.
+_row_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _row_lock(brand_slug: str, phone: str) -> asyncio.Lock:
+    key = (brand_slug, phone)
+    lk = _row_locks.get(key)
+    if lk is None:
+        lk = asyncio.Lock()
+        _row_locks[key] = lk
+    return lk
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -157,8 +173,12 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
     # sender within the de-dup window. Protects against scheduler re-fires,
     # retries, and Notion-write failures that leave a row un-marked. Durable
     # across restarts (SQLite on disk).
+    # Atomically claim the send slot BEFORE any send. claim() is a single
+    # synchronous check+insert (no await inside), so two concurrently-firing jobs
+    # can never both reserve — this closes the check-then-record race. False means
+    # another job already claimed/sent this (phone, sender) within the window.
     sender_id = brand.whatchimp_phone_number_id
-    if sender_id and sent_log.already_sent_recently(phone, sender_id):
+    if sender_id and not sent_log.claim(phone, sender_id):
         log.info("[%s] DEDUP skip: %s already messaged from sender %s within window",
                  brand_slug, phone, sender_id)
         try:
@@ -199,18 +219,24 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
     )
 
     if result["status"] == "ok":
-        # Record in the durable de-dup log FIRST — before the Notion write — so
-        # even if patch_status fails, this number can never be re-sent later.
+        # Slot already reserved by claim(); just record the message id on it.
         if sender_id:
-            sent_log.record_sent(phone, sender_id, result.get("message_id"))
+            sent_log.set_message_id(phone, sender_id, result.get("message_id"))
         await nw.patch_status(
             HTTP, page_id, "Recovery Sent", recovery_sent_at=_now_iso()
         )
         log.info("[%s] recovery sent | wa_message_id=%s", brand_slug, result.get("message_id"))
     elif result["status"] == "stubbed":
+        # Not actually sent — release the reservation so it can fire once the
+        # brand's template is configured.
+        if sender_id:
+            sent_log.release(phone, sender_id)
         await nw.patch_status(HTTP, page_id, "Recovery Pending")
         log.info("[%s] stubbed (template not configured) | page=%s", brand_slug, page_id)
     else:
+        # Send failed — release the reservation so a later attempt can retry.
+        if sender_id:
+            sent_log.release(phone, sender_id)
         log.error("[%s] send failed: %s", brand_slug, result)
 
 
@@ -390,52 +416,55 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
     # recovery cycle for this brand, update THAT row with the latest cart data
     # instead of creating a parallel one keyed by a fresh checkout_id. Keeps the
     # database clean — no duplicate rows per customer per brand.
-    active_row = None
-    try:
-        active_row = await nw.find_active_recovery_row(HTTP, phone=phone, brand=cfg.slug)
-    except Exception:
-        log.exception("[%s] active-row lookup failed (non-fatal, will fall through to upsert)", cfg.slug)
-
-    if active_row:
-        page_id = active_row["id"]
-        was_created = False
-        await nw.patch_active_row_update(
-            HTTP, page_id,
-            checkout_id=checkout_id,
-            checkout_url=checkout_url,
-            cart_value=cart_value,
-            cart_items=cart_items,
-        )
-        log.info("[%s] consolidated checkout=%s into existing active row=%s for phone=%s",
-                 cfg.slug, checkout_id, page_id, phone)
-    else:
-        page_id, was_created = await nw.upsert_checkout(
-            HTTP,
-            customer_name=customer_name,
-            phone=phone,
-            email=email,
-            brand=cfg.slug,
-            status="New",
-            cart_value=cart_value,
-            cart_items=cart_items,
-            checkout_id=checkout_id,
-            checkout_url=checkout_url,
-            abandoned_at=abandoned_at,
-        )
-
-    if was_created:
-        # Schedule the recovery send `delay` after abandonment, floored 60s out
-        # so pre-existing carts (first seen via `update`) fire shortly rather
-        # than instantly.
+    # Serialize find-or-create per (brand, phone) so two concurrent webhooks for
+    # the same customer can't both see "no active row" and each insert one.
+    async with _row_lock(cfg.slug, phone):
+        active_row = None
         try:
-            abandoned_dt = datetime.fromisoformat(abandoned_at.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            abandoned_dt = datetime.now(timezone.utc)
-        run_at = abandoned_dt + timedelta(seconds=recovery_delay_seconds())
-        floor = datetime.now(timezone.utc) + timedelta(seconds=60)
-        if run_at < floor:
-            run_at = floor
-        _schedule_send(cfg.slug, page_id, phone, run_at)
+            active_row = await nw.find_active_recovery_row(HTTP, phone=phone, brand=cfg.slug)
+        except Exception:
+            log.exception("[%s] active-row lookup failed (non-fatal, will fall through to upsert)", cfg.slug)
+
+        if active_row:
+            page_id = active_row["id"]
+            was_created = False
+            await nw.patch_active_row_update(
+                HTTP, page_id,
+                checkout_id=checkout_id,
+                checkout_url=checkout_url,
+                cart_value=cart_value,
+                cart_items=cart_items,
+            )
+            log.info("[%s] consolidated checkout=%s into existing active row=%s for phone=%s",
+                     cfg.slug, checkout_id, page_id, phone)
+        else:
+            page_id, was_created = await nw.upsert_checkout(
+                HTTP,
+                customer_name=customer_name,
+                phone=phone,
+                email=email,
+                brand=cfg.slug,
+                status="New",
+                cart_value=cart_value,
+                cart_items=cart_items,
+                checkout_id=checkout_id,
+                checkout_url=checkout_url,
+                abandoned_at=abandoned_at,
+            )
+
+        if was_created:
+            # Schedule the recovery send `delay` after abandonment, floored 60s
+            # out so pre-existing carts (first seen via `update`) fire shortly
+            # rather than instantly.
+            try:
+                abandoned_dt = datetime.fromisoformat(abandoned_at.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                abandoned_dt = datetime.now(timezone.utc)
+            run_at = abandoned_dt + timedelta(seconds=recovery_delay_seconds())
+            floor = datetime.now(timezone.utc) + timedelta(seconds=60)
+            if run_at < floor:
+                run_at = floor
+            _schedule_send(cfg.slug, page_id, phone, run_at)
 
     log.info(
         "[%s] %s checkout=%s phone=%s page=%s created=%s",
