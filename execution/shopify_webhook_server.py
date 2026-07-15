@@ -12,6 +12,10 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
+# Centralized error reporting: auto-captures crashes and any log.error(...) below.
+import error_reporter
+error_reporter.install("shopify-webhook", host="gcp-vm")
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
