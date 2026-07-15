@@ -1,0 +1,7 @@
+[Unit]
+Description=Errlog down-alert for %i
+
+[Service]
+Type=oneshot
+EnvironmentFile=/home/bilal/automation/.env
+ExecStart=/home/bilal/automation/venv/bin/python /home/bilal/automation/execution/errlog_down.py %i
