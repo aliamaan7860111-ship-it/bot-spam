@@ -139,9 +139,9 @@ def send_out_for_delivery_template(phone_number: str, order_id: str, cfg: dict) 
     display_brand   = cfg["brand_display"]
 
     cleaned_phone = clean_phone_number(phone_number)
-    if not cleaned_phone.startswith("971") or len(cleaned_phone) != 12:
+    if not is_valid_msisdn(cleaned_phone):
         log.error(
-            f"Phone '{phone_number}' failed UAE normalization "
+            f"Phone '{phone_number}' failed normalization "
             f"(got '{cleaned_phone}') — skipping OFD {order_id}"
         )
         return False
@@ -234,6 +234,15 @@ def clean_template_param(value) -> str:
     """
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
+
+def is_valid_msisdn(digits: str) -> bool:
+    """True if `digits` is a plausible E.164 subscriber number (8-15 digits).
+
+    Accepts UAE and international numbers alike, so the caller no longer
+    restricts sending to 971 only.
+    """
+    return bool(digits) and digits.isdigit() and 8 <= len(digits) <= 15
+
 def create_or_update_subscriber(
     phone_number: str,
     name: str,
@@ -319,11 +328,11 @@ def send_template_message(
     confirm_button_qr = cfg["confirm_button_qr"]
     display_brand     = brand_name or cfg["brand_display"]
 
-    # Normalize phone and guard on UAE shape — prevents sending to wrong number
+    # Normalize phone and validate as an E.164 number (UAE or international)
     cleaned_phone = clean_phone_number(phone_number)
-    if not cleaned_phone.startswith("971") or len(cleaned_phone) != 12:
+    if not is_valid_msisdn(cleaned_phone):
         log.error(
-            f"Phone '{phone_number}' failed UAE normalization "
+            f"Phone '{phone_number}' failed normalization "
             f"(got '{cleaned_phone}') — skipping {order_id}"
         )
         return False
