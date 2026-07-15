@@ -2,6 +2,7 @@ import os
 import logging
 import requests
 import json
+import re
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -218,8 +219,20 @@ def clean_phone_number(phone: str) -> str:
     # Local UAE format without the leading 0 (e.g. 521234567)
     if len(digits) == 9 and digits.startswith("5"):
         return "971" + digits
+    # 971 + local number that still carries its leading 0 (e.g. 971 0547071211)
+    if digits.startswith("9710") and len(digits) == 13:
+        return "971" + digits[4:]
     # Unknown shape — return raw digits so caller can log & skip
     return digits
+
+
+def clean_template_param(value) -> str:
+    """Sanitize a value for a WhatsApp template parameter.
+
+    WhatsApp rejects template params containing newline/tab characters or more
+    than 4 consecutive spaces. Collapse all whitespace runs to a single space.
+    """
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 def create_or_update_subscriber(
     phone_number: str,
@@ -328,9 +341,9 @@ def send_template_message(
         "phone_number":    cleaned_phone,
 
         # Template body variables (safe to pass even if a template doesn't use name-1)
-        "templateVariable-brand-2": display_brand,
-        "templateVariable-id-3":    order_id,
-        "templateVariable-name-1":  customer_name,
+        "templateVariable-brand-2": clean_template_param(display_brand),
+        "templateVariable-id-3":    clean_template_param(order_id),
+        "templateVariable-name-1":  clean_template_param(customer_name),
 
         # Button values — no spaces after comma per WhatChimp API
         "template_quick_reply_button_values": json.dumps(
