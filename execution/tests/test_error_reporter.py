@@ -1,4 +1,5 @@
 import sys
+import logging
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -43,3 +44,38 @@ def test_report_never_raises(monkeypatch):
     monkeypatch.setattr(er, "_dispatch", boom)
     monkeypatch.setattr(er, "_ENDPOINT", "http://x")
     er.report("x")  # must not raise
+
+
+def test_logging_handler_captures_error(monkeypatch):
+    sent = []
+    monkeypatch.setattr(er, "_dispatch", lambda p: sent.append(p))
+    monkeypatch.setattr(er, "_ENDPOINT", "http://x")
+    monkeypatch.setattr(er, "_SERVICE", "shopify-webhook")
+    h = er._ErrlogHandler()
+    h.setLevel(logging.ERROR)
+    lg = logging.getLogger("test.capture")
+    lg.addHandler(h)
+    lg.setLevel(logging.ERROR)
+    try:
+        lg.error("Failed to create order page in Notion")
+    finally:
+        lg.removeHandler(h)
+    assert len(sent) == 1
+    assert sent[0]["service"] == "shopify-webhook"
+    assert "Notion" in sent[0]["message"]
+
+
+def test_logging_handler_ignores_info(monkeypatch):
+    sent = []
+    monkeypatch.setattr(er, "_dispatch", lambda p: sent.append(p))
+    monkeypatch.setattr(er, "_ENDPOINT", "http://x")
+    h = er._ErrlogHandler()
+    h.setLevel(logging.ERROR)
+    lg = logging.getLogger("test.info")
+    lg.addHandler(h)
+    lg.setLevel(logging.DEBUG)
+    try:
+        lg.info("all good")
+    finally:
+        lg.removeHandler(h)
+    assert sent == []

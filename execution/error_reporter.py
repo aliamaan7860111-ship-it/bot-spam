@@ -82,3 +82,21 @@ def report(message, error_type=None, context=None, exc=None, severity="error"):
         _send(severity, error_type or "error", message, detail, context, location)
     except Exception:
         pass  # reporting must never break the caller
+
+
+class _ErrlogHandler(logging.Handler):
+    """Reports any log record at its level (ERROR+) to the collector."""
+
+    def emit(self, record):
+        try:
+            if getattr(_local, "active", False):
+                return  # don't report errors caused by our own reporting
+            _local.active = True
+            try:
+                location = f"{os.path.basename(record.pathname)}:{record.lineno}"
+                detail = "".join(traceback.format_exception(*record.exc_info)) if record.exc_info else ""
+                _send("error", record.name or "error", record.getMessage(), detail, None, location)
+            finally:
+                _local.active = False
+        except Exception:
+            pass
