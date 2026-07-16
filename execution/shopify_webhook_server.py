@@ -12,10 +12,6 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-# Centralized error reporting: auto-captures crashes and any log.error(...) below.
-import error_reporter
-error_reporter.install("shopify-webhook", host="gcp-vm")
-
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +23,12 @@ logging.basicConfig(
     ]
 )
 log = logging.getLogger("shopify_webhook")
+
+# Centralized error reporting. MUST come AFTER basicConfig — installing a root
+# handler first makes basicConfig a no-op and silences all stdout/file logging.
+import error_reporter
+import order_dedup
+error_reporter.install("shopify-webhook", host="gcp-vm")
 
 # Configurations
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "").strip()
@@ -416,33 +418,30 @@ async def process_shopify_webhook(http_client: httpx.AsyncClient, payload: dict,
     
     log.info(f"Processing webhook for Order ID: {order_id} (Customer: {customer_name}, IP: {ip_address})")
 
-    # 1. Bounded memory cache duplicate check (guards against immediate concurrency)
-    if order_id in _recently_processed_order_ids:
-        log.warning(f"Duplicate Order ID detected in memory cache: {order_id}. Skipping.")
-        return 200, "Duplicate Order (memory cache)"
-        
-    # Add to memory cache temporarily (keep size bounded)
-    _recently_processed_order_ids.add(order_id)
-    if len(_recently_processed_order_ids) > 1000:
-        # Evict some items
-        _recently_processed_order_ids.clear()
-        _recently_processed_order_ids.add(order_id)
+    # 1. Atomic claim — the durable guard. Only ONE caller (this webhook or any
+    #    backfill loop) can claim a given order_id; concurrent claims lose and skip.
+    if not order_dedup.claim(order_id):
+        log.info(f"Order {order_id} already claimed — skipping (duplicate).")
+        return 200, "Duplicate Order (already claimed)"
 
-    # 2. Database order ID duplicate check
-    id_exists = await find_order_by_id(http_client, order_id)
+    # 2. Guard against re-adding orders that predate the dedup DB (already in Notion).
+    try:
+        id_exists = await find_order_by_id(http_client, order_id)
+    except Exception:
+        order_dedup.release(order_id)  # couldn't verify — release so it can retry
+        raise
     if id_exists:
-        log.warning(f"Duplicate Order ID detected in Notion DB: {order_id}. Skipping.")
+        log.info(f"Order {order_id} already in Notion (pre-existing). Skipping insert.")
         return 200, "Duplicate Order (Notion ID check)"
 
-    # 3. Customer name + IP address rapid duplicate check is removed to prevent dropping legitimate consecutive orders from the same customer/IP.
-
-    # 4. Insert to Notion database
+    # 3. Insert to Notion database
     properties = build_notion_properties(data)
     success = await create_notion_order(http_client, properties)
-    
+
     if success:
         return 200, "Order processed and sent to Notion successfully"
     else:
+        order_dedup.release(order_id)  # failed insert -> allow a later retry
         return 500, "Internal Server Error: Failed to write to Notion"
 
 async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, http_client: httpx.AsyncClient):
@@ -552,7 +551,8 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
 
 async def run_backfill_loop(http_client: httpx.AsyncClient):
     """Periodically backfill orders for all stores in the background to prevent missed webhooks."""
-    log.info("⏰ Background backfill loop started (running every 2 minutes)")
+    interval = int(os.getenv("SHOPIFY_BACKFILL_INTERVAL_SECONDS", "600"))
+    log.info(f"⏰ Background backfill loop started (every {interval}s)")
     
     # Mapping of prefixes to their suffixes for env configuration
     brands_info = {
@@ -570,7 +570,7 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
 
     while True:
         try:
-            await asyncio.sleep(120)  # Run every 2 minutes
+            await asyncio.sleep(interval)
             log.info("⏰ Starting background backfill cycle for all stores...")
             
             for prefix, env_suffix in brands_info.items():
@@ -619,15 +619,26 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
                         continue
                         
                     order_id = data["order_id"]
-                    
-                    # Check database to see if it exists
-                    id_exists = await find_order_by_id(http_client, order_id)
+
+                    # Atomic claim first — stops two backfill cycles (or a webhook
+                    # + backfill) from both inserting the same order.
+                    if not order_dedup.claim(order_id):
+                        continue
+
+                    # Already in Notion (predates the dedup DB)? keep claim, skip.
+                    try:
+                        id_exists = await find_order_by_id(http_client, order_id)
+                    except Exception:
+                        order_dedup.release(order_id)
+                        continue
                     if id_exists:
                         continue
-                        
+
                     log.info(f"⏰ Found missing order {order_id} in backfill for {env_suffix}. Pushing to Notion...")
                     properties = build_notion_properties(data)
-                    await create_notion_order(http_client, properties)
+                    ok = await create_notion_order(http_client, properties)
+                    if not ok:
+                        order_dedup.release(order_id)
                     
             log.info("⏰ Background backfill cycle complete.")
         except Exception as loop_err:
