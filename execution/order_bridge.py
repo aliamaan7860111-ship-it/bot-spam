@@ -56,6 +56,10 @@ try:
 except Exception as _tjr_err:
     _TJR_AVAILABLE = False
     logging.getLogger("order_bridge").warning("TJR integration unavailable: %s", _tjr_err)
+
+# Private-driver orders are SKIPPED in /print all for now (no Filex, no TJR label).
+# Set TJR_PRINT_ENABLED=1 to re-enable routing them to TJR own-driver labels.
+_TJR_PRINT_ENABLED = os.getenv("TJR_PRINT_ENABLED", "0") == "1"
 import whatchimp_client as wc
 import filex_status_mapper
 
@@ -1019,8 +1023,10 @@ async def cmd_print_all(update, context):
     user_id = update.effective_user.id if update.effective_user else "?"
     log.info("/print all triggered by %s in chat %s", user_id, chat_id)
 
-    # 0. TJR Logistics: own-driver labels first (independent of Filex, before any early return).
-    if _TJR_AVAILABLE:
+    # 0. Private-driver orders. For now these are SKIPPED entirely — not sent to
+    #    Filex (query_filex_processed excludes them) and not printed via TJR.
+    #    Set TJR_PRINT_ENABLED=1 to re-enable TJR own-driver labels.
+    if _TJR_AVAILABLE and _TJR_PRINT_ENABLED:
         try:
             _tjr = process_private_driver_orders(SupabaseOrderRepository(), os.environ["TJR_TENANT_ID"])
             if _tjr["pdf"]:
@@ -1036,6 +1042,14 @@ async def cmd_print_all(update, context):
         except Exception as e:
             await _safe_send_message(bot, chat_id, f"⚠️ TJR label step failed: {e}")
             log.error("TJR label step failed", exc_info=True)
+    else:
+        # Private-driver orders are skipped for now — just tell the team how many.
+        try:
+            _pd = nc.query_private_driver_processed()
+            if _pd:
+                await _safe_send_message(bot, chat_id, f"ℹ️ Skipped {len(_pd)} private-driver order(s) — not printed.")
+        except Exception as e:
+            log.warning("private-driver skip count failed: %s", e)
 
     # 1. Query every Processed order — no checkbox gates.
     eligible = nc.query_filex_processed()

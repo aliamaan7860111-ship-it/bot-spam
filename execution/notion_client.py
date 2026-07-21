@@ -804,6 +804,18 @@ def query_filex_processed() -> list[dict]:
     return _run_query(payload)
 
 
+def query_private_driver_processed() -> list[dict]:
+    """Processed orders with the Private Driver checkbox CHECKED. These are skipped
+    by /print all (no Filex label, no TJR label) — surfaced only for a skip count."""
+    payload = {
+        "filter": {"and": [
+            {"property": FIELD_ORDER_STATUS,   "select":   {"equals": "Processed"}},
+            {"property": FIELD_PRIVATE_DRIVER, "checkbox": {"equals": True}},
+        ]},
+    }
+    return _run_query(payload)
+
+
 def query_filex_active(within_days: int = 14) -> list[dict]:
     """
     Orders dispatched within the last N days that haven't reached terminal:
