@@ -48,6 +48,10 @@ def normalize_city(address: str | None) -> str | None:
     if not address:
         return None
     text = address.lower()
+    # Normalize dashes/hyphens to spaces so "umm al-quwain" resolves like
+    # "umm al quwain" (and every other dash-written city matches uniformly).
+    text = re.sub(r"[-‐‑‒–—―]", " ", text)
+    text = re.sub(r"\s+", " ", text)
 
     # Step 1: find all alias hits with their position
     hits: list[tuple[int, str]] = []
