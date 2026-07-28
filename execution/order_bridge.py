@@ -60,6 +60,7 @@ except Exception as _tjr_err:
 # Private-driver orders are SKIPPED in /print all for now (no Filex, no TJR label).
 # Set TJR_PRINT_ENABLED=1 to re-enable routing them to TJR own-driver labels.
 _TJR_PRINT_ENABLED = os.getenv("TJR_PRINT_ENABLED", "0") == "1"
+import error_reporter  # loud, central alerting on TJR failures/skips (never silent)
 import whatchimp_client as wc
 import filex_status_mapper
 
@@ -1023,9 +1024,9 @@ async def cmd_print_all(update, context):
     user_id = update.effective_user.id if update.effective_user else "?"
     log.info("/print all triggered by %s in chat %s", user_id, chat_id)
 
-    # 0. Private-driver orders. For now these are SKIPPED entirely — not sent to
-    #    Filex (query_filex_processed excludes them) and not printed via TJR.
-    #    Set TJR_PRINT_ENABLED=1 to re-enable TJR own-driver labels.
+    # 0. Private-driver orders -> TJR own-driver labels (assigned to Subhan),
+    #    independent of the Filex flow below. Filex excludes these orders, so the
+    #    two label PDFs arrive as SEPARATE documents. Failures are never swallowed.
     if _TJR_AVAILABLE and _TJR_PRINT_ENABLED:
         try:
             _tjr = process_private_driver_orders(SupabaseOrderRepository(), os.environ["TJR_TENANT_ID"])
@@ -1034,14 +1035,23 @@ async def cmd_print_all(update, context):
                     bot, chat_id,
                     document=_tjr["pdf"],
                     filename=f"TJR_labels_{datetime.now().strftime('%Y-%m-%d')}_{len(_tjr['created'])}.pdf",
-                    caption=f"✅ TJR Logistics: {len(_tjr['created'])} private-driver label(s).",
+                    caption=f"✅ TJR Logistics: {len(_tjr['created'])} private-driver label(s), assigned to driver.",
                 )
             if _tjr["skipped"]:
                 _lines = "\n".join(f"• {s['ref']}: {s['reason']}" for s in _tjr["skipped"])
-                await _safe_send_message(bot, chat_id, f"⚠️ TJR skipped {len(_tjr['skipped'])} order(s):\n{_lines}")
+                await _safe_send_message(
+                    bot, chat_id,
+                    f"⚠️ TJR could NOT label {len(_tjr['skipped'])} private-driver order(s) — handle manually:\n{_lines}",
+                )
+                error_reporter.report(
+                    f"TJR skipped {len(_tjr['skipped'])} private-driver order(s) — no label generated",
+                    error_type="tjr_skipped",
+                    context={"refs": [s["ref"] for s in _tjr["skipped"]]},
+                )
         except Exception as e:
-            await _safe_send_message(bot, chat_id, f"⚠️ TJR label step failed: {e}")
+            await _safe_send_message(bot, chat_id, f"⚠️ TJR label step FAILED — private-driver orders not printed: {e}")
             log.error("TJR label step failed", exc_info=True)
+            error_reporter.report("TJR private-driver label step failed", error_type="tjr_print_failed", exc=e)
     else:
         # Private-driver orders are skipped for now — just tell the team how many.
         try:
