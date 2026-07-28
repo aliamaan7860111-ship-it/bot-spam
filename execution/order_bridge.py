@@ -1048,6 +1048,19 @@ async def cmd_print_all(update, context):
                     error_type="tjr_skipped",
                     context={"refs": [s["ref"] for s in _tjr["skipped"]]},
                 )
+            if _tjr.get("label_error"):
+                # Orders were created in TJR (assigned to Subhan) but the dashboard
+                # label render failed — surface loudly; pull labels from the dashboard.
+                await _safe_send_message(
+                    bot, chat_id,
+                    f"⚠️ {len(_tjr['created'])} order(s) created in TJR (assigned to Subhan) but the LABEL "
+                    f"render failed — pull them from the dashboard. Error: {_tjr['label_error']}",
+                )
+                error_reporter.report(
+                    "TJR dashboard label render failed",
+                    error_type="tjr_label_fetch_failed",
+                    context={"created": len(_tjr["created"]), "error": _tjr["label_error"]},
+                )
         except Exception as e:
             await _safe_send_message(bot, chat_id, f"⚠️ TJR label step FAILED — private-driver orders not printed: {e}")
             log.error("TJR label step failed", exc_info=True)
