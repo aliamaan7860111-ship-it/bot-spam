@@ -985,6 +985,85 @@ async def _send_long_message(bot, chat_id: int, body: str, fallback_filename: st
     )
 
 
+async def _run_private_driver_labels(bot, chat_id):
+    """Create Private-Driver orders in TJR (assigned to Subhan) and send their
+    upgraded dashboard labels. Only orders with Private Driver checked that are NOT
+    yet labeled (Private Label Created=False) are pulled — and they're marked after,
+    so the SAME orders are never pulled again. Returns the result dict, or None on a
+    hard failure. Shared by /print all (batch) and /pvt all (standalone)."""
+    try:
+        _tjr = process_private_driver_orders(SupabaseOrderRepository(), os.environ["TJR_TENANT_ID"])
+    except Exception as e:
+        await _safe_send_message(bot, chat_id, f"⚠️ TJR label step FAILED — private-driver orders not printed: {e}")
+        log.error("TJR label step failed", exc_info=True)
+        error_reporter.report("TJR private-driver label step failed", error_type="tjr_print_failed", exc=e)
+        return None
+    if _tjr["pdf"]:
+        await _safe_send_document(
+            bot, chat_id,
+            document=_tjr["pdf"],
+            filename=f"TJR_labels_{datetime.now().strftime('%Y-%m-%d')}_{len(_tjr['created'])}.pdf",
+            caption=f"✅ TJR Logistics: {len(_tjr['created'])} private-driver label(s), assigned to driver.",
+        )
+    if _tjr["skipped"]:
+        _lines = "\n".join(f"• {s['ref']}: {s['reason']}" for s in _tjr["skipped"])
+        await _safe_send_message(
+            bot, chat_id,
+            f"⚠️ TJR could NOT label {len(_tjr['skipped'])} private-driver order(s) — handle manually:\n{_lines}",
+        )
+        error_reporter.report(
+            f"TJR skipped {len(_tjr['skipped'])} private-driver order(s) — no label generated",
+            error_type="tjr_skipped",
+            context={"refs": [s["ref"] for s in _tjr["skipped"]]},
+        )
+    if _tjr.get("label_error"):
+        await _safe_send_message(
+            bot, chat_id,
+            f"⚠️ {len(_tjr['created'])} order(s) created in TJR (assigned to Subhan) but the LABEL "
+            f"render failed — pull them from the dashboard. Error: {_tjr['label_error']}",
+        )
+        error_reporter.report(
+            "TJR dashboard label render failed",
+            error_type="tjr_label_fetch_failed",
+            context={"created": len(_tjr["created"]), "error": _tjr["label_error"]},
+        )
+    return _tjr
+
+
+async def cmd_pvt(update, context):
+    """Dispatch /pvt:
+       - /pvt all → label ALL Private-Driver orders (assigned to the private driver),
+         with NO Filex step. Only un-labeled ones are pulled; never re-pulls labeled ones.
+       - /pvt     → usage hint
+    """
+    args = context.args or []
+    chat_id = update.effective_chat.id
+    if len(args) == 1 and args[0].lower() == "all":
+        await cmd_pvt_all(update, context)
+        return
+    await _safe_send_message(
+        context.bot, chat_id,
+        "Usage:\n  /pvt all — label every Private Driver order (assigned to the private driver). No Filex.",
+    )
+
+
+async def cmd_pvt_all(update, context):
+    """/pvt all — generate TJR labels for Private-Driver orders ONLY (no Filex)."""
+    chat_id = update.effective_chat.id
+    bot = context.bot
+    if FULFILLMENT_GROUP_ID and chat_id != FULFILLMENT_GROUP_ID:
+        await _safe_send_message(bot, chat_id, "/pvt is only available in the fulfillment group.")
+        return
+    if not _TJR_AVAILABLE:
+        await _safe_send_message(bot, chat_id, "⚠️ TJR integration is not available.")
+        return
+    user_id = update.effective_user.id if update.effective_user else "?"
+    log.info("/pvt all triggered by %s in chat %s", user_id, chat_id)
+    _tjr = await _run_private_driver_labels(bot, chat_id)
+    if _tjr is not None and not _tjr["pdf"] and not _tjr["skipped"] and not _tjr.get("label_error"):
+        await _safe_send_message(bot, chat_id, "No new private-driver orders to label.")
+
+
 async def cmd_print(update, context):
     """Dispatch /print:
        - /print all           → bulk placement
@@ -1024,53 +1103,17 @@ async def cmd_print_all(update, context):
     user_id = update.effective_user.id if update.effective_user else "?"
     log.info("/print all triggered by %s in chat %s", user_id, chat_id)
 
-    # 0. Private-driver orders -> TJR own-driver labels (assigned to Subhan),
-    #    independent of the Filex flow below. Filex excludes these orders, so the
-    #    two label PDFs arrive as SEPARATE documents. Failures are never swallowed.
+    # 0. Private-driver orders -> TJR own-driver labels (assigned to Subhan), a
+    #    SEPARATE PDF from the Filex flow below (Filex excludes these orders). The
+    #    same step is runnable on its own via /pvt all. Failures are never swallowed.
     if _TJR_AVAILABLE and _TJR_PRINT_ENABLED:
-        try:
-            _tjr = process_private_driver_orders(SupabaseOrderRepository(), os.environ["TJR_TENANT_ID"])
-            if _tjr["pdf"]:
-                await _safe_send_document(
-                    bot, chat_id,
-                    document=_tjr["pdf"],
-                    filename=f"TJR_labels_{datetime.now().strftime('%Y-%m-%d')}_{len(_tjr['created'])}.pdf",
-                    caption=f"✅ TJR Logistics: {len(_tjr['created'])} private-driver label(s), assigned to driver.",
-                )
-            if _tjr["skipped"]:
-                _lines = "\n".join(f"• {s['ref']}: {s['reason']}" for s in _tjr["skipped"])
-                await _safe_send_message(
-                    bot, chat_id,
-                    f"⚠️ TJR could NOT label {len(_tjr['skipped'])} private-driver order(s) — handle manually:\n{_lines}",
-                )
-                error_reporter.report(
-                    f"TJR skipped {len(_tjr['skipped'])} private-driver order(s) — no label generated",
-                    error_type="tjr_skipped",
-                    context={"refs": [s["ref"] for s in _tjr["skipped"]]},
-                )
-            if _tjr.get("label_error"):
-                # Orders were created in TJR (assigned to Subhan) but the dashboard
-                # label render failed — surface loudly; pull labels from the dashboard.
-                await _safe_send_message(
-                    bot, chat_id,
-                    f"⚠️ {len(_tjr['created'])} order(s) created in TJR (assigned to Subhan) but the LABEL "
-                    f"render failed — pull them from the dashboard. Error: {_tjr['label_error']}",
-                )
-                error_reporter.report(
-                    "TJR dashboard label render failed",
-                    error_type="tjr_label_fetch_failed",
-                    context={"created": len(_tjr["created"]), "error": _tjr["label_error"]},
-                )
-        except Exception as e:
-            await _safe_send_message(bot, chat_id, f"⚠️ TJR label step FAILED — private-driver orders not printed: {e}")
-            log.error("TJR label step failed", exc_info=True)
-            error_reporter.report("TJR private-driver label step failed", error_type="tjr_print_failed", exc=e)
+        await _run_private_driver_labels(bot, chat_id)
     else:
-        # Private-driver orders are skipped for now — just tell the team how many.
+        # TJR auto-step off here — just tell the team how many wait (use /pvt all).
         try:
             _pd = nc.query_private_driver_processed()
             if _pd:
-                await _safe_send_message(bot, chat_id, f"ℹ️ Skipped {len(_pd)} private-driver order(s) — not printed.")
+                await _safe_send_message(bot, chat_id, f"ℹ️ {len(_pd)} private-driver order(s) not printed here — use /pvt all.")
         except Exception as e:
             log.warning("private-driver skip count failed: %s", e)
 
@@ -1399,6 +1442,7 @@ async def run_bridge():
 
     # Filex /print command (fulfillment group only — guarded inside the handler)
     app.add_handler(CommandHandler("print", cmd_print))
+    app.add_handler(CommandHandler("pvt", cmd_pvt))
 
     # Initialize the application and get bot
     await app.initialize()
