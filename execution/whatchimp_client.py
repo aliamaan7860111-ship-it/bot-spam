@@ -37,12 +37,27 @@ BRAND_CONFIG = {
         "brand_display":     "Dialo UAE",
         "sender_phone":      "966572141803",
     },
+    # Orlento (O), Velix (VL), Lune (LU) share the "Customer Care" number.
     "LU": {  # Lune Collection
-        "phone_number_id":   "1138942462625909",
-        "template_id":       "355333",
-        "confirm_button_qr": "FC4cJLqFUsE8gi5",
+        "phone_number_id":   "1148388868368542",
+        "template_id":       "340859",
+        "confirm_button_qr": "6a707ec53fc7d",
         "brand_display":     "Lune Collection",
-        "sender_phone":      "971523349770",
+        "sender_phone":      "966570796417",
+    },
+    "O": {  # Orlento — 1-char order-id prefix, resolved via 1-char fallback
+        "phone_number_id":   "1148388868368542",
+        "template_id":       "340859",
+        "confirm_button_qr": "6a707ec53fc7d",
+        "brand_display":     "Orlento",
+        "sender_phone":      "966570796417",
+    },
+    "VL": {  # Velix
+        "phone_number_id":   "1148388868368542",
+        "template_id":       "340859",
+        "confirm_button_qr": "6a707ec53fc7d",
+        "brand_display":     "Velix",
+        "sender_phone":      "966570796417",
     },
     "VX": {  # Virex UAE
         "phone_number_id":   "1073890042476443",
