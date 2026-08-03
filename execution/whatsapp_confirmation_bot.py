@@ -62,8 +62,9 @@ async def poll_whatsapp_once() -> int:
     new_orders = []
     for o in orders:
         order_id = str(o.get("order_id", ""))
-        prefix = order_id[:2]
-        
+        # 2-char prefix first, then 1-char (e.g. Rimal "R" from "R1271")
+        prefix = order_id[:2] if order_id[:2] in BRAND_MAP else order_id[:1]
+
         if prefix in BRAND_MAP and not o.get("whatsapp_sent"):
             # Organic orders (e.g. "LU 231", space between initials and number)
             # are not part of the confirmation flow — skip them.

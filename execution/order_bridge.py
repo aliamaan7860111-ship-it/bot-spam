@@ -121,15 +121,15 @@ BRAND_MAP = {
     "AM": "Amara's Room",
     "VX": "Virex UAE",
     "Di": "Dialo UAE",
-    "LU": "Lune Collection"
+    "LU": "Lune Collection",
+    "R": "Rimal UAE",
 }
 
 def get_brand_from_order_id(order_id: str) -> str:
-    """Extracts the brand name from the order ID prefix."""
+    """Extracts the brand name from the order ID prefix (2-char first, then 1-char e.g. Rimal 'R')."""
     if not isinstance(order_id, str):
         return "Elara"
-    prefix = order_id[:2]
-    return BRAND_MAP.get(prefix, "Elara")
+    return BRAND_MAP.get(order_id[:2]) or BRAND_MAP.get(order_id[:1], "Elara")
 
 
 async def notion_write_with_retry(

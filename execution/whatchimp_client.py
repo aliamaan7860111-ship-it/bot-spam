@@ -58,6 +58,13 @@ BRAND_CONFIG = {
         "brand_display":     "Amara's Room",
         "sender_phone":      "966571059538",
     },
+    "R": {  # Rimal UAE (replaces Chronova) — 1-char order-id prefix, resolved via 1-char fallback
+        "phone_number_id":   "1223004617567784",
+        "template_id":       "354663",
+        "confirm_button_qr": "6a70a777afd91",
+        "brand_display":     "Rimal UAE",
+        "sender_phone":      "966571891110",
+    },
 }
 
 # Fallback for legacy call paths (Elara is the original sender number).
@@ -169,9 +176,10 @@ def send_out_for_delivery_template(phone_number: str, order_id: str, cfg: dict) 
 
 
 def get_brand_config(order_id_or_prefix: str) -> dict:
-    """Look up the brand config from an order_id or its 2-char prefix. Defaults to PT (Elara)."""
-    prefix = (order_id_or_prefix or "")[:2]
-    return BRAND_CONFIG.get(prefix, BRAND_CONFIG["PT"])
+    """Look up the brand config from an order_id or its prefix. Tries the 2-char
+    prefix first, then the 1-char prefix (for brands like Rimal 'R'). Defaults to PT (Elara)."""
+    oid = order_id_or_prefix or ""
+    return BRAND_CONFIG.get(oid[:2]) or BRAND_CONFIG.get(oid[:1]) or BRAND_CONFIG["PT"]
 
 
 def identify_brand_from_webhook(params: dict) -> str:
@@ -316,8 +324,10 @@ def send_template_message(
         log.error("Missing WHATCHIMP_API_TOKEN in .env")
         return False
 
-    # Pick brand from explicit prefix arg, else infer from order_id
-    prefix = (brand_prefix or order_id or "")[:2]
+    # Pick brand from explicit prefix arg, else infer from order_id.
+    # Try 2-char prefix first, then 1-char (e.g. Rimal "R").
+    src = brand_prefix or order_id or ""
+    prefix = src[:2] if src[:2] in BRAND_CONFIG else src[:1]
     cfg = BRAND_CONFIG.get(prefix)
     if not cfg:
         log.error(f"No BRAND_CONFIG entry for prefix '{prefix}' (order_id={order_id}) — skipping")
