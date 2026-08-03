@@ -216,6 +216,17 @@ def _get_date(props: dict, field: str) -> str:
         return ""
 
 
+def _get_created_time(props: dict, field: str) -> str:
+    """Extract value from a created_time property (Notion's built-in timestamp).
+    Needed because FIELD_CREATED can be a created_time column, which stores its
+    value under ["created_time"] rather than ["date"] — _get_date returns '' for it,
+    which silently fails the confirmation freshness guard."""
+    try:
+        return props[field].get("created_time", "") or ""
+    except (KeyError, TypeError, AttributeError):
+        return ""
+
+
 def _get_formula(props: dict, field: str):
     """Extract value from a formula property (can return number or string)."""
     try:
@@ -247,7 +258,7 @@ def parse_order(page: dict) -> dict:
     return {
         "page_id": page["id"],
         "order_id": _get_title(props, FIELD_ORDER_ID),
-        "created": _get_date(props, FIELD_CREATED) or _get_rich_text(props, FIELD_CREATED),
+        "created": _get_date(props, FIELD_CREATED) or _get_created_time(props, FIELD_CREATED) or _get_rich_text(props, FIELD_CREATED),
         "customer_name": _get_rich_text(props, FIELD_CUSTOMER_NAME),
         "item_qty": _get_rich_text(props, FIELD_ITEM_QTY),
         "full_address": _get_rich_text(props, FIELD_FULL_ADDRESS),
