@@ -52,11 +52,11 @@ BRAND_CONFIG = {
         "sender_phone":      "971521539779",
     },
     "AM": {  # Amara's Room
-        "phone_number_id":   "1045332455333591",
+        "phone_number_id":   "1309764938876096",
         "template_id":       "354661",
-        "confirm_button_qr": "t4Y_y-k2p1uOeMB",
+        "confirm_button_qr": "6a707c70bb580",
         "brand_display":     "Amara's Room",
-        "sender_phone":      "971564898669",
+        "sender_phone":      "966571059538",
     },
 }
 
@@ -82,7 +82,7 @@ OFD_CONFIG = {
     "VX": {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Virex UAE"},
     "O":  {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Orlento"},
     # Amara: template 377951 has the same {{1}}=id / {{2}}=brand body as the others.
-    "AM": {"phone_number_id": "1045332455333591", "ofd_template_id": "377951", "brand_display": "Amara's Room"},
+    "AM": {"phone_number_id": "1309764938876096", "ofd_template_id": "377951", "brand_display": "Amara's Room"},
 }
 
 # Match longest prefix first so the 1-char "O" (Orlento) never shadows a 2-char prefix.
