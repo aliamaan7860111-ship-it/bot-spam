@@ -65,7 +65,12 @@ async def poll_whatsapp_once() -> int:
         # 2-char prefix first, then 1-char (e.g. Rimal "R" from "R1271")
         prefix = order_id[:2] if order_id[:2] in BRAND_MAP else order_id[:1]
 
-        if prefix in BRAND_MAP and not o.get("whatsapp_sent"):
+        # Only confirm orders still in NEW status. Without this, an order that
+        # was processed while its "Confirmation Sent" checkbox was still False
+        # (e.g. during a confirmation outage) gets confirmed late, and
+        # mark_whatsapp_sent() clobbers ORDER STATUS back to "Confirmation Sent"
+        # — reverting a Processed/labeled order.
+        if prefix in BRAND_MAP and o.get("order_status") == "NEW" and not o.get("whatsapp_sent"):
             # Organic orders (e.g. "LU 231", space between initials and number)
             # are not part of the confirmation flow — skip them.
             if notion.is_organic_order(order_id):
