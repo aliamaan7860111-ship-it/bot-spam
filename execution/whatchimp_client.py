@@ -90,6 +90,8 @@ OFD_CONFIG = {
     "O":  {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Orlento"},
     # Amara: template 377951 has the same {{1}}=id / {{2}}=brand body as the others.
     "AM": {"phone_number_id": "1309764938876096", "ofd_template_id": "377951", "brand_display": "Amara's Room"},
+    # Rimal (replaces Chronova on Virex's WABA): reuses Virex OFD template 377956, own number.
+    "R":  {"phone_number_id": "1223004617567784", "ofd_template_id": "377956", "brand_display": "Rimal UAE"},
 }
 
 # Match longest prefix first so the 1-char "O" (Orlento) never shadows a 2-char prefix.
