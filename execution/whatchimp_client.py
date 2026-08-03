@@ -99,10 +99,11 @@ SENDER_PHONE_TO_PREFIX = {cfg["sender_phone"]:     prefix for prefix, cfg in BRA
 OFD_CONFIG = {
     "PT": {"phone_number_id": "1031340813395459", "ofd_template_id": "377952", "brand_display": "Elara UAE"},
     "Di": {"phone_number_id": "1304894276030064", "ofd_template_id": "377954", "brand_display": "Dialo UAE"},
-    "LU": {"phone_number_id": "1138942462625909", "ofd_template_id": "377955", "brand_display": "Lune Collection"},
+    "LU": {"phone_number_id": "1148388868368542", "ofd_template_id": "377952", "brand_display": "Lune Collection"},
     "PV": {"phone_number_id": "1138942462625909", "ofd_template_id": "377955", "brand_display": "Pelvini"},
     "VX": {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Virex UAE"},
-    "O":  {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Orlento"},
+    "O":  {"phone_number_id": "1148388868368542", "ofd_template_id": "377952", "brand_display": "Orlento"},
+    "VL": {"phone_number_id": "1148388868368542", "ofd_template_id": "377952", "brand_display": "Velix"},
     # Amara: template 377951 has the same {{1}}=id / {{2}}=brand body as the others.
     "AM": {"phone_number_id": "1309764938876096", "ofd_template_id": "377951", "brand_display": "Amara's Room"},
     # Rimal (replaces Chronova on Virex's WABA): reuses Virex OFD template 377956, own number.

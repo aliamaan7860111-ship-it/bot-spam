@@ -23,7 +23,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 BRIDGE_BASE_URL = os.environ.get("BRIDGE_BASE_URL", "https://grqholdings.duckdns.org")
 SHOPIFY_API_VERSION = os.environ.get("SHOPIFY_API_VERSION", "2026-04")
 
-BRANDS = ["amara", "pelvini", "elara", "lune", "virex", "dialo", "rimal"]
+BRANDS = ["amara", "pelvini", "elara", "lune", "virex", "dialo", "rimal", "orlento", "velix"]
 
 TOPIC_TO_PATH = {
     "checkouts/create": "checkout-created",
