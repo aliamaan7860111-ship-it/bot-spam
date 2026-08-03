@@ -125,6 +125,10 @@ BRAND_MAP = {
     "R": "Rimal UAE",
     "O": "Orlento",
     "VL": "Velix",
+    "E": "Elara",
+    "DX": "Diwan",
+    "PV": "Pelvini",
+    "VS": "Viresta",
 }
 
 def get_brand_from_order_id(order_id: str) -> str:

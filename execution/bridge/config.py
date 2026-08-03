@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-BRAND_SLUGS = ["amara", "pelvini", "elara", "lune", "virex", "dialo", "rimal", "orlento", "velix"]
+BRAND_SLUGS = ["amara", "pelvini", "elara", "lune", "virex", "dialo", "rimal", "orlento", "velix", "diwan", "viresta"]
 
 
 @dataclass

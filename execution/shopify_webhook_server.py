@@ -153,7 +153,8 @@ DOMAIN_TO_PREFIX = {
     "pelvini": "PV",
     "rngttp-0k": "PV",       # Pelvini
     "elara": "PT",
-    "vner5g-2p": "PT",       # Elara
+    "vner5g-2p": "PT",       # Elara (old store, retired)
+    "njya1e-uz": "E",        # Elara (new store, E-prefix)
     "rimal": "R",
     "1jrhmy-ep": "R",        # Rimal
     "orlento": "O",
@@ -247,6 +248,11 @@ BRAND_FORMATTING = {
         "strip_prefixes": ["V1"],
         "strip_suffixes": [],
         "crm_prefix": "VL"
+    },
+    "E": {  # Elara new store: "#E12347" -> strip "E" + trailing "7" -> "E1234"
+        "strip_prefixes": ["E"],
+        "strip_suffixes": ["7"],
+        "crm_prefix": "E"
     }
 }
 
@@ -565,7 +571,7 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
     brands_info = {
         "AM": "AMARA",
         "PV": "PELVINI",
-        "PT": "ELARA",
+        "E": "ELARA",
         "Di": "DIALO",
         "LU": "LUNE",
         "VX": "VIREX",

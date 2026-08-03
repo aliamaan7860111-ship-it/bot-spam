@@ -80,6 +80,36 @@ BRAND_CONFIG = {
         "brand_display":     "Rimal UAE",
         "sender_phone":      "966571891110",
     },
+    # Elara(E) / Diwan(DX) / Pelvini(PV) / Viresta(VS) share the "Customer Care 2" number.
+    # sender_phone is a placeholder (inbound routing deferred for this number).
+    "E": {  # Elara — 1-char order-id prefix (new Shopify), resolved via 1-char fallback
+        "phone_number_id":   "1238071629387272",
+        "template_id":       "355333",
+        "confirm_button_qr": "6a70c6e43a79c",
+        "brand_display":     "Elara",
+        "sender_phone":      "1238071629387272",
+    },
+    "DX": {  # Diwan
+        "phone_number_id":   "1238071629387272",
+        "template_id":       "355333",
+        "confirm_button_qr": "6a70c6e43a79c",
+        "brand_display":     "Diwan",
+        "sender_phone":      "1238071629387272",
+    },
+    "PV": {  # Pelvini
+        "phone_number_id":   "1238071629387272",
+        "template_id":       "355333",
+        "confirm_button_qr": "6a70c6e43a79c",
+        "brand_display":     "Pelvini",
+        "sender_phone":      "1238071629387272",
+    },
+    "VS": {  # Viresta
+        "phone_number_id":   "1238071629387272",
+        "template_id":       "355333",
+        "confirm_button_qr": "6a70c6e43a79c",
+        "brand_display":     "Viresta",
+        "sender_phone":      "1238071629387272",
+    },
 }
 
 # Fallback for legacy call paths (Elara is the original sender number).
@@ -100,7 +130,7 @@ OFD_CONFIG = {
     "PT": {"phone_number_id": "1031340813395459", "ofd_template_id": "377952", "brand_display": "Elara UAE"},
     "Di": {"phone_number_id": "1304894276030064", "ofd_template_id": "377954", "brand_display": "Dialo UAE"},
     "LU": {"phone_number_id": "1148388868368542", "ofd_template_id": "377952", "brand_display": "Lune Collection"},
-    "PV": {"phone_number_id": "1138942462625909", "ofd_template_id": "377955", "brand_display": "Pelvini"},
+    "PV": {"phone_number_id": "1238071629387272", "ofd_template_id": "377955", "brand_display": "Pelvini"},
     "VX": {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Virex UAE"},
     "O":  {"phone_number_id": "1148388868368542", "ofd_template_id": "377952", "brand_display": "Orlento"},
     "VL": {"phone_number_id": "1148388868368542", "ofd_template_id": "377952", "brand_display": "Velix"},
@@ -108,6 +138,10 @@ OFD_CONFIG = {
     "AM": {"phone_number_id": "1309764938876096", "ofd_template_id": "377951", "brand_display": "Amara's Room"},
     # Rimal (replaces Chronova on Virex's WABA): reuses Virex OFD template 377956, own number.
     "R":  {"phone_number_id": "1223004617567784", "ofd_template_id": "377956", "brand_display": "Rimal UAE"},
+    # Elara/Diwan/Pelvini(above)/Viresta group — OFD template 377955 on the shared number.
+    "E":  {"phone_number_id": "1238071629387272", "ofd_template_id": "377955", "brand_display": "Elara"},
+    "DX": {"phone_number_id": "1238071629387272", "ofd_template_id": "377955", "brand_display": "Diwan"},
+    "VS": {"phone_number_id": "1238071629387272", "ofd_template_id": "377955", "brand_display": "Viresta"},
 }
 
 # Match longest prefix first so the 1-char "O" (Orlento) never shadows a 2-char prefix.
