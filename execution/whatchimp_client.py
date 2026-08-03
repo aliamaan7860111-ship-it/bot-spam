@@ -31,11 +31,11 @@ BRAND_CONFIG = {
         "sender_phone":      "971521179533",
     },
     "Di": {  # Dialo UAE
-        "phone_number_id":   "1002123586328400",
+        "phone_number_id":   "1304894276030064",
         "template_id":       "354662",
-        "confirm_button_qr": "c6GBqbMceC17Rud",
+        "confirm_button_qr": "6a70a6a5b706d",
         "brand_display":     "Dialo UAE",
-        "sender_phone":      "971524205211",
+        "sender_phone":      "966572141803",
     },
     "LU": {  # Lune Collection
         "phone_number_id":   "1138942462625909",
@@ -76,7 +76,7 @@ SENDER_PHONE_TO_PREFIX = {cfg["sender_phone"]:     prefix for prefix, cfg in BRA
 # ---------------------------------------------------------------------------
 OFD_CONFIG = {
     "PT": {"phone_number_id": "1031340813395459", "ofd_template_id": "377952", "brand_display": "Elara UAE"},
-    "Di": {"phone_number_id": "1002123586328400", "ofd_template_id": "377954", "brand_display": "Dialo UAE"},
+    "Di": {"phone_number_id": "1304894276030064", "ofd_template_id": "377954", "brand_display": "Dialo UAE"},
     "LU": {"phone_number_id": "1138942462625909", "ofd_template_id": "377955", "brand_display": "Lune Collection"},
     "PV": {"phone_number_id": "1138942462625909", "ofd_template_id": "377955", "brand_display": "Pelvini"},
     "VX": {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Virex UAE"},
