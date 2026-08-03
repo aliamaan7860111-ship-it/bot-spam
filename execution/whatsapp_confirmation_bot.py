@@ -32,6 +32,35 @@ ORDER_CUTOFF_DATE = datetime.fromisoformat(ORDER_CUTOFF_DATE_STR)
 # when a backlog of previously-failed orders becomes sendable after a fix.
 MAX_CONFIRM_AGE_HOURS = int(os.getenv("WHATSAPP_MAX_CONFIRM_AGE_HOURS", "24"))
 
+
+def _parse_floor(v):
+    """Parse an absolute ISO cutoff (e.g. '2026-08-03T20:08:00+00:00'). None = disabled."""
+    v = (v or "").strip()
+    if not v:
+        return None
+    try:
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    except Exception:
+        return None
+
+
+# Hard absolute floor: never confirm an order created before this timestamp.
+# Belt-and-suspenders on top of the rolling MAX_CONFIRM_AGE_HOURS window, to stop
+# a backlog blast. Set via WHATSAPP_CONFIRM_NOT_BEFORE (ISO). Empty = disabled.
+CONFIRM_NOT_BEFORE = _parse_floor(os.getenv("WHATSAPP_CONFIRM_NOT_BEFORE"))
+
+
+def _created_after_floor(created, floor):
+    """True if the order's created time is at/after floor; False if before or unparseable."""
+    try:
+        cdt = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+        cdt = cdt.replace(tzinfo=timezone.utc) if cdt.tzinfo is None else cdt
+        return cdt >= floor
+    except Exception:
+        return False
+
+
 # Local imports
 import notion_client as notion
 import whatchimp_client as wc
@@ -77,6 +106,9 @@ async def poll_whatsapp_once() -> int:
                 continue
             # Freshness guard: never send a confirmation for a stale/backlogged order.
             if not notion.is_order_fresh(o.get("created"), MAX_CONFIRM_AGE_HOURS):
+                continue
+            # Hard absolute floor: never confirm orders created before the cutoff.
+            if CONFIRM_NOT_BEFORE is not None and not _created_after_floor(o.get("created"), CONFIRM_NOT_BEFORE):
                 continue
             o["brand_name"] = get_brand_from_order_id(order_id)
             new_orders.append(o)
