@@ -197,6 +197,13 @@ async def handle_incoming(
         log.warning(f"incoming: missing chat_id, payload={payload}")
         return
 
+    # Drop sources we deliberately don't track (Virex): ack + ignore, no error.
+    if wc.is_ignored(bot_id, bot_name, phone_number_id):
+        log.info(f"incoming: ignored (untracked) bot_name={bot_name!r} phone={phone}")
+        return
+
+    log.info(f"incoming: bot_id={bot_id!r} pnid={phone_number_id!r} name={bot_name!r} phone={phone}")
+
     # Determine source. resolve_source NEVER returns None — a lead is never
     # dropped for want of a clean brand (zero-miss requirement). Unmapped bots
     # land under their raw name so we can add a mapping without losing the lead.
@@ -260,6 +267,10 @@ async def handle_outgoing(
 
     if not phone:
         log.warning(f"outgoing: missing chat_id, payload={payload}")
+        return
+
+    # Drop sources we deliberately don't track (Virex): ack + ignore, no error.
+    if wc.is_ignored(bot_id, bot_name, phone_number_id):
         return
 
     # Same resolver as incoming so the ticket's Source matches (lookups align).

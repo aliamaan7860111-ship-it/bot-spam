@@ -82,6 +82,22 @@ CANONICAL_SOURCES = {
     "Amara", "Rimal", "Dialo", "Customer Care", "Shopping Assistance",
 }
 
+# Deliberately NOT tracked (Virex is not a store). Leads matching these are
+# acknowledged (200) and dropped — no ticket, no assignment, no error alert.
+IGNORED_BOT_IDS = {"381990"}                # old Virex WhatChimp bot
+IGNORED_PHONE_IDS = {"1073890042476443"}    # Virex number
+IGNORED_NAME_SUBSTRINGS = ("virex",)
+
+
+def is_ignored(bot_id: str, bot_name: str, phone_id: str = "") -> bool:
+    """True for sources we intentionally don't track (e.g. Virex)."""
+    if bot_id and str(bot_id).strip() in IGNORED_BOT_IDS:
+        return True
+    if phone_id and str(phone_id).strip() in IGNORED_PHONE_IDS:
+        return True
+    name = (bot_name or "").strip().lower()
+    return any(s in name for s in IGNORED_NAME_SUBSTRINGS)
+
 
 def bot_id_to_brand(bot_id: str) -> Optional[str]:
     if not bot_id:
@@ -172,10 +188,13 @@ async def assign_to_team_member(
         data = resp.json()
         if str(data.get("status")) == "1":
             return True
-        log.error(f"assign-to-team-member non-success: {data}")
+        # Non-fatal: the Notion round-robin assignment already happened; this is
+        # only the WhatChimp-side chat routing. Common during migration when a
+        # customer is on an old number whose pnid we don't have. Warn, don't alert.
+        log.warning(f"assign-to-team-member non-success (non-fatal): {data}")
         return False
     except Exception as e:
-        log.error(f"assign-to-team-member({phone_number}, {team_member_id}) failed: {e}")
+        log.warning(f"assign-to-team-member({phone_number}, {team_member_id}) failed (non-fatal): {e}")
         return False
 
 

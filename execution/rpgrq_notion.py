@@ -113,7 +113,9 @@ async def find_ticket(client: httpx.AsyncClient, phone: str, brand: str) -> Opti
         results = resp.json().get("results", [])
         return results[0] if results else None
     except Exception as e:
-        log.error(f"find_ticket({phone}, {brand}) failed: {e}")
+        # Degrades gracefully (returns None -> treated as new lead). Warn, don't
+        # alert: a 400 here just means an unexpected Source value, not an outage.
+        log.warning(f"find_ticket({phone}, {brand}) failed: {e}")
         return None
 
 
