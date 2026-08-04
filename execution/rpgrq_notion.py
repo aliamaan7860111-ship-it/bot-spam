@@ -117,6 +117,62 @@ async def find_ticket(client: httpx.AsyncClient, phone: str, brand: str) -> Opti
         return None
 
 
+async def find_tickets_with_order_id(client: httpx.AsyncClient) -> list[dict]:
+    """
+    Return every lead ticket that has an 'Order ID' set. These are the closed
+    leads the orders-CRM sync enriches with real delivery status. Paginated.
+    """
+    out: list[dict] = []
+    cursor: Optional[str] = None
+    while True:
+        payload = {
+            "filter": {"property": "Order ID", "rich_text": {"is_not_empty": True}},
+            "page_size": 100,
+        }
+        if cursor:
+            payload["start_cursor"] = cursor
+        try:
+            resp = await client.post(
+                f"{NOTION_API_BASE}/databases/{LEADS_DB_ID}/query",
+                headers=HEADERS, json=payload, timeout=20,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            log.error(f"find_tickets_with_order_id failed: {e}")
+            return out
+        out.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+    return out
+
+
+async def set_order_sync(
+    client: httpx.AsyncClient,
+    page_id: str,
+    delivery_status: Optional[str],
+    delivered: bool,
+    order_value: Optional[float],
+    tracking_number: Optional[str],
+    synced_at_iso: str,
+) -> bool:
+    """Write the fields pulled from the orders CRM back onto a lead ticket."""
+    properties: dict = {
+        "Delivered": {"checkbox": bool(delivered)},
+        "Synced At": {"date": {"start": synced_at_iso}},
+    }
+    if delivery_status:
+        properties["Delivery Status"] = {"select": {"name": delivery_status}}
+    if order_value is not None:
+        properties["Order Value"] = {"number": order_value}
+    if tracking_number:
+        properties["Tracking Number"] = {
+            "rich_text": [{"text": {"content": tracking_number}}]
+        }
+    return await _update_page(client, page_id, properties)
+
+
 async def get_last_assigned_agent(client: httpx.AsyncClient, valid_agent_names: list[str]) -> Optional[str]:
     """
     Return the Agent Assigned name from the most recently created ticket
@@ -306,3 +362,15 @@ def ticket_agent_assigned(ticket: dict) -> Optional[str]:
     """Return position [0] of the Agent Assigned multi-select (the latest replier), or None."""
     arr = ticket_agent_assigned_list(ticket)
     return arr[0] if arr else None
+
+
+def ticket_order_id(ticket: dict) -> str:
+    """Return the Order ID rich_text value (trimmed), or '' if unset."""
+    arr = ticket.get("properties", {}).get("Order ID", {}).get("rich_text", [])
+    return "".join(p.get("plain_text", "") for p in arr).strip()
+
+
+def ticket_delivery_status(ticket: dict) -> Optional[str]:
+    """Return the currently-stored Delivery Status select name, or None."""
+    sel = ticket.get("properties", {}).get("Delivery Status", {}).get("select")
+    return sel.get("name") if sel else None

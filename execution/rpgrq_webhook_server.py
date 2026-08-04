@@ -31,6 +31,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 from execution import rpgrq_notion as notion
 from execution import rpgrq_whatchimp as wc
+from execution import rpgrq_order_sync as order_sync
 from execution.rpgrq_round_robin import RoundRobin, calculate_response_speed
 
 # ── Logging ──
@@ -533,6 +534,11 @@ async def main():
         await notion.get_active_roster(http_client)
     except Exception as e:
         log.warning(f"Initial roster fetch failed (continuing anyway): {e}")
+
+    # Background: two-way orders-CRM sync (enriches closed leads with delivery
+    # truth). Fire-and-forget — its own loop swallows errors so it can't take
+    # the webhook server down.
+    asyncio.create_task(order_sync.run_order_sync_loop(http_client))
 
     async def on_conn(reader, writer):
         await handle_connection(reader, writer, http_client, rr)
