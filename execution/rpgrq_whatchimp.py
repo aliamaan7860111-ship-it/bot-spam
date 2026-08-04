@@ -70,10 +70,39 @@ WHATCHIMP_BOT_ID_TO_BRAND = {
 }
 
 
+# Canonical source labels the CRM expects. Anything outside this set that shows
+# up as a resolved source means a new bot name/id we haven't mapped yet.
+CANONICAL_SOURCES = {
+    "Amara", "Rimal", "Dialo", "Virex", "Lune", "Elara",
+    "Customer Care", "Shopping Assistance",
+}
+
+
 def bot_id_to_brand(bot_id: str) -> Optional[str]:
     if not bot_id:
         return None
     return WHATCHIMP_BOT_ID_TO_BRAND.get(str(bot_id).strip())
+
+
+def resolve_source(bot_id: str, bot_name: str, phone_id: str = "") -> str:
+    """
+    Best-effort CRM 'Source (Store)' label. NEVER returns None — a lead must
+    never be dropped for want of a clean brand. Resolution order:
+      1. whatsapp_bot_id  -> brand           (stable, unique per bot)
+      2. whatsapp_bot_name -> alias          (clean label)
+      3. phone_number_id  -> brand           (if the payload carries it)
+      4. bot_id treated as phone_id          (legacy payload shape)
+      5. raw bot_name                        (preserved so we can map it later)
+      6. "Unknown"                           (last resort — still captured)
+    """
+    return (
+        bot_id_to_brand(bot_id)
+        or normalize_brand(bot_name)
+        or (phone_id_to_brand(phone_id) if phone_id else None)
+        or phone_id_to_brand(bot_id)
+        or (bot_name.strip() if bot_name and bot_name.strip() else None)
+        or "Unknown"
+    )
 
 
 def normalize_brand(raw: str) -> Optional[str]:

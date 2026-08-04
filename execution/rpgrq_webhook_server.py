@@ -188,6 +188,7 @@ async def handle_incoming(
     phone = str(payload.get("chat_id") or "").strip()
     bot_name = str(payload.get("whatsapp_bot_name") or "").strip()
     bot_id = str(payload.get("whatsapp_bot_id") or "").strip()
+    phone_number_id = str(payload.get("phone_number_id") or "").strip()
     wa_message_id = str(payload.get("wa_message_id") or "").strip()
     label_names_raw = str(payload.get("label_names") or "")
 
@@ -195,11 +196,16 @@ async def handle_incoming(
         log.warning(f"incoming: missing chat_id, payload={payload}")
         return
 
-    # Determine brand (prefer bot name, fall back to bot_id)
-    brand = wc.bot_id_to_brand(bot_id) or wc.normalize_brand(bot_name) or wc.phone_id_to_brand(bot_id)
-    if not brand:
-        log.warning(f"incoming: unknown brand bot_name={bot_name!r} bot_id={bot_id!r}")
-        return
+    # Determine source. resolve_source NEVER returns None — a lead is never
+    # dropped for want of a clean brand (zero-miss requirement). Unmapped bots
+    # land under their raw name so we can add a mapping without losing the lead.
+    brand = wc.resolve_source(bot_id, bot_name, phone_number_id)
+    if brand not in wc.CANONICAL_SOURCES:
+        log.warning(
+            f"incoming: UNMAPPED source captured as {brand!r} "
+            f"(bot_name={bot_name!r} bot_id={bot_id!r} pnid={phone_number_id!r}) "
+            f"— add to BRAND_ALIASES/WHATCHIMP_BOT_ID_TO_BRAND"
+        )
 
     # Idempotency
     if wa_message_id and not message_id_seen.add(wa_message_id):
@@ -243,6 +249,7 @@ async def handle_outgoing(
     phone = str(payload.get("chat_id") or "").strip()
     bot_name = str(payload.get("whatsapp_bot_name") or "").strip()
     bot_id = str(payload.get("whatsapp_bot_id") or "").strip()
+    phone_number_id = str(payload.get("phone_number_id") or "").strip()
     wa_message_id = str(payload.get("wa_message_id") or "").strip()
     label_names_raw = str(payload.get("label_names") or "")
 
@@ -250,10 +257,8 @@ async def handle_outgoing(
         log.warning(f"outgoing: missing chat_id, payload={payload}")
         return
 
-    brand = wc.bot_id_to_brand(bot_id) or wc.normalize_brand(bot_name) or wc.phone_id_to_brand(bot_id)
-    if not brand:
-        log.warning(f"outgoing: unknown brand bot_name={bot_name!r} bot_id={bot_id!r}")
-        return
+    # Same resolver as incoming so the ticket's Source matches (lookups align).
+    brand = wc.resolve_source(bot_id, bot_name, phone_number_id)
 
     if wa_message_id and not message_id_seen.add(wa_message_id):
         return
