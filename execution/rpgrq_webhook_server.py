@@ -228,9 +228,13 @@ async def handle_incoming(
         new_id = await notion.create_ticket(client, phone, brand, agent["name"], now_iso)
         if new_id:
             log.info(f"🆕 new ticket {brand} / {phone} → {agent['name']}")
-            pid = wc.brand_to_phone_id(brand)
-            if pid and agent.get("team_member_id"):
-                await wc.assign_to_team_member(client, pid, phone, int(agent["team_member_id"]))
+            # Try every pnid for the brand (customer may be on the old number).
+            if agent.get("team_member_id"):
+                pids = wc.phone_id_candidates(brand, phone_number_id)
+                ok_pid = await wc.assign_to_team_member_any(
+                    client, pids, phone, int(agent["team_member_id"]))
+                if not ok_pid:
+                    log.warning(f"assign failed on all pnids {pids} for {brand}/{phone}")
             await sync_labels_side_effect(client, new_id, label_names_raw, ticket=None)
         return
 
@@ -277,27 +281,26 @@ async def handle_outgoing(
     # Labels can sync regardless of who sent the message
     await sync_labels_side_effect(client, ticket["id"], label_names_raw, ticket=ticket)
 
-    # Identify the sender via targeted conversation lookup
-    pid = wc.brand_to_phone_id(brand)
-    if not pid:
+    # Identify the sender via targeted conversation lookup. During migration the
+    # customer may be on the brand's OLD number, so try every candidate pnid and
+    # keep the one that actually has this conversation.
+    pids = wc.phone_id_candidates(brand, phone_number_id)
+    if not pids:
         return
 
-    async def _fetch_latest():
-        return await wc.get_latest_message(client, pid, phone)
-
-    latest = await _fetch_latest()
+    pid, latest = await wc.get_latest_message_any(client, pids, phone)
     # If the webhook's wa_message_id doesn't match the conversation's latest,
-    # WhatChimp may not have propagated yet. Sleep 1s and retry once.
+    # WhatChimp may not have propagated yet. Sleep 1s and retry once on that pnid.
     webhook_msg_id = wa_message_id or ""
-    if latest and webhook_msg_id and latest.get("wa_message_id") != webhook_msg_id:
+    if pid and latest and webhook_msg_id and latest.get("wa_message_id") != webhook_msg_id:
         log.info(
             f"outgoing: stale conversation lookup for {phone}/{brand} "
             f"(latest={latest.get('wa_message_id')!r} webhook={webhook_msg_id!r}); retrying"
         )
         await asyncio.sleep(1.0)
-        latest = await _fetch_latest()
+        latest = await wc.get_latest_message(client, pid, phone)
     if not latest:
-        log.info(f"outgoing: ignored — no conversation history for {phone}/{brand}")
+        log.info(f"outgoing: ignored — no conversation history for {phone}/{brand} on pnids {pids}")
         return
 
     sender = latest.get("sender")
@@ -354,9 +357,9 @@ async def handle_outgoing(
                     f"🔀 reassigned {brand} / {phone}: {current_list} -> {new_list}"
                 )
                 # WhatChimp side-assign only when position [0] actually changed.
+                # Reuse the pnid the conversation was actually found on.
                 prev_owner = current_list[0] if current_list else None
                 if prev_owner != replier["name"]:
-                    pid = wc.brand_to_phone_id(brand)
                     if pid and replier.get("team_member_id"):
                         await wc.assign_to_team_member(
                             client, pid, phone, int(replier["team_member_id"])

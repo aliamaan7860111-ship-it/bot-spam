@@ -124,6 +124,26 @@ def brand_to_phone_id(brand: str) -> Optional[str]:
     return None
 
 
+def brand_to_phone_ids(brand: str) -> list:
+    """
+    ALL phone_number_ids for a brand (new listed first, then old). During the
+    number migration a brand has two live numbers; a given customer sits on
+    exactly one. Callers try each until the subscriber/conversation is found,
+    so assignment + reply-tracking work regardless of which number they use.
+    """
+    return [pid for pid, b in BRAND_BY_PHONE_ID.items() if b == brand]
+
+
+def phone_id_candidates(brand: str, payload_phone_id: str = "") -> list:
+    """Ordered, de-duped pnid candidates: the payload's own pnid first (most
+    accurate), then every pnid mapped to the brand."""
+    out = []
+    for pid in ([payload_phone_id] if payload_phone_id else []) + brand_to_phone_ids(brand):
+        if pid and pid not in out:
+            out.append(pid)
+    return out
+
+
 # ────────────────────────────────────────────────────────────
 # API calls
 # ────────────────────────────────────────────────────────────
@@ -210,3 +230,32 @@ async def get_latest_message(
     # Sort newest first
     valid.sort(key=lambda m: m.get("conversation_time", ""), reverse=True)
     return valid[0]
+
+
+async def get_latest_message_any(
+    client: httpx.AsyncClient,
+    phone_ids: list,
+    phone_number: str,
+):
+    """Try each candidate pnid; return (pnid, latest_message) for the first that
+    has any conversation history. Handles a customer sitting on the old number
+    of a brand that also has a new number. Returns (None, None) if none match."""
+    for pid in phone_ids:
+        msg = await get_latest_message(client, pid, phone_number)
+        if msg:
+            return pid, msg
+    return None, None
+
+
+async def assign_to_team_member_any(
+    client: httpx.AsyncClient,
+    phone_ids: list,
+    phone_number: str,
+    team_member_id: int,
+) -> Optional[str]:
+    """Try to assign on each candidate pnid; return the pnid that succeeded (the
+    number the subscriber actually lives on), or None if every attempt failed."""
+    for pid in phone_ids:
+        if await assign_to_team_member(client, pid, phone_number, team_member_id):
+            return pid
+    return None
