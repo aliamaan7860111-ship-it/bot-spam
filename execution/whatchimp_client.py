@@ -87,28 +87,28 @@ BRAND_CONFIG = {
         "template_id":       "355333",
         "confirm_button_qr": "6a70c6e43a79c",
         "brand_display":     "Elara",
-        "sender_phone":      "1238071629387272",
+        "sender_phone":      "966571807079",
     },
     "DX": {  # Diwan
         "phone_number_id":   "1238071629387272",
         "template_id":       "355333",
         "confirm_button_qr": "6a70c6e43a79c",
         "brand_display":     "Diwan",
-        "sender_phone":      "1238071629387272",
+        "sender_phone":      "966571807079",
     },
     "PV": {  # Pelvini
         "phone_number_id":   "1238071629387272",
         "template_id":       "355333",
         "confirm_button_qr": "6a70c6e43a79c",
         "brand_display":     "Pelvini",
-        "sender_phone":      "1238071629387272",
+        "sender_phone":      "966571807079",
     },
     "VS": {  # Viresta
         "phone_number_id":   "1238071629387272",
         "template_id":       "355333",
         "confirm_button_qr": "6a70c6e43a79c",
         "brand_display":     "Viresta",
-        "sender_phone":      "1238071629387272",
+        "sender_phone":      "966571807079",
     },
 }
 
