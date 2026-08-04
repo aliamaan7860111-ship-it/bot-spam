@@ -28,39 +28,45 @@ API_BASE = "https://app.whatchimp.com/api/v1/whatsapp"
 # Canonical brand names are ALL CAPS to match existing Notion options.
 # Webhook payloads send whatsapp_bot_name in TitleCase (e.g. "Virex UAE"),
 # so we normalize via this alias map.
+# Values below are the CRM "Source (Store)" labels (clean form). Single-brand
+# numbers resolve to the brand; the two shared numbers resolve to their WABA name.
 BRAND_BY_PHONE_ID = {
-    "1031340813395459": "ELARA",
-    "1045332455333591": "AMARA",
-    "1073890042476443": "VIREX UAE",
-    "1138942462625909": "LUNE",
-    "1002123586328400": "DIALO UAE",
+    # New numbers (2026-08 swap)
+    "1309764938876096": "Amara",
+    "1223004617567784": "Rimal",
+    "1304894276030064": "Dialo",
+    "1073890042476443": "Virex",                # unchanged
+    "1148388868368542": "Customer Care",        # shared: Orlento/Velix/Lune
+    "1238071629387272": "Shopping Assistance",  # shared: Elara/Diwan/Pelvini/Viresta
+    # Old numbers (retiring during transition)
+    "1031340813395459": "Elara",
+    "1045332455333591": "Amara",
+    "1138942462625909": "Lune",
+    "1002123586328400": "Dialo",
 }
 
 BRAND_ALIASES = {
-    "elara": "ELARA",
-    "elara uae": "ELARA",
-    "amara": "AMARA",
-    "amaras room": "AMARA",
-    "amara's room": "AMARA",
-    "amaras room dubai": "AMARA",
-    "amara's room dubai": "AMARA",
-    "virex uae": "VIREX UAE",
-    "virex": "VIREX UAE",
-    "lune": "LUNE",
-    "lune collection": "LUNE",
-    "dialo uae": "DIALO UAE",
-    "dialo": "DIALO UAE",
-    "customer care": "ELARA",
+    "amara": "Amara", "amaras room": "Amara", "amara's room": "Amara",
+    "amaras room dubai": "Amara", "amara's room dubai": "Amara",
+    "rimal": "Rimal", "rimal uae": "Rimal",
+    "dialo": "Dialo", "dialo uae": "Dialo",
+    "virex": "Virex", "virex uae": "Virex",
+    "lune": "Lune", "lune collection": "Lune",
+    "elara": "Elara", "elara uae": "Elara",
+    "customer care": "Customer Care",              # shared: Orlento/Velix/Lune
+    "shopping assistance": "Shopping Assistance",  # shared: Elara/Diwan/Pelvini/Viresta
 }
 
-# Primary brand source of truth: whatsapp_bot_id (stable, unique per brand).
-# Webhook payloads include this as "whatsapp_bot_id".
+# Primary source of truth: whatsapp_bot_id (stable, unique per WhatChimp bot).
+# NOTE: values below are OLD-number bot_ids. New-number bot_ids are TBD — capture
+# each from the first inbound webhook per new number and add here for accurate
+# per-number source. Until then, source falls back to bot-name alias / phone-id.
 WHATCHIMP_BOT_ID_TO_BRAND = {
-    "381990": "VIREX UAE",
-    "382073": "DIALO UAE",
-    "382036": "AMARA",
-    "352261": "ELARA",  # bot name is "Customer Care" in WhatChimp
-    "382778": "LUNE",   # captured 2026-06-10 via grq-rescue inbound log
+    "381990": "Virex",
+    "382073": "Dialo",
+    "382036": "Amara",
+    "352261": "Elara",  # old Elara bot named "Customer Care" in WhatChimp
+    "382778": "Lune",   # captured 2026-06-10 via grq-rescue inbound log
 }
 
 

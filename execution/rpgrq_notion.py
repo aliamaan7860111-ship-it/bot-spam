@@ -24,7 +24,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 log = logging.getLogger("rpgrq.notion")
 
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "").strip()
-LEADS_DB_ID    = "344c320eba59800a90a6e804a575d272"
+LEADS_DB_ID    = "7d1c320eba598388bee9019dc1fad331"  # RPGRQ WhatsApp Leads (new DB, 2026-08)
 ROSTER_DB_ID   = "346c320eba598175969dd15472249081"
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION  = "2022-06-28"
@@ -99,7 +99,7 @@ async def find_ticket(client: httpx.AsyncClient, phone: str, brand: str) -> Opti
     payload = {
         "filter": {
             "and": [
-                {"property": "Phone Number", "rich_text": {"equals": phone.strip()}},
+                {"property": "Number", "title": {"equals": phone.strip()}},
                 {"property": "Source (Store)", "select": {"equals": brand}},
             ]
         }
@@ -164,8 +164,7 @@ async def create_ticket(
 ) -> Optional[str]:
     """Create a fresh ticket. Returns the new page id or None."""
     properties = {
-        "Name":                   {"title": [{"text": {"content": phone}}]},
-        "Phone Number":           {"rich_text": [{"text": {"content": phone}}]},
+        "Number":                 {"title": [{"text": {"content": phone}}]},
         "Source (Store)":         {"select": {"name": brand}},
         "Outcome":                {"select": {"name": "Pending"}},
         "Created At":             {"date": {"start": created_at_iso}},
