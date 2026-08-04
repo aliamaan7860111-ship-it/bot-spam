@@ -28,21 +28,24 @@ API_BASE = "https://app.whatchimp.com/api/v1/whatsapp"
 # Canonical brand names are ALL CAPS to match existing Notion options.
 # Webhook payloads send whatsapp_bot_name in TitleCase (e.g. "Virex UAE"),
 # so we normalize via this alias map.
-# Values below are the CRM "Source (Store)" labels (clean form). Single-brand
-# numbers resolve to the brand; the two shared numbers resolve to their WABA name.
+# The CRM "Source (Store)" model = exactly 5 labels:
+#   Amara / Rimal / Dialo (individual numbers)
+#   Customer Care        (shared number — stores: Orlento, Velix, Lune)
+#   Shopping Assistance  (shared number — stores: Elara, Diwan, Pelvini, Viresta)
+# Every pnid a customer might be on (new + old) resolves to one of these 5.
 BRAND_BY_PHONE_ID = {
-    # New numbers (2026-08 swap)
-    "1309764938876096": "Amara",
-    "1223004617567784": "Rimal",
-    "1304894276030064": "Dialo",
-    "1073890042476443": "Virex",                # unchanged
-    "1148388868368542": "Customer Care",        # shared: Orlento/Velix/Lune
-    "1238071629387272": "Shopping Assistance",  # shared: Elara/Diwan/Pelvini/Viresta
-    # Old numbers (retiring during transition)
-    "1031340813395459": "Elara",
-    "1045332455333591": "Amara",
-    "1138942462625909": "Lune",
-    "1002123586328400": "Dialo",
+    # Individual brands (own number: new + old during transition)
+    "1309764938876096": "Amara",               # Amara new
+    "1045332455333591": "Amara",               # Amara old
+    "1223004617567784": "Rimal",               # Rimal
+    "1304894276030064": "Dialo",               # Dialo new
+    "1002123586328400": "Dialo",               # Dialo old
+    # Shared: Customer Care (Orlento / Velix / Lune)
+    "1148388868368542": "Customer Care",       # shared number (new)
+    "1138942462625909": "Customer Care",       # old Lune number folds in
+    # Shared: Shopping Assistance (Elara / Diwan / Pelvini / Viresta)
+    "1238071629387272": "Shopping Assistance", # shared number (new)
+    "1031340813395459": "Shopping Assistance", # old Elara number folds in
 }
 
 BRAND_ALIASES = {
@@ -50,31 +53,33 @@ BRAND_ALIASES = {
     "amaras room dubai": "Amara", "amara's room dubai": "Amara",
     "rimal": "Rimal", "rimal uae": "Rimal",
     "dialo": "Dialo", "dialo uae": "Dialo",
-    "virex": "Virex", "virex uae": "Virex",
-    "lune": "Lune", "lune collection": "Lune",
-    "elara": "Elara", "elara uae": "Elara",
-    "customer care": "Customer Care",              # shared: Orlento/Velix/Lune
-    "shopping assistance": "Shopping Assistance",  # shared: Elara/Diwan/Pelvini/Viresta
+    # Customer Care group (shared number + the 3 stores' own names)
+    "customer care": "Customer Care",
+    "lune": "Customer Care", "lune collection": "Customer Care",
+    "orlento": "Customer Care", "velix": "Customer Care",
+    # Shopping Assistance group (shared number + the 4 stores' own names)
+    "shopping assistance": "Shopping Assistance",
+    "elara": "Shopping Assistance", "elara uae": "Shopping Assistance",
+    "diwan": "Shopping Assistance", "pelvini": "Shopping Assistance",
+    "viresta": "Shopping Assistance",
 }
 
 # Primary source of truth: whatsapp_bot_id (stable, unique per WhatChimp bot).
-# NOTE: values below are OLD-number bot_ids. New-number bot_ids are TBD — capture
-# each from the first inbound webhook per new number and add here for accurate
-# per-number source. Until then, source falls back to bot-name alias / phone-id.
+# bot_id wins over bot_name — important for the old Elara bot, which is literally
+# NAMED "Customer Care" in WhatChimp but belongs to the Shopping Assistance group.
+# New-number bot_ids are TBD (capture from first inbound and add here).
 WHATCHIMP_BOT_ID_TO_BRAND = {
-    "381990": "Virex",
-    "382073": "Dialo",
-    "382036": "Amara",
-    "352261": "Elara",  # old Elara bot named "Customer Care" in WhatChimp
-    "382778": "Lune",   # captured 2026-06-10 via grq-rescue inbound log
+    "382073": "Dialo",               # old Dialo
+    "382036": "Amara",               # old Amara
+    "352261": "Shopping Assistance", # old Elara bot (named "Customer Care" in WC)
+    "382778": "Customer Care",       # old Lune bot (Customer Care group)
 }
 
 
 # Canonical source labels the CRM expects. Anything outside this set that shows
 # up as a resolved source means a new bot name/id we haven't mapped yet.
 CANONICAL_SOURCES = {
-    "Amara", "Rimal", "Dialo", "Virex", "Lune", "Elara",
-    "Customer Care", "Shopping Assistance",
+    "Amara", "Rimal", "Dialo", "Customer Care", "Shopping Assistance",
 }
 
 
