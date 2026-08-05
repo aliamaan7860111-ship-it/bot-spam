@@ -798,6 +798,31 @@ def query_orders_by_tracking(tracking_no: str) -> list[dict]:
     return _run_query({"filter": filter_})
 
 
+def find_orders_by_phone(phone: str, brand_prefix: str = "", limit: int = 5) -> list[dict]:
+    """
+    Find orders whose PHONE contains the customer's national digits (newest
+    first), optionally scoped to a brand via the ORDER ID prefix.
+
+    Confirm-button fallback: when a customer clicks confirm but their WhatChimp
+    subscriber has no synced order_id (e.g. the send-time pre-sync timed out),
+    recover the order straight from the CRM by phone + brand so the note isn't
+    silently lost. Matches on the last 9 digits so +971…, 0…, 971… all resolve.
+    """
+    digits = "".join(c for c in str(phone or "") if c.isdigit())
+    tail = digits[-9:] if len(digits) >= 9 else digits   # UAE national part
+    if len(tail) < 7:
+        return []
+    filters = [{"property": FIELD_PHONE, "rich_text": {"contains": tail}}]
+    if brand_prefix:
+        filters.append({"property": FIELD_ORDER_ID, "title": {"starts_with": brand_prefix}})
+    payload = {
+        "filter": {"and": filters},
+        "sorts": [{"timestamp": "created_time", "direction": "descending"}],
+        "page_size": limit,
+    }
+    return _run_query(payload)
+
+
 def query_filex_processed() -> list[dict]:
     """
     Every order whose ORDER STATUS == "Processed", regardless of

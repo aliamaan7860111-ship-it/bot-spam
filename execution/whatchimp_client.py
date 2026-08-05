@@ -1,4 +1,5 @@
 import os
+import time
 import logging
 import requests
 import json
@@ -332,7 +333,10 @@ def create_or_update_subscriber(
         # 'already exists' returns status 0, so we don't gate on this response
         requests.post(create_url, data=create_payload, timeout=10)
 
-        # 2. Assign custom fields (snake_case; custom_fields is a JSON string)
+        # 2. Assign custom fields (snake_case; custom_fields is a JSON string).
+        # RETRY: this endpoint is slow and a single timeout here silently drops
+        # order_id, which breaks the confirm-button → CRM-note flow. Retry a few
+        # times with a longer timeout before giving up.
         assign_url = f"{API_BASE}/subscriber/chat/assign-custom-fields"
         custom_fields = {
             "order_id": order_id,
@@ -345,14 +349,23 @@ def create_or_update_subscriber(
             "custom_fields": json.dumps(custom_fields)
         }
 
-        resp = requests.post(assign_url, data=assign_payload, timeout=10)
-        data = resp.json()
-        if str(data.get("status")) == "1":
-            log.info(f"  ✓ Subscriber metadata synced on {phone_number_id}: {custom_fields}")
-            return True
-        else:
-            log.warning(f"  ⚠️ Custom field sync warning: {data.get('message')}")
-            return False
+        last_err = None
+        for attempt in range(3):
+            if attempt:
+                time.sleep(1.5 * attempt)
+            try:
+                resp = requests.post(assign_url, data=assign_payload, timeout=20)
+                data = resp.json()
+                if str(data.get("status")) == "1":
+                    log.info(f"  ✓ Subscriber metadata synced on {phone_number_id}: {custom_fields}")
+                    return True
+                last_err = data.get("message")
+                log.warning(f"  ⚠️ Custom field sync attempt {attempt + 1}/3 non-success: {last_err}")
+            except Exception as e:
+                last_err = str(e)
+                log.warning(f"  ⚠️ Custom field sync attempt {attempt + 1}/3 error: {e}")
+        log.error(f"  ✗ Subscriber sync failed after 3 attempts: {last_err}")
+        return False
     except Exception as e:
         log.error(f"  ✗ Subscriber sync failed: {str(e)}")
         return False

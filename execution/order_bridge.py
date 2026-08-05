@@ -730,6 +730,7 @@ async def start_health_server():
                 # primary resolution path for every button click. We identify the brand
                 # from the payload's `postbackid` (unique per confirm button) or sender
                 # phone, then scope the lookup to that brand's subscriber list only.
+                brand_prefix = ""
                 if not order_id and chat_id:
                     brand_prefix = wc.identify_brand_from_webhook(params)
                     if brand_prefix:
@@ -765,6 +766,23 @@ async def start_health_server():
                                 log.warning(f"    ⚠️ Cross-brand sweep returned: {order_id} (may be wrong brand!)")
                         except Exception as e:
                             log.error(f"    ✗ Cross-brand lookup failed: {e}")
+
+                # Fallback: the subscriber had no synced order_id (e.g. the send-time
+                # pre-sync to WhatChimp timed out). Recover the order straight from the
+                # CRM by phone + brand so the confirm note is never silently lost.
+                if not order_id and chat_id and brand_prefix:
+                    try:
+                        matches = notion.find_orders_by_phone(chat_id, brand_prefix=brand_prefix)
+                        if matches:
+                            order_id = matches[0].get("order_id")
+                            log.info(
+                                f"  🛟 Recovered order_id via CRM phone fallback: {order_id} "
+                                f"({len(matches)} {brand_prefix} match(es) for {chat_id})"
+                            )
+                        else:
+                            log.warning(f"  ✗ CRM phone fallback: no {brand_prefix} order for {chat_id}")
+                    except Exception as e:
+                        log.error(f"  ✗ CRM phone fallback failed: {e}")
 
                 if order_id and (action in ("confirm", "process") or not action):
                     # Default action to 'process' if missing but we found an order_id
