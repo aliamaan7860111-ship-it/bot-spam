@@ -798,15 +798,21 @@ def query_orders_by_tracking(tracking_no: str) -> list[dict]:
     return _run_query({"filter": filter_})
 
 
-def find_orders_by_phone(phone: str, brand_prefixes=None, limit: int = 5) -> list[dict]:
+def find_orders_by_phone(
+    phone: str, brand_prefixes=None, limit: int = 5, max_age_days: int = 14
+) -> list[dict]:
     """
-    Find orders whose PHONE contains the customer's national digits (newest
-    first), optionally scoped to a set of brands via the ORDER ID prefix.
+    Find recent orders whose PHONE contains the customer's national digits,
+    NEWEST FIRST, optionally scoped to a set of brands via the ORDER ID prefix.
 
     Confirm-button fallback: when a customer clicks confirm but their WhatChimp
     subscriber has no synced order_id (e.g. the send-time pre-sync timed out),
     recover the order straight from the CRM by phone + brand so the note isn't
     silently lost. Matches on the last 9 digits so +971…, 0…, 971… all resolve.
+
+    Only the caller's matches[0] should be tagged — the single MOST RECENT order.
+    A `max_age_days` recency guard excludes stale orders entirely, so a click on
+    an old/spurious button can never put the note on some months-old order.
 
     brand_prefixes is a LIST because shared WhatsApp numbers carry several brands
     (e.g. Customer Care = Orlento/Velix/Lune); scoping to one would miss the rest.
@@ -823,6 +829,9 @@ def find_orders_by_phone(phone: str, brand_prefixes=None, limit: int = 5) -> lis
         filters.append({"or": [
             {"property": FIELD_ORDER_ID, "title": {"starts_with": p}} for p in prefixes
         ]})
+    if max_age_days:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+        filters.append({"timestamp": "created_time", "created_time": {"on_or_after": cutoff}})
     payload = {
         "filter": {"and": filters},
         "sorts": [{"timestamp": "created_time", "direction": "descending"}],
