@@ -771,16 +771,22 @@ async def start_health_server():
                 # pre-sync to WhatChimp timed out). Recover the order straight from the
                 # CRM by phone + brand so the confirm note is never silently lost.
                 if not order_id and chat_id and brand_prefix:
+                    # Shared numbers carry several brands (Customer Care = O/VL/LU),
+                    # and identify_brand_from_webhook collapses them to one prefix —
+                    # so search ALL brands on this number's phone_number_id.
                     try:
-                        matches = notion.find_orders_by_phone(chat_id, brand_prefix=brand_prefix)
+                        pnid = wc.BRAND_CONFIG[brand_prefix]["phone_number_id"]
+                        group = [p for p, c in wc.BRAND_CONFIG.items()
+                                 if c["phone_number_id"] == pnid]
+                        matches = notion.find_orders_by_phone(chat_id, brand_prefixes=group)
                         if matches:
                             order_id = matches[0].get("order_id")
                             log.info(
                                 f"  🛟 Recovered order_id via CRM phone fallback: {order_id} "
-                                f"({len(matches)} {brand_prefix} match(es) for {chat_id})"
+                                f"({len(matches)} match(es) in {group} for {chat_id})"
                             )
                         else:
-                            log.warning(f"  ✗ CRM phone fallback: no {brand_prefix} order for {chat_id}")
+                            log.warning(f"  ✗ CRM phone fallback: no {group} order for {chat_id}")
                     except Exception as e:
                         log.error(f"  ✗ CRM phone fallback failed: {e}")
 
