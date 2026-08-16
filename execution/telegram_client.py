@@ -86,6 +86,48 @@ def download_image(url: str) -> bytes | None:
         return None
 
 
+def _compress_image_url(url: str) -> str:
+    """Rewrite a Shopify CDN image URL to request an 800px-wide version.
+
+    Strips any existing size constraint (e.g. _1024x1024) and injects _800x before the
+    file extension, so we fetch a lighter image than the full-resolution original.
+    """
+    base_url = re.sub(r'_\d+x\d*(?=\.)', '', url)
+    if '.' in base_url.split('/')[-1]:
+        parts = base_url.rsplit('.', 1)
+        return f"{parts[0]}_800x.{parts[1]}"
+    return base_url
+
+
+def _build_images_and_line_items(edges: list) -> tuple[list[str], list[dict]]:
+    """Turn Shopify GraphQL lineItems edges into (image_urls, line_items). Pure — no network.
+
+    One image is emitted PER UNIT: a line item with quantity N contributes N copies of its
+    image, so the fulfillment album shows every physical unit to pack (an order of two of the
+    same item shows two photos, not one). Line items without an image are still recorded (for
+    size/variant in the caption) but add no photos.
+    """
+    image_urls: list[str] = []
+    line_items: list[dict] = []
+    for edge in edges:
+        node = (edge or {}).get("node", {}) or {}
+        qty_raw = node.get("quantity")
+        try:
+            qty = max(1, int(qty_raw)) if qty_raw is not None else 1
+        except (TypeError, ValueError):
+            qty = 1
+        line_items.append({
+            "title": node.get("title", ""),
+            "variant": node.get("variantTitle", ""),
+            "quantity": qty,
+        })
+        img = node.get("image") or {}
+        url = img.get("url")
+        if url:
+            image_urls.extend([_compress_image_url(url)] * qty)
+    return image_urls, line_items
+
+
 def fetch_order_images_graphql(checkout_url: str, order: dict | None = None) -> list[str]:
     """
     Fetch product images from a Shopify order status page using the
@@ -161,28 +203,9 @@ def fetch_order_images_graphql(checkout_url: str, order: dict | None = None) -> 
             log.warning(f"  GraphQL: no order data returned, falling back to scraper")
             return scrape_checkout_images(checkout_url)
 
-        image_urls = []
-        line_items = []
-        for edge in gql_order.get("lineItems", {}).get("edges", []):
-            node = edge.get("node", {})
-            item = {
-                "title": node.get("title", ""),
-                "variant": node.get("variantTitle", ""),
-                "quantity": node.get("quantity", 1),
-            }
-            line_items.append(item)
-            img = node.get("image")
-            if img and img.get("url"):
-                # Request a compressed 800px wide image from Shopify instead of the massive original file
-                # First, strip any existing size constraint, then inject _800x before the extension
-                base_url = re.sub(r'_\d+x\d*(?=\.)', '', img["url"])
-                # Inject _800x before the last dot
-                if '.' in base_url.split('/')[-1]:
-                    parts = base_url.rsplit('.', 1)
-                    full_url = f"{parts[0]}_800x.{parts[1]}"
-                else:
-                    full_url = base_url
-                image_urls.append(full_url)
+        # One image per UNIT: a line item with quantity N yields N images (see helper).
+        edges = gql_order.get("lineItems", {}).get("edges", [])
+        image_urls, line_items = _build_images_and_line_items(edges)
 
         # Store line items (with size/variant) on the order dict
         if order is not None and line_items:
@@ -240,13 +263,7 @@ def scrape_checkout_images(checkout_url: str) -> list[str]:
             ]):
                 continue
             # Request a compressed 800px wide image from Shopify
-            base_url = re.sub(r'_\d+x\d*(?=\.)', '', url)
-            if '.' in base_url.split('/')[-1]:
-                parts = base_url.rsplit('.', 1)
-                full_res = f"{parts[0]}_800x.{parts[1]}"
-            else:
-                full_res = base_url
-            product_images.append(full_res)
+            product_images.append(_compress_image_url(url))
 
         # Deduplicate while preserving order
         seen = set()
