@@ -179,6 +179,32 @@ class TestParsePieces(unittest.TestCase):
         from filex_client import parse_pieces
         self.assertEqual(parse_pieces(None), 1)
 
+    # --- xN quantity markers (new format): sum only xN, ignore sizes ---
+    def test_xn_markers_summed(self):
+        from filex_client import parse_pieces
+        self.assertEqual(parse_pieces("Watch x1, Watch x2"), 3)
+
+    def test_xn_ignores_item_sizes(self):
+        from filex_client import parse_pieces
+        self.assertEqual(parse_pieces("Shoes size 44 x1, shoes size 45 x2"), 3)
+
+    def test_xn_single_ignores_size(self):
+        from filex_client import parse_pieces
+        self.assertEqual(parse_pieces("Shoes size 44 x1"), 1)
+
+    def test_xn_spaced_and_capitalised(self):
+        from filex_client import parse_pieces
+        self.assertEqual(parse_pieces("Nike x 1, Adidas X2"), 3)
+
+    def test_xn_ignores_dimension_size(self):
+        from filex_client import parse_pieces
+        # 32x34 is a waist x length size, not a quantity — only the x1 counts
+        self.assertEqual(parse_pieces("Jeans 32x34 x1"), 1)
+
+    def test_legacy_trailing_qty_preserved_without_xn(self):
+        from filex_client import parse_pieces
+        self.assertEqual(parse_pieces("Amouage Perfume | Purpose 50 100Ml  4"), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

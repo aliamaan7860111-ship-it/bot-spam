@@ -14,6 +14,18 @@ class ValidationError(ValueError):
     """Raised when an order is missing required fields for Filex."""
 
 
+def merge_store_key(order_id: str | None) -> str:
+    """Store identity used for merge grouping: the leading alphabetic prefix of the
+    order id (AM, R, Di/DI, LU, DX, ...), upper-cased so case variants of the same store
+    still group together. Orders from DIFFERENT stores (different prefixes) must never be
+    merged onto one Filex label, even when they share a phone number.
+        'AM 403' -> 'AM'   'R1319' -> 'R'   'Di 98'/'DI 100' -> 'DI'   'DX 5' -> 'DX'
+    """
+    oid = (order_id or "").strip()
+    m = re.match(r"[A-Za-z]+", oid)
+    return m.group(0).upper() if m else oid.upper()
+
+
 _TOTAL_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
 
 

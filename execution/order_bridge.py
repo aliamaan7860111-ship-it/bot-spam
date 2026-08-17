@@ -93,7 +93,7 @@ from telegram.ext import Application, CommandHandler
 from telegram.error import TimedOut, TelegramError
 
 from filex_client import FilexClient
-from filex_payload_builder import build_payload, build_merged_payload, ValidationError
+from filex_payload_builder import build_payload, build_merged_payload, ValidationError, merge_store_key
 
 
 async def _safe_send_message(bot, chat_id: int, text: str) -> None:
@@ -1167,7 +1167,9 @@ async def cmd_print_all(update, context):
     # 3. Group placeable orders by phone for auto-merge.
     from collections import defaultdict
     from whatchimp_client import clean_phone_number
-    grouped: dict[str, list[dict]] = defaultdict(list)
+    # Key by (phone, store): the same customer's orders merge onto one label, but orders
+    # from different stores (different order-id prefixes) never merge — separate labels.
+    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
     orphans: list[dict] = []
     for order in to_place:
         raw_phone = order.get("phone", "") or ""
@@ -1178,7 +1180,7 @@ async def cmd_print_all(update, context):
         if not normalized:
             orphans.append(order)
             continue
-        grouped[normalized].append(order)
+        grouped[(normalized, merge_store_key(order.get("order_id")))].append(order)
 
     # 4. Build payloads — validation errors collected, not sent per-order.
     payloads: list[dict] = []
@@ -1192,7 +1194,7 @@ async def cmd_print_all(update, context):
         category = _categorize_validation_error(err_msg)
         skips_by_category.setdefault(category, []).append((order_id, err_msg))
 
-    for phone, group in grouped.items():
+    for (phone, _store), group in grouped.items():
         if len(group) == 1:
             order = group[0]
             try:

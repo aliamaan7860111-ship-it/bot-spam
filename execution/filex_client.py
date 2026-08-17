@@ -16,12 +16,24 @@ def parse_pieces(item_qty_field: str | None) -> int:
     """
     Parse the Notion 'ITEM | QTY' field into a NumberOfPieces total.
 
-    Format: each item is on its own line; the trailing integer at end
-    of each line is the quantity for that item. Sum across all lines.
+    Two formats are supported:
+      • 'xN' quantity markers (e.g. 'Watch x1, Watch x2' or 'Shoes size 44 x1'):
+        sum every xN and IGNORE all other numbers (sizes like 44, 45, ml, etc.).
+        'Watch x1, Watch x2' -> 3; 'Shoes size 44 x1, shoes size 45 x2' -> 3.
+      • Legacy lines where the quantity is the trailing integer of each line
+        (e.g. 'Amouage Perfume | Purpose 50 100Ml  4' -> 4). Used ONLY when no xN
+        marker is present, so mid-line sizes are never miscounted.
     Defaults to 1 if parsing yields 0, the field is empty, or input is None.
     """
     if not item_qty_field or not item_qty_field.strip():
         return 1
+    # New format: explicit 'xN' markers. A digit immediately before the x (e.g. a
+    # 32x34 waist-length size) is NOT a quantity marker, so exclude it.
+    x_qtys = re.findall(r"(?<!\d)x\s*(\d+)", item_qty_field, flags=re.IGNORECASE)
+    if x_qtys:
+        total = sum(int(q) for q in x_qtys)
+        return total if total > 0 else 1
+    # Legacy format: the trailing integer of each line is that line's quantity.
     total = 0
     for line in item_qty_field.splitlines():
         m = re.search(r"(\d+)\s*$", line.strip())

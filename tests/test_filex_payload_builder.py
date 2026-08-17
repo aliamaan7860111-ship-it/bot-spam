@@ -259,5 +259,30 @@ class TestBuildMergedPayload(unittest.TestCase):
         self.assertEqual(result["ShipperRef"], "A+B+C")
 
 
+class TestMergeStoreKey(unittest.TestCase):
+    def test_prefix_extracted_and_uppercased(self):
+        from filex_payload_builder import merge_store_key
+        self.assertEqual(merge_store_key("AM 403"), "AM")
+        self.assertEqual(merge_store_key("R1319"), "R")
+        self.assertEqual(merge_store_key("LU 89"), "LU")
+
+    def test_case_insensitive_same_store(self):
+        from filex_payload_builder import merge_store_key
+        # 'Di 98' and 'DI 100' are the same store — must share a key so they still merge
+        self.assertEqual(merge_store_key("Di 98"), merge_store_key("DI 100"))
+
+    def test_different_stores_differ(self):
+        from filex_payload_builder import merge_store_key
+        # AM (Amara) vs Di (Diwan) must NOT share a key -> never merged onto one label
+        self.assertNotEqual(merge_store_key("AM3013"), merge_store_key("Di1665"))
+        # DX (a distinct store) is not the same as Di even though both start with D
+        self.assertNotEqual(merge_store_key("DX 5"), merge_store_key("Di 5"))
+
+    def test_blank_is_safe(self):
+        from filex_payload_builder import merge_store_key
+        self.assertEqual(merge_store_key(""), "")
+        self.assertEqual(merge_store_key(None), "")
+
+
 if __name__ == "__main__":
     unittest.main()
