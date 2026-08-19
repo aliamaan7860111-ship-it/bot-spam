@@ -150,6 +150,7 @@ DOMAIN_TO_PREFIX = {
     "virex": "VX",
     "3wawhe-zf": "VX",       # Virex
     "chronova": "VX",        # Chronova (Virex)
+    "e01b04-bv": "VX",       # Chronova new store (2026-08)
     "pelvini": "PV",
     "rngttp-0k": "PV",       # Pelvini
     "elara": "PT",
@@ -205,8 +206,8 @@ BRAND_FORMATTING = {
         "crm_prefix": "O"
     },
     "VX": {
-        "strip_prefixes": ["V", "C"],
-        "strip_suffixes": ["433"],
+        "strip_prefixes": [],
+        "strip_suffixes": [],
         "crm_prefix": "C"
     },
     "R": {
