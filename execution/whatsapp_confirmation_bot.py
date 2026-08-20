@@ -64,6 +64,7 @@ def _created_after_floor(created, floor):
 # Local imports
 import notion_client as notion
 import whatchimp_client as wc
+import stripe_pay
 from order_bridge import BRAND_MAP, get_brand_from_order_id
 
 # Logging setup
@@ -75,6 +76,42 @@ logging.basicConfig(
 log = logging.getLogger("whatsapp_bot")
 
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
+
+# Pilot scope for the "Pay By Link" flow: order-id prefixes whose Shopify
+# stores have the "Pay By Link" manual payment method enabled. Amara only for now.
+PAY_LINK_BRANDS = {b.strip() for b in os.getenv("PAY_LINK_BRANDS", "AM").split(",") if b.strip()}
+
+
+def _is_pay_by_link(method: str) -> bool:
+    """True if the CRM PAYMENT value is the 'Pay By Link' checkout method."""
+    return "pay by link" in (method or "").strip().lower()
+
+
+def _send_pay_link(order: dict) -> bool:
+    """Generate a Stripe payment link for a 'Pay By Link' order and send the
+    payment template instead of the COD confirmation. Returns True on success."""
+    order_id = order.get("order_id", "")
+    phone = order.get("phone", "")
+    name = order.get("customer_name", "Customer")
+    try:
+        amount = f"{float(str(order.get('total_aed')).replace(',', '').strip()):.2f}"
+    except (TypeError, ValueError):
+        log.error(f"Pay-by-link {order_id}: unparseable amount {order.get('total_aed')!r} - skipping")
+        return False
+    try:
+        pay_url = stripe_pay.create_payment_link(order_id, amount, name)
+    except Exception as e:
+        log.error(f"Pay-by-link {order_id}: Stripe link failed: {e}")
+        return False
+    return wc.send_payment_link_template(
+        phone_number=phone,
+        customer_name=name,
+        order_id=order_id,
+        amount=amount,
+        pay_url=pay_url,
+        brand_prefix=order_id[:2],
+    )
+
 
 async def poll_whatsapp_once() -> int:
     """
@@ -125,14 +162,21 @@ async def poll_whatsapp_once() -> int:
             continue
             
         order_id = order.get("order_id", "")
-        success = wc.send_template_message(
-            phone_number=phone,
-            customer_name=order.get("customer_name", "Customer"),
-            order_id=order_id,
-            total=str(order.get("total_aed") or "0"),
-            brand_name=order.get("brand_name", ""),
-            brand_prefix=order_id[:2],
-        )
+        prefix = order_id[:2] if order_id[:2] in BRAND_MAP else order_id[:1]
+
+        # "Pay By Link" orders (pilot: PAY_LINK_BRANDS) get a Stripe payment
+        # link instead of the COD confirmation template.
+        if _is_pay_by_link(order.get("payment")) and prefix in PAY_LINK_BRANDS:
+            success = _send_pay_link(order)
+        else:
+            success = wc.send_template_message(
+                phone_number=phone,
+                customer_name=order.get("customer_name", "Customer"),
+                order_id=order_id,
+                total=str(order.get("total_aed") or "0"),
+                brand_name=order.get("brand_name", ""),
+                brand_prefix=order_id[:2],
+            )
         if success:
             notion.mark_whatsapp_sent(order["page_id"])
             log.info(f"✅ WhatsApp ({order.get('brand_name')}) sent for {order.get('order_id')}")

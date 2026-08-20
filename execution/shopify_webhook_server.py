@@ -340,6 +340,15 @@ def parse_shopify_order(payload: dict, prefix: str) -> dict:
     total_price = payload.get("total_price") or "0.00"
     currency = payload.get("currency") or "AED"
     total_str = f"{total_price} {currency}"
+
+    # Payment method (gateway). Used to route "Pay By Link" orders to the
+    # Stripe payment-link flow instead of the COD confirmation. Manual methods
+    # surface in payment_gateway_names (a list); `gateway` is often empty, so
+    # prefer the list and fall back to gateway.
+    _pgn = payload.get("payment_gateway_names") or []
+    payment_method = (
+        (_pgn[0] if isinstance(_pgn, list) and _pgn else payload.get("gateway")) or ""
+    ).strip()
     
     # IP & Source
     ip_address = str(payload.get("browser_ip") or "").strip()
@@ -357,7 +366,8 @@ def parse_shopify_order(payload: dict, prefix: str) -> dict:
         "total_price": total_price,
         "ip_address": ip_address,
         "source_url": source_url,
-        "created_at": created_at
+        "created_at": created_at,
+        "payment_method": payment_method
     }
 
 def build_notion_properties(data: dict) -> dict:
@@ -412,6 +422,12 @@ def build_notion_properties(data: dict) -> dict:
     # we don't write it (Notion sets it automatically). If it's a date property, we could.
     # We will let Notion handle the created_time system CREATED property automatically.
     
+    # Record the checkout payment method (e.g. "Cash on Delivery (COD)" or
+    # "Pay By Link") so the confirmation bot can branch on it. Only write when
+    # present — Notion rejects a select option with an empty name.
+    if data.get("payment_method"):
+        props["PAYMENT"] = {"select": {"name": data["payment_method"]}}
+
     return props
 
 # ---------------------------------------------------------------------------

@@ -89,6 +89,7 @@ FIELD_COST = "COST"
 FIELD_INTERNAL_NOTE = "INTERNAL NOTE"
 FIELD_ORDER_STATUS = "ORDER STATUS"
 FIELD_PAYMENT = "PAYMENT"
+FIELD_PAID_VIA_STRIPE = "Paid via Stripe"
 FIELD_CUSTOMER_TYPE = "CUSTOMER TYPE"
 FIELD_ORDER_SOURCE_URL = "ORDER SOURCE URL"
 FIELD_IMAGE_URL = "IMAGE URL"
@@ -534,6 +535,19 @@ def update_internal_note(page_id: str, note: str) -> bool:
     """Update the INTERNAL NOTE text field."""
     return _update_page(page_id, {
         FIELD_INTERNAL_NOTE: {"rich_text": [{"text": {"content": note}}]},
+    })
+
+
+def mark_stripe_paid(page_id: str, note: str = "Bot log: Paid and Confirmed") -> bool:
+    """Stamp an order paid via the Stripe pay-by-link flow.
+
+    Mirrors the COD confirm action (writes a "Bot log: ..." INTERNAL NOTE) and
+    additionally ticks the "Paid via Stripe" checkbox so the sales team can
+    process it. Does NOT change ORDER STATUS (same as the COD confirm handler).
+    """
+    return _update_page(page_id, {
+        FIELD_INTERNAL_NOTE: {"rich_text": [{"text": {"content": note}}]},
+        FIELD_PAID_VIA_STRIPE: {"checkbox": True},
     })
 
 

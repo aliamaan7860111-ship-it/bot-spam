@@ -501,6 +501,103 @@ def get_subscriber_custom_fields(
             log.warning(f"  WhatChimp subscriber lookup error on {pnid}: {e}")
     return {}
 
+# ---------------------------------------------------------------------------
+# "Pay By Link" payment template (Stripe checkout link). A SEPARATE Meta template
+# from the COD confirmation, sent when a customer picks the "Pay By Link" payment
+# method at checkout instead of Cash on Delivery.
+#
+# Template variables are filled at SEND time (same mechanism as the
+# abandoned-checkout recovery template): tags fill positionally in body order.
+# #User-Name# -> templateVariable-name-1, #!amount!# -> templateVariable-amount-2,
+# #!url!# -> templateVariable-url-3. template_id is WhatChimp's INTERNAL id;
+# phone_number_id reuses the brand's confirmation sender number (BRAND_CONFIG).
+# ---------------------------------------------------------------------------
+PAY_LINK_CONFIG = {
+    "AM": {"template_id": os.getenv("WHATCHIMP_PAYLINK_TEMPLATE_AMARA", "428721")},
+}
+
+
+def get_pay_link_config(order_id_or_prefix: str) -> dict | None:
+    """Resolve pay-by-link routing (pnid + payment template_id) or None."""
+    prefix = (order_id_or_prefix or "")[:2]
+    cfg = PAY_LINK_CONFIG.get(prefix)
+    brand = BRAND_CONFIG.get(prefix)
+    if not cfg or not brand:
+        return None
+    return {
+        "phone_number_id": brand["phone_number_id"],
+        "template_id": cfg["template_id"],
+        "brand_display": brand["brand_display"],
+    }
+
+
+def send_payment_link_template(
+    phone_number: str,
+    customer_name: str,
+    order_id: str,
+    amount: str,
+    pay_url: str,
+    brand_prefix: str = "",
+) -> bool:
+    """Send the 'Pay By Link' template carrying a Stripe checkout link.
+
+    Ensures the subscriber exists (name set) so #User-Name# resolves, then sends
+    template PAY_LINK_CONFIG[prefix] with amount + url variables. Returns True
+    only on WhatChimp status == "1".
+    """
+    if not WHATCHIMP_API_TOKEN:
+        log.error("Missing WHATCHIMP_API_TOKEN in .env")
+        return False
+
+    prefix = (brand_prefix or order_id or "")[:2]
+    cfg = get_pay_link_config(prefix)
+    if not cfg:
+        log.error(f"No PAY_LINK_CONFIG for prefix '{prefix}' (order {order_id}) - skipping paylink")
+        return False
+
+    phone_number_id = cfg["phone_number_id"]
+    template_id = cfg["template_id"]
+    display_brand = cfg["brand_display"]
+
+    cleaned_phone = clean_phone_number(phone_number)
+    if not cleaned_phone.startswith("971") or len(cleaned_phone) != 12:
+        log.error(
+            f"Phone '{phone_number}' failed UAE normalization "
+            f"(got '{cleaned_phone}') - skipping paylink {order_id}"
+        )
+        return False
+
+    # Ensure subscriber exists + name set so #User-Name# resolves. Also syncs
+    # order_id/brand custom fields (harmless; matches the confirmation flow).
+    create_or_update_subscriber(phone_number, customer_name, order_id, display_brand, phone_number_id)
+
+    url = f"{API_BASE}/send/template"
+    payload = {
+        "apiToken":        WHATCHIMP_API_TOKEN,
+        "phone_number_id": phone_number_id,
+        "template_id":     template_id,
+        "phone_number":    cleaned_phone,
+        "templateVariable-name-1":   clean_template_param(customer_name),
+        "templateVariable-amount-2": clean_template_param(amount),
+        "templateVariable-url-3":    clean_template_param(pay_url),
+    }
+    try:
+        log.info(
+            f"Paylink template {template_id} -> {cleaned_phone} via {phone_number_id} "
+            f"({display_brand}, order {order_id})"
+        )
+        resp = requests.post(url, data=payload, timeout=15)
+        data = resp.json()
+        if str(data.get("status")) == "1":
+            log.info(f"Paylink delivered: {order_id}")
+            return True
+        log.error(f"Paylink rejected ({display_brand}): {data.get('message', data)}")
+        return False
+    except Exception as e:
+        log.error(f"Paylink request failed: {e}")
+        return False
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print("WhatChimp DEFINITIVE Client Ready.")

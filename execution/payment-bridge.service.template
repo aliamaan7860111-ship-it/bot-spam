@@ -1,0 +1,18 @@
+[Unit]
+Description=Stripe Pay-By-Link Webhook Receiver (payment-bridge)
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_LINUX_USERNAME
+WorkingDirectory=/home/YOUR_LINUX_USERNAME/automation
+ExecStart=/usr/bin/python3 execution/payment_bridge.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/YOUR_LINUX_USERNAME/automation/payment_bridge.log
+StandardError=append:/home/YOUR_LINUX_USERNAME/automation/payment_bridge.log
+Environment=PAYMENT_BRIDGE_PORT=8087
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
