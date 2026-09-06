@@ -638,7 +638,7 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
                 except ValueError:
                     limit = 5
                     
-                shopify_url = f"https://{shopify_domain}/admin/api/2024-04/orders.json"
+                shopify_url = f"https://{shopify_domain}/admin/api/2024-10/orders.json"
                 shopify_headers = {
                     "X-Shopify-Access-Token": shopify_token,
                     "Content-Type": "application/json",
@@ -647,13 +647,23 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
                     "limit": limit,
                     "status": "any"
                 }
-                
-                try:
-                    resp = await http_client.get(shopify_url, headers=shopify_headers, params=params, timeout=20)
-                    resp.raise_for_status()
-                    orders = resp.json().get("orders", [])
-                except Exception as e:
-                    log.error(f"⏰ Error fetching backfill orders for {env_suffix}: {e}")
+
+                # Shopify's orders endpoint intermittently 500s on the heavy status=any
+                # fetch; retry with backoff so a transient failure doesn't skip the whole
+                # store for the cycle (was the root cause of "consistent" AMARA errors).
+                orders = None
+                for attempt in range(4):
+                    try:
+                        resp = await http_client.get(shopify_url, headers=shopify_headers, params=params, timeout=30)
+                        resp.raise_for_status()
+                        orders = resp.json().get("orders", [])
+                        break
+                    except Exception as e:
+                        if attempt == 3:
+                            log.error(f"⏰ Error fetching backfill orders for {env_suffix} after 4 tries: {e}")
+                        else:
+                            await asyncio.sleep(1.5 * (attempt + 1))
+                if orders is None:
                     continue
                     
                 for order in orders:
