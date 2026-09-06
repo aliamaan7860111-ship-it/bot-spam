@@ -151,8 +151,6 @@ DOMAIN_TO_PREFIX = {
     "3wawhe-zf": "VX",       # Virex
     "chronova": "VX",        # Chronova (Virex)
     "e01b04-bv": "VX",       # Chronova new store (2026-08)
-    "pelvini": "PV",
-    "rngttp-0k": "PV",       # Pelvini
     "elara": "PT",
     "vner5g-2p": "PT",       # Elara (old store, retired)
     "njya1e-uz": "E",        # Elara (new store, E-prefix)
@@ -169,7 +167,10 @@ DOMAIN_TO_PREFIX = {
     "diwan": "DX",
     "wq2usc-du": "DX",        # Diwan
     "velix": "VL",
-    "g1ynuh-q0": "VL"         # Velix
+    "g1ynuh-q0": "VL",        # Velix
+    "jagi40-rc": "SQ",        # SAQR
+    "9wmkfq-00": "AW",        # Amara's Watches
+    "cthip4-0m": "WG"         # Wrist Gallery
 }
 
 def get_store_prefix(path: str, headers: dict) -> str:
@@ -254,6 +255,21 @@ BRAND_FORMATTING = {
         "strip_prefixes": ["E"],
         "strip_suffixes": ["7"],
         "crm_prefix": "E"
+    },
+    "SQ": {  # SAQR: "#SQ21002" -> strip "SQ2" -> "SQ21002" (keeps SQ2 + order number)
+        "strip_prefixes": ["SQ2"],
+        "strip_suffixes": [],
+        "crm_prefix": "SQ2"
+    },
+    "AW": {  # Amara's Watches: "#AW100334" -> strip "AW" + trailing "34" -> "AW1003"
+        "strip_prefixes": ["AW"],
+        "strip_suffixes": ["34"],
+        "crm_prefix": "AW"
+    },
+    "WG": {  # Wrist Gallery: "#WG100111" -> strip "WG" + trailing "11" -> "WG1001"
+        "strip_prefixes": ["WG"],
+        "strip_suffixes": ["11"],
+        "crm_prefix": "WG"
     }
 }
 
@@ -587,7 +603,6 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
     # Mapping of prefixes to their suffixes for env configuration
     brands_info = {
         "AM": "AMARA",
-        "PV": "PELVINI",
         "E": "ELARA",
         "Di": "DIALO",
         "LU": "LUNE",
@@ -596,7 +611,10 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
         "O": "ORLENTO",
         "VS": "VIRESTA",
         "DX": "DIWAN",
-        "VL": "VELIX"
+        "VL": "VELIX",
+        "SQ": "SAQR",
+        "AW": "AMARAWATCHES",
+        "WG": "WRISTGALLERY"
     }
 
     while True:
