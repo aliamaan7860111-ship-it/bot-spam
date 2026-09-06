@@ -256,10 +256,10 @@ BRAND_FORMATTING = {
         "strip_suffixes": ["7"],
         "crm_prefix": "E"
     },
-    "SQ": {  # SAQR: "#SQ21002" -> strip "SQ2" -> "SQ21002" (keeps SQ2 + order number)
+    "SQ": {  # SAQR: "#SQ21002" -> strip "SQ2" prefix -> "1002" -> "SQ1002"
         "strip_prefixes": ["SQ2"],
         "strip_suffixes": [],
-        "crm_prefix": "SQ2"
+        "crm_prefix": "SQ"
     },
     "AW": {  # Amara's Watches: "#AW100334" -> strip "AW" + trailing "34" -> "AW1003"
         "strip_prefixes": ["AW"],
