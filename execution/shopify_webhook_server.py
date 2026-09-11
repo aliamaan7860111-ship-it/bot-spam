@@ -28,6 +28,7 @@ log = logging.getLogger("shopify_webhook")
 # handler first makes basicConfig a no-op and silences all stdout/file logging.
 import error_reporter
 import order_dedup
+import grq_os_ingest
 error_reporter.install("shopify-webhook", host="gcp-vm")
 
 # Configurations
@@ -450,6 +451,66 @@ def build_notion_properties(data: dict) -> dict:
 # Server Request Handler
 # ---------------------------------------------------------------------------
 
+def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> None:
+    """
+    Send the order on to GRQ OS, the CRM being built to replace this Notion
+    database. Every store, not just one: the point of the parallel run is to
+    see the whole book, and an order missing from it looks like a bug in GRQ
+    OS rather than a gate here.
+
+    Nothing about Notion depends on this. grq_os_ingest returns False on any
+    failure and never raises, and it is inert unless GRQ_OS_URL and
+    GRQ_OS_INGEST_SECRET are both set, so this is a no-op until switched on.
+    GRQ OS is read-only for the team during the parallel run: updates still
+    happen in Notion, and the two are reconciled before anyone switches over.
+    """
+    try:
+        shipping = payload.get("shipping_address") or {}
+        billing = payload.get("billing_address") or {}
+        addr = shipping or billing
+        grq_os_ingest.order({
+            "order_code":     data["order_id"],
+            "brand_code":     (BRAND_FORMATTING.get(prefix) or {}).get("crm_prefix") or prefix,
+            "channel":        "shopify",
+            "order_type":     "website",
+            "customer_name":  data.get("customer_name"),
+            "phone":          data.get("phone"),
+            "email":          data.get("email"),
+            "placed_at":      data.get("created_at"),
+            "currency":       payload.get("currency") or "AED",
+            "total":          float(data.get("total_price") or 0) or 0,
+            "payment_method": data.get("payment_method"),
+            "source_ip":      data.get("ip_address"),
+            "items": [
+                {
+                    "sku": (it.get("sku") or None),
+                    "product_title": it.get("title") or "Unknown Product",
+                    "variant": it.get("variant_title") or None,
+                    "quantity": it.get("quantity") or 1,
+                    "unit_price": float(it.get("price") or 0) or None,
+                }
+                for it in (payload.get("line_items") or [])
+            ],
+            "address": {
+                "line1": data.get("full_address") or None,
+                "city": addr.get("city") or None,
+                "emirate_or_region": addr.get("province") or None,
+                "country": addr.get("country_code") or "AE",
+                "phone": data.get("phone") or None,
+            },
+            "external_ids": {
+                "shopify_order_id": str(payload.get("id") or ""),
+                "order_source_url": data.get("source_url") or "",
+            },
+            "raw":    payload,
+            "source": "shopify-webhook",
+        })
+    except Exception as e:
+        # Belt and braces: the client already swallows everything, and a GRQ
+        # OS problem must never turn into a Notion capture outage.
+        log.warning(f"GRQ OS mirror skipped for {data.get('order_id')}: {e}")
+
+
 async def process_shopify_webhook(http_client: httpx.AsyncClient, payload: dict, prefix: str) -> tuple[int, str]:
     """Process Shopify webhook data: parse, deduplicate, and insert to Notion."""
     try:
@@ -485,6 +546,7 @@ async def process_shopify_webhook(http_client: httpx.AsyncClient, payload: dict,
     success = await create_notion_order(http_client, properties)
 
     if success:
+        mirror_to_grq_os(data, prefix, payload)
         return 200, "Order processed and sent to Notion successfully"
     else:
         order_dedup.release(order_id)  # failed insert -> allow a later retry
