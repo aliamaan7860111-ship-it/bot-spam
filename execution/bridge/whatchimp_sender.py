@@ -98,8 +98,17 @@ async def send_recovery_template(
         "template_id": brand.whatchimp_template_id,
         "phone_number": phone,
         "templateVariable-name-1": first_name or "there",
-        "templateVariable-url-2": checkout_url,
     }
+    # Variable slots differ per template generation — positions bind to the body's
+    # #!...!# markers, so putting the url in the wrong slot silently renders blank.
+    #   new collective 442130 : "Hey #User-Name#, we kept your #!brand!# cart safe" + #!url!#
+    #                           -> brand at 2, url at 3
+    #   legacy per-brand      -> url at 2, no brand variable
+    if brand.recovery_brand:
+        payload["templateVariable-brand-2"] = brand.recovery_brand
+        payload["templateVariable-url-3"] = checkout_url
+    else:
+        payload["templateVariable-url-2"] = checkout_url
 
     resp = await client.post(
         f"{WHATCHIMP_BASE}/whatsapp/send/template",

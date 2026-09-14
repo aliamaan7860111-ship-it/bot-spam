@@ -10,7 +10,28 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-BRAND_SLUGS = ["amara", "pelvini", "elara", "lune", "virex", "dialo", "rimal", "orlento", "velix", "diwan", "viresta"]
+BRAND_SLUGS = ["amara", "amarawatches", "pelvini", "elara", "lune", "virex", "dialo",
+               "rimal", "orlento", "saqr", "velix", "wristgallery", "viresta"]
+
+# Short brand name rendered into the collective recovery template's #!brand!#
+# (templateVariable-brand-2). The copy reads "we kept your <brand> cart safe", so
+# these are deliberately the short form, NOT the fuller confirmation/OFD names.
+#
+# Presence here ALSO selects the payload layout (see whatchimp_sender):
+#   in this map  -> new collective template 442130: brand at 2, url at 3
+#   absent       -> legacy per-brand template:      url at 2, no brand variable
+# Brands that did not move to the 2026-09 Saudi portfolio are intentionally absent.
+RECOVERY_BRAND_DISPLAY = {
+    "amara":        "Amara",
+    "amarawatches": "Amara",
+    "rimal":        "Rimal",
+    "orlento":      "Orlento",
+    "saqr":         "Saqr",
+    "lune":         "Lune",
+    "velix":        "Velix",
+    "wristgallery": "Wrist Gallery",
+    "viresta":      "Viresta",
+}
 
 
 @dataclass
@@ -22,6 +43,7 @@ class BrandConfig:
     whatchimp_phone_number_id: str | None
     whatchimp_template_id: str | None
     checkout_discount_code: str
+    recovery_brand: str | None = None
 
     @property
     def shopify_ready(self) -> bool:
@@ -46,6 +68,7 @@ def load_brand(slug: str) -> BrandConfig:
         whatchimp_phone_number_id=_g(u, "WHATCHIMP_PHONE_NUMBER_ID"),
         whatchimp_template_id=_g(u, "WHATCHIMP_TEMPLATE_ID"),
         checkout_discount_code=_g(u, "CHECKOUT_DISCOUNT_CODE") or "RECOVER10",
+        recovery_brand=RECOVERY_BRAND_DISPLAY.get(slug),
     )
 
 
