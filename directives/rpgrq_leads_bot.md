@@ -102,16 +102,26 @@ Always normalize via a mapping dictionary before writing to Notion.
 
 ## Infra
 
-- GCP VM `34.30.125.177`.
+- GCP VM, reached by hostname `grqholdings.duckdns.org` (the VM's public IP is
+  ephemeral — it was `34.30.125.177`, now `104.155.133.66`. **Always register the
+  hostname, never the IP**, or the webhooks silently break on the next IP change).
 - Port **8082** (firewall rule `allow-rpgrq-webhookk`).
 - HTTP (no TLS).
 - Systemd service `rpgrq-webhook.service`.
 - Existing `order-bridge` service on port 8080 untouched.
+- NOTE: this port **bypasses Caddy**. The Caddyfile only special-cases
+  `/shopify/orders*` (8085) and `/stripe/webhook*` (8087) and routes everything
+  else to grq-ac on 8084 — so `https://grqholdings.duckdns.org/rpgrq/...` would
+  reach the WRONG service. The `:8082` port is required.
 
 ## Webhook URLs to register in WhatChimp
 
-- Incoming: `http://34.30.125.177:8082/rpgrq/incoming`
-- Outgoing: `http://34.30.125.177:8082/rpgrq/outgoing`
+Set BOTH on every brand number/bot (verified returning 200 on 2026-09-15):
+
+- Incoming: `http://grqholdings.duckdns.org:8082/rpgrq/incoming`
+- Outgoing: `http://grqholdings.duckdns.org:8082/rpgrq/outgoing`
+
+Health check: `GET http://grqholdings.duckdns.org:8082/` -> `rpgrq up`.
 
 ## Shift-based response time
 
