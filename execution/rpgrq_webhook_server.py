@@ -129,6 +129,34 @@ def parse_request_body(headers: dict[str, str], body: bytes) -> dict:
         return {}
 
 
+# WhatChimp does not reliably send the number identity as `phone_number_id` on
+# inbound webhooks (observed empty on every 2026-09 payload), which forces brand
+# resolution onto bot_name — useless when several bots share the name
+# "Customer Care". Try every spelling we've seen; if none match, log the payload's
+# KEY NAMES so the real field can be added here.
+_PNID_KEYS = (
+    "phone_number_id", "phoneNumberID", "phoneNumberId", "phone_number_ID",
+    "whatsapp_phone_number_id", "wa_phone_number_id", "business_phone_number_id",
+    "phone_id", "phoneId", "number_id", "numberId",
+)
+_PNID_SHAPES_LOGGED: set = set()
+
+
+def _extract_phone_number_id(payload: dict) -> str:
+    """Best-effort phone_number_id from an inbound/outbound WhatChimp payload."""
+    for key in _PNID_KEYS:
+        val = payload.get(key)
+        if val:
+            return str(val).strip()
+    # Diagnostic: KEY NAMES only, never values (they carry customer data), and
+    # once per distinct payload shape so it cannot spam the log.
+    shape = ",".join(sorted(str(k) for k in payload.keys()))
+    if shape and shape not in _PNID_SHAPES_LOGGED:
+        _PNID_SHAPES_LOGGED.add(shape)
+        log.warning("payload has no phone_number_id under any known key; keys = [%s]", shape)
+    return ""
+
+
 def pick_active_labels(label_names_raw: str) -> list[str]:
     """Turn WhatChimp's comma-separated label_names into a list of mapped Notion labels."""
     if not label_names_raw:
@@ -189,7 +217,7 @@ async def handle_incoming(
     phone = str(payload.get("chat_id") or "").strip()
     bot_name = str(payload.get("whatsapp_bot_name") or "").strip()
     bot_id = str(payload.get("whatsapp_bot_id") or "").strip()
-    phone_number_id = str(payload.get("phone_number_id") or "").strip()
+    phone_number_id = _extract_phone_number_id(payload)
     wa_message_id = str(payload.get("wa_message_id") or "").strip()
     label_names_raw = str(payload.get("label_names") or "")
 
@@ -261,7 +289,7 @@ async def handle_outgoing(
     phone = str(payload.get("chat_id") or "").strip()
     bot_name = str(payload.get("whatsapp_bot_name") or "").strip()
     bot_id = str(payload.get("whatsapp_bot_id") or "").strip()
-    phone_number_id = str(payload.get("phone_number_id") or "").strip()
+    phone_number_id = _extract_phone_number_id(payload)
     wa_message_id = str(payload.get("wa_message_id") or "").strip()
     label_names_raw = str(payload.get("label_names") or "")
 
