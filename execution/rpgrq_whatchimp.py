@@ -34,17 +34,28 @@ API_BASE = "https://app.whatchimp.com/api/v1/whatsapp"
 #   Shopping Assistance  (shared number — stores: Elara, Diwan, Pelvini, Viresta)
 # Every pnid a customer might be on (new + old) resolves to one of these 5.
 BRAND_BY_PHONE_ID = {
-    # Individual brands (own number: new + old during transition)
-    "1309764938876096": "Amara",               # Amara new
-    "1045332455333591": "Amara",               # Amara old
-    "1223004617567784": "Rimal",               # Rimal
+    # --- 2026-09 Saudi portfolio: nine stores on their OWN numbers -------------
+    # Each number serves exactly one store, so leads resolve to that brand.
+    "1253320094539905": "Amara",               # Amara's Room
+    "1199932539879999": "Amara's Watches",
+    "1397321910124444": "Rimal",
+    "1327104710486442": "Orlento",
+    "1268960389639645": "Saqr",
+    "1234704216403689": "Lune",
+    "1306342719226934": "Velix",
+    "1354836361042768": "Wrist Gallery",
+    "1260047933866516": "Viresta",
+    # --- legacy numbers (kept: customers may still be on them) ----------------
+    # A SHARED number cannot identify the store, so these must keep the grouped
+    # label. Do not "upgrade" them to a per-brand label.
+    "1309764938876096": "Amara",               # Amara, previous number
+    "1045332455333591": "Amara",               # Amara, oldest number
+    "1223004617567784": "Rimal",               # Rimal, previous number
     "1304894276030064": "Dialo",               # Dialo new
     "1002123586328400": "Dialo",               # Dialo old
-    # Shared: Customer Care (Orlento / Velix / Lune)
-    "1148388868368542": "Customer Care",       # shared number (new)
+    "1148388868368542": "Customer Care",       # shared: Orlento/Velix/Lune — ambiguous
     "1138942462625909": "Customer Care",       # old Lune number folds in
-    # Shared: Shopping Assistance (Elara / Diwan / Pelvini / Viresta)
-    "1238071629387272": "Shopping Assistance", # shared number (new)
+    "1238071629387272": "Shopping Assistance", # shared: Elara/Diwan/Pelvini (+Viresta before it split)
     "1031340813395459": "Shopping Assistance", # old Elara number folds in
 }
 
@@ -53,15 +64,22 @@ BRAND_ALIASES = {
     "amaras room dubai": "Amara", "amara's room dubai": "Amara",
     "rimal": "Rimal", "rimal uae": "Rimal",
     "dialo": "Dialo", "dialo uae": "Dialo",
-    # Customer Care group (shared number + the 3 stores' own names)
+    # Stores that now have their OWN number resolve to their own label. bot_id is
+    # checked BEFORE bot_name, so a lead arriving on an old shared bot still lands
+    # on the grouped label via WHATCHIMP_BOT_ID_TO_BRAND below.
+    "lune": "Lune", "lune collection": "Lune",
+    "orlento": "Orlento", "orlento uae": "Orlento",
+    "velix": "Velix", "velix uae": "Velix",
+    "viresta": "Viresta", "viresta uae": "Viresta",
+    "amaras watches": "Amara's Watches", "amara's watches": "Amara's Watches",
+    "saqr": "Saqr", "saqr uae": "Saqr",
+    "wrist gallery": "Wrist Gallery", "wrist gallery uae": "Wrist Gallery",
+    # Grouped labels — still correct for the shared numbers behind them.
     "customer care": "Customer Care",
-    "lune": "Customer Care", "lune collection": "Customer Care",
-    "orlento": "Customer Care", "velix": "Customer Care",
-    # Shopping Assistance group (shared number + the 4 stores' own names)
+    # Shopping Assistance group (Elara / Diwan / Pelvini still share one number)
     "shopping assistance": "Shopping Assistance",
     "elara": "Shopping Assistance", "elara uae": "Shopping Assistance",
     "diwan": "Shopping Assistance", "pelvini": "Shopping Assistance",
-    "viresta": "Shopping Assistance",
 }
 
 # Primary source of truth: whatsapp_bot_id (stable, unique per WhatChimp bot).
@@ -79,7 +97,12 @@ WHATCHIMP_BOT_ID_TO_BRAND = {
 # Canonical source labels the CRM expects. Anything outside this set that shows
 # up as a resolved source means a new bot name/id we haven't mapped yet.
 CANONICAL_SOURCES = {
-    "Amara", "Rimal", "Dialo", "Customer Care", "Shopping Assistance",
+    # Per-brand (own number since the 2026-09 Saudi portfolio migration)
+    "Amara", "Amara's Watches", "Rimal", "Orlento", "Saqr",
+    "Lune", "Velix", "Wrist Gallery", "Viresta", "Dialo",
+    # Still grouped: Elara / Diwan / Pelvini share one number, and legacy shared
+    # numbers can't be resolved to a single store.
+    "Customer Care", "Shopping Assistance",
 }
 
 # Deliberately NOT tracked (Virex is not a store). Leads matching these are
@@ -110,16 +133,21 @@ def resolve_source(bot_id: str, bot_name: str, phone_id: str = "") -> str:
     Best-effort CRM 'Source (Store)' label. NEVER returns None — a lead must
     never be dropped for want of a clean brand. Resolution order:
       1. whatsapp_bot_id  -> brand           (stable, unique per bot)
-      2. whatsapp_bot_name -> alias          (clean label)
-      3. phone_number_id  -> brand           (if the payload carries it)
+      2. phone_number_id  -> brand           (authoritative: 1:1 per store)
+      3. whatsapp_bot_name -> alias          (clean label, but names can be stale)
       4. bot_id treated as phone_id          (legacy payload shape)
       5. raw bot_name                        (preserved so we can map it later)
       6. "Unknown"                           (last resort — still captured)
+
+    pnid is checked BEFORE bot_name as of the 2026-09 migration: every new store
+    has its own number, so BRAND_BY_PHONE_ID identifies the store exactly, whereas
+    a bot's display name may be generic or reused. For legacy SHARED numbers the
+    pnid returns the same grouped label the alias would, so nothing regresses.
     """
     return (
         bot_id_to_brand(bot_id)
-        or normalize_brand(bot_name)
         or (phone_id_to_brand(phone_id) if phone_id else None)
+        or normalize_brand(bot_name)
         or phone_id_to_brand(bot_id)
         or (bot_name.strip() if bot_name and bot_name.strip() else None)
         or "Unknown"
