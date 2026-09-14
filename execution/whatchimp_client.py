@@ -38,29 +38,37 @@ BRAND_CONFIG = {
         "brand_display":     "Dialo UAE",
         "sender_phone":      "966572141803",
     },
-    # Orlento (O), Velix (VL), Lune (LU) share the "Customer Care" number.
+    # ---- New Saudi portfolio (2026-09) -------------------------------------
+    # Nine stores moved onto their OWN numbers under one portfolio, all sharing the
+    # collective confirmation template 442127 ("all_confirmations"), differentiated by
+    # templateVariable-brand-2. NOTE `confirm_first`: this template's buttons are
+    # [Process, Reschedule], so the confirm postback goes FIRST in the array — the
+    # reverse of the legacy templates. See send_template_message().
     "LU": {  # Lune Collection
-        "phone_number_id":   "1148388868368542",
-        "template_id":       "340859",
-        "confirm_button_qr": "6a707ec53fc7d",
+        "phone_number_id":   "1234704216403689",
+        "template_id":       "442127",
+        "confirm_button_qr": "6aa7f62d5e92e",
         "brand_display":     "Lune Collection",
-        "sender_phone":      "966570796417",
+        "sender_phone":      "966570990638",
+        "confirm_first":     True,
     },
     "O": {  # Orlento — 1-char order-id prefix, resolved via 1-char fallback
-        "phone_number_id":   "1148388868368542",
-        "template_id":       "340859",
-        "confirm_button_qr": "6a707ec53fc7d",
-        "brand_display":     "Orlento",
-        "sender_phone":      "966570796417",
+        "phone_number_id":   "1327104710486442",
+        "template_id":       "442127",
+        "confirm_button_qr": "6aa7f5c48b736",
+        "brand_display":     "Orlento UAE",
+        "sender_phone":      "966570060432",
+        "confirm_first":     True,
     },
     "VL": {  # Velix
-        "phone_number_id":   "1148388868368542",
-        "template_id":       "340859",
-        "confirm_button_qr": "6a707ec53fc7d",
-        "brand_display":     "Velix",
-        "sender_phone":      "966570796417",
+        "phone_number_id":   "1306342719226934",
+        "template_id":       "442127",
+        "confirm_button_qr": "6aa7f6575d552",
+        "brand_display":     "Velix UAE",
+        "sender_phone":      "966571948638",
+        "confirm_first":     True,
     },
-    "VX": {  # Virex UAE
+    "VX": {  # Virex UAE — NOT migrating, stays on the legacy UAE portfolio
         "phone_number_id":   "1073890042476443",
         "template_id":       "354663",
         "confirm_button_qr": "kZICJ4ZHWVcSDOC",
@@ -68,18 +76,44 @@ BRAND_CONFIG = {
         "sender_phone":      "971521539779",
     },
     "AM": {  # Amara's Room
-        "phone_number_id":   "1309764938876096",
-        "template_id":       "354661",
-        "confirm_button_qr": "6a707c70bb580",
+        "phone_number_id":   "1253320094539905",
+        "template_id":       "442127",
+        "confirm_button_qr": "6aa7eee012c92",
         "brand_display":     "Amara's Room",
-        "sender_phone":      "966571059538",
+        "sender_phone":      "966570280888",
+        "confirm_first":     True,
     },
-    "R": {  # Rimal UAE (replaces Chronova) — 1-char order-id prefix, resolved via 1-char fallback
-        "phone_number_id":   "1223004617567784",
-        "template_id":       "354663",
-        "confirm_button_qr": "6a70a777afd91",
+    "AW": {  # Amara's Watches (new store)
+        "phone_number_id":   "1199932539879999",
+        "template_id":       "442127",
+        "confirm_button_qr": "6aa7f585b884a",
+        "brand_display":     "Amara's Watches",
+        "sender_phone":      "966570935924",
+        "confirm_first":     True,
+    },
+    "SQ": {  # Saqr (new store)
+        "phone_number_id":   "1268960389639645",
+        "template_id":       "442127",
+        "confirm_button_qr": "6aa7f5e5540ae",
+        "brand_display":     "SAQR UAE",
+        "sender_phone":      "966571749720",
+        "confirm_first":     True,
+    },
+    "WG": {  # Wrist Gallery (new store)
+        "phone_number_id":   "1354836361042768",
+        "template_id":       "442127",
+        "confirm_button_qr": "6aa7f67bd515c",
+        "brand_display":     "Wrist Gallery UAE",
+        "sender_phone":      "966572517079",
+        "confirm_first":     True,
+    },
+    "R": {  # Rimal UAE — 1-char order-id prefix, resolved via 1-char fallback
+        "phone_number_id":   "1397321910124444",
+        "template_id":       "442127",
+        "confirm_button_qr": "6aa7f59ad7113",
         "brand_display":     "Rimal UAE",
-        "sender_phone":      "966571891110",
+        "sender_phone":      "966570864539",
+        "confirm_first":     True,
     },
     # Elara(E) / Diwan(DX) / Pelvini(PV) / Viresta(VS) share the "Customer Care 2" number.
     # sender_phone is a placeholder (inbound routing deferred for this number).
@@ -104,12 +138,15 @@ BRAND_CONFIG = {
         "brand_display":     "Pelvini",
         "sender_phone":      "966571807079",
     },
+    # Viresta LEFT the "Customer Care 2" group in the 2026-09 migration and now has
+    # its own number under the new portfolio. Elara/Diwan/Pelvini stay behind on it.
     "VS": {  # Viresta
-        "phone_number_id":   "1238071629387272",
-        "template_id":       "355333",
-        "confirm_button_qr": "6a70c6e43a79c",
-        "brand_display":     "Viresta",
-        "sender_phone":      "966571807079",
+        "phone_number_id":   "1260047933866516",
+        "template_id":       "442127",
+        "confirm_button_qr": "6aa7f6a810471",
+        "brand_display":     "Viresta UAE",
+        "sender_phone":      "966572862912",
+        "confirm_first":     True,
     },
 }
 
@@ -128,21 +165,25 @@ SENDER_PHONE_TO_PREFIX = {cfg["sender_phone"]:     prefix for prefix, cfg in BRA
 # Key = ORDER ID prefix. brand_display fills the #!brand!# template variable.
 # ---------------------------------------------------------------------------
 OFD_CONFIG = {
+    # --- legacy UAE portfolio (not migrating) ---
     "PT": {"phone_number_id": "1031340813395459", "ofd_template_id": "377952", "brand_display": "Elara UAE"},
     "Di": {"phone_number_id": "1304894276030064", "ofd_template_id": "377954", "brand_display": "Dialo UAE"},
-    "LU": {"phone_number_id": "1148388868368542", "ofd_template_id": "377952", "brand_display": "Lune Collection"},
     "PV": {"phone_number_id": "1238071629387272", "ofd_template_id": "377955", "brand_display": "Pelvini"},
     "VX": {"phone_number_id": "1073890042476443", "ofd_template_id": "377956", "brand_display": "Virex UAE"},
-    "O":  {"phone_number_id": "1148388868368542", "ofd_template_id": "377952", "brand_display": "Orlento"},
-    "VL": {"phone_number_id": "1148388868368542", "ofd_template_id": "377952", "brand_display": "Velix"},
-    # Amara: template 377951 has the same {{1}}=id / {{2}}=brand body as the others.
-    "AM": {"phone_number_id": "1309764938876096", "ofd_template_id": "377951", "brand_display": "Amara's Room"},
-    # Rimal (replaces Chronova on Virex's WABA): reuses Virex OFD template 377956, own number.
-    "R":  {"phone_number_id": "1223004617567784", "ofd_template_id": "377956", "brand_display": "Rimal UAE"},
-    # Elara/Diwan/Pelvini(above)/Viresta group — OFD template 377955 on the shared number.
     "E":  {"phone_number_id": "1238071629387272", "ofd_template_id": "377955", "brand_display": "Elara"},
     "DX": {"phone_number_id": "1238071629387272", "ofd_template_id": "377955", "brand_display": "Diwan"},
-    "VS": {"phone_number_id": "1238071629387272", "ofd_template_id": "377955", "brand_display": "Viresta"},
+    # --- new Saudi portfolio (2026-09): own numbers, collective OFD template 442131 ---
+    # Body is "your order #!id!# from #!brand!#" -> same id-1 / brand-2 variable map as
+    # the legacy templates, so build_ofd_payload needs no change.
+    "AM": {"phone_number_id": "1253320094539905", "ofd_template_id": "442131", "brand_display": "Amara's Room"},
+    "AW": {"phone_number_id": "1199932539879999", "ofd_template_id": "442131", "brand_display": "Amara's Watches"},
+    "R":  {"phone_number_id": "1397321910124444", "ofd_template_id": "442131", "brand_display": "Rimal UAE"},
+    "O":  {"phone_number_id": "1327104710486442", "ofd_template_id": "442131", "brand_display": "Orlento UAE"},
+    "SQ": {"phone_number_id": "1268960389639645", "ofd_template_id": "442131", "brand_display": "SAQR UAE"},
+    "LU": {"phone_number_id": "1234704216403689", "ofd_template_id": "442131", "brand_display": "Lune Collection"},
+    "VL": {"phone_number_id": "1306342719226934", "ofd_template_id": "442131", "brand_display": "Velix UAE"},
+    "WG": {"phone_number_id": "1354836361042768", "ofd_template_id": "442131", "brand_display": "Wrist Gallery UAE"},
+    "VS": {"phone_number_id": "1260047933866516", "ofd_template_id": "442131", "brand_display": "Viresta UAE"},
 }
 
 # Match longest prefix first so the 1-char "O" (Orlento) never shadows a 2-char prefix.
@@ -429,9 +470,16 @@ def send_template_message(
         "templateVariable-id-3":    clean_template_param(order_id),
         "templateVariable-name-1":  clean_template_param(customer_name),
 
-        # Button values — no spaces after comma per WhatChimp API
+        # Button values — order MUST match the template's button order, or the confirm
+        # tap fires the chat-with-human flow (and vice versa). No spaces after comma
+        # per WhatChimp API.
+        #   legacy templates : [Chat with human, Confirm]
+        #   new 442127       : [Process(confirm), Reschedule(chat with human)]  -> confirm_first
         "template_quick_reply_button_values": json.dumps(
-            ["YES_START_CHAT_WITH_HUMAN", confirm_button_qr], separators=(',', ':')
+            [confirm_button_qr, "YES_START_CHAT_WITH_HUMAN"]
+            if cfg.get("confirm_first")
+            else ["YES_START_CHAT_WITH_HUMAN", confirm_button_qr],
+            separators=(',', ':'),
         ),
     }
 

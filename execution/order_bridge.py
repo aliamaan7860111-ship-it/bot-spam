@@ -129,6 +129,10 @@ BRAND_MAP = {
     "DX": "Diwan",
     "PV": "Pelvini",
     "VS": "Viresta",
+    # New stores onboarded with the 2026-09 Saudi portfolio.
+    "AW": "Amara's Watches",
+    "SQ": "Saqr",
+    "WG": "Wrist Gallery",
 }
 
 def get_brand_from_order_id(order_id: str) -> str:
