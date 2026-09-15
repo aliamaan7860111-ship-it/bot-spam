@@ -8,6 +8,7 @@ Usage:
     python execution/whatsapp_confirmation_bot.py
 """
 
+import json
 import os
 import sys
 import asyncio
@@ -82,6 +83,51 @@ POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
 PAY_LINK_BRANDS = {b.strip() for b in os.getenv("PAY_LINK_BRANDS", "AM").split(",") if b.strip()}
 
 
+# Orders whose pay-by-link can never succeed, so the poller stops reconsidering
+# them. An order sits in NEW until it is confirmed, so without this a permanently
+# unsendable one is retried every cycle for as long as it stays inside the
+# freshness window -- which is how AM4996 (a South African number on a UAE-only
+# flow) was attempted 1,499 times across five hours.
+PAYLINK_BLOCKED = PROJECT_ROOT / ".tmp" / "paylink_blocked.json"
+
+
+def _blocked_read() -> dict:
+    try:
+        with open(PAYLINK_BLOCKED, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _block(order_id: str, reason: str, context: dict) -> None:
+    """Record a permanent failure, and raise it once in the Telegram error group.
+
+    Once per order: the file is checked before the work is attempted, so the
+    alert does not repeat every poll the way the failure itself used to.
+    """
+    log.error(f"Pay-by-link {order_id}: {reason} - will not retry")
+    try:
+        import error_reporter
+        error_reporter.report(
+            f"Pay-by-link permanently blocked for {order_id}: {reason}",
+            error_type="paylink_blocked",
+            context=context,
+        )
+    except Exception:
+        pass
+    try:
+        PAYLINK_BLOCKED.parent.mkdir(parents=True, exist_ok=True)
+        data = _blocked_read()
+        data[order_id] = {"reason": reason, "at": datetime.now(timezone.utc).isoformat(), **context}
+        tmp = PAYLINK_BLOCKED.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, PAYLINK_BLOCKED)
+    except Exception as e:
+        log.warning(f"could not persist paylink block for {order_id}: {e}")
+
+
 def _is_pay_by_link(method: str) -> bool:
     """True if the CRM PAYMENT value is the 'Pay By Link' checkout method."""
     return "pay by link" in (method or "").strip().lower()
@@ -89,15 +135,38 @@ def _is_pay_by_link(method: str) -> bool:
 
 def _send_pay_link(order: dict) -> bool:
     """Generate a Stripe payment link for a 'Pay By Link' order and send the
-    payment template instead of the COD confirmation. Returns True on success."""
+    payment template instead of the COD confirmation. Returns True on success.
+
+    Everything that can rule the order out is checked BEFORE the Stripe link is
+    minted, because minting first meant every rejected send still left a live
+    payment link behind. A send that fails for a reason that might clear -- a
+    WhatChimp outage, a template not yet published -- is left to retry, and the
+    retry now reuses the link already minted rather than making another.
+    """
     order_id = order.get("order_id", "")
     phone = order.get("phone", "")
     name = order.get("customer_name", "Customer")
+
+    if order_id in _blocked_read():
+        return False
+
     try:
         amount = f"{float(str(order.get('total_aed')).replace(',', '').strip()):.2f}"
     except (TypeError, ValueError):
-        log.error(f"Pay-by-link {order_id}: unparseable amount {order.get('total_aed')!r} - skipping")
+        _block(order_id, f"unparseable amount {order.get('total_aed')!r}",
+               {"order_id": order_id, "total_aed": str(order.get("total_aed"))})
         return False
+
+    if wc.get_pay_link_config(order_id[:2]) is None:
+        _block(order_id, f"no pay-link routing for prefix '{order_id[:2]}'",
+               {"order_id": order_id, "prefix": order_id[:2]})
+        return False
+
+    if wc.paylink_phone_or_none(phone) is None:
+        _block(order_id, f"phone {phone!r} is not a UAE number, which pay-by-link requires",
+               {"order_id": order_id, "phone": phone})
+        return False
+
     try:
         pay_url = stripe_pay.create_payment_link(order_id, amount, name)
     except Exception as e:

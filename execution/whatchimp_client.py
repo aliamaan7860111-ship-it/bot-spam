@@ -590,6 +590,18 @@ PAY_LINK_CONFIG = {
 }
 
 
+def paylink_phone_or_none(phone_number: str) -> str | None:
+    """The number normalised for a paylink send, or None if it can never take one.
+
+    Stripe charges in AED through a UAE-only flow, so a non-UAE number is not a
+    transient problem to retry -- it is an order this path cannot serve. Callers
+    check this BEFORE minting a payment link, so a customer on a foreign number
+    costs nothing instead of a link per poll.
+    """
+    cleaned = clean_phone_number(phone_number)
+    return cleaned if cleaned.startswith("971") and len(cleaned) == 12 else None
+
+
 def get_pay_link_config(order_id_or_prefix: str) -> dict | None:
     """Resolve pay-by-link routing (pnid + payment template_id) or None."""
     prefix = (order_id_or_prefix or "")[:2]
@@ -632,11 +644,11 @@ def send_payment_link_template(
     template_id = cfg["template_id"]
     display_brand = cfg["brand_display"]
 
-    cleaned_phone = clean_phone_number(phone_number)
-    if not cleaned_phone.startswith("971") or len(cleaned_phone) != 12:
+    cleaned_phone = paylink_phone_or_none(phone_number)
+    if not cleaned_phone:
         log.error(
             f"Phone '{phone_number}' failed UAE normalization "
-            f"(got '{cleaned_phone}') - skipping paylink {order_id}"
+            f"(got '{clean_phone_number(phone_number)}') - skipping paylink {order_id}"
         )
         return False
 
