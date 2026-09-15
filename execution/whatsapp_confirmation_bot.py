@@ -157,13 +157,14 @@ def _send_pay_link(order: dict) -> bool:
                {"order_id": order_id, "total_aed": str(order.get("total_aed"))})
         return False
 
-    if wc.get_pay_link_config(order_id[:2]) is None:
-        _block(order_id, f"no pay-link routing for prefix '{order_id[:2]}'",
-               {"order_id": order_id, "prefix": order_id[:2]})
+    # Full order_id, not a slice: the resolver handles one-char brands (O, R).
+    if wc.get_pay_link_config(order_id) is None:
+        _block(order_id, f"no pay-link routing for order id '{order_id}'",
+               {"order_id": order_id})
         return False
 
     if wc.paylink_phone_or_none(phone) is None:
-        _block(order_id, f"phone {phone!r} is not a UAE number, which pay-by-link requires",
+        _block(order_id, f"phone {phone!r} is not a usable number",
                {"order_id": order_id, "phone": phone})
         return False
 

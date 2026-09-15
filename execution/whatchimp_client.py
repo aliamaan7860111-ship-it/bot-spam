@@ -591,20 +591,31 @@ PAY_LINK_CONFIG = {
 
 
 def paylink_phone_or_none(phone_number: str) -> str | None:
-    """The number normalised for a paylink send, or None if it can never take one.
+    """The number normalised for a paylink send, or None if it is not a number.
 
-    Stripe charges in AED through a UAE-only flow, so a non-UAE number is not a
-    transient problem to retry -- it is an order this path cannot serve. Callers
-    check this BEFORE minting a payment link, so a customer on a foreign number
-    costs nothing instead of a link per poll.
+    Any country, exactly like the COD confirmation path: a Stripe link is a URL
+    and the card behind it needs no particular passport, so where the customer's
+    phone happens to be registered was never a reason to withhold one. AM4996
+    was a South African customer on a UAE-only check; the order was fine, the
+    check was wrong.
+
+    Only a genuinely unusable number (empty, or not a plausible E.164 subscriber
+    number) returns None. Callers check this BEFORE minting a payment link so a
+    dud number costs nothing rather than a link per poll.
     """
     cleaned = clean_phone_number(phone_number)
-    return cleaned if cleaned.startswith("971") and len(cleaned) == 12 else None
+    return cleaned if is_valid_msisdn(cleaned) else None
 
 
 def get_pay_link_config(order_id_or_prefix: str) -> dict | None:
-    """Resolve pay-by-link routing (pnid + payment template_id) or None."""
-    prefix = (order_id_or_prefix or "")[:2]
+    """Resolve pay-by-link routing (pnid + payment template_id) or None.
+
+    Two-char prefix first, then one-char, the same fallback get_brand_config
+    uses -- Orlento is "O" and Rimal is "R", so a [:2] lookup alone reads them
+    as "O1"/"R1" and finds nothing.
+    """
+    oid = order_id_or_prefix or ""
+    prefix = oid[:2] if oid[:2] in PAY_LINK_CONFIG else oid[:1]
     cfg = PAY_LINK_CONFIG.get(prefix)
     brand = BRAND_CONFIG.get(prefix)
     if not cfg or not brand:
@@ -647,7 +658,7 @@ def send_payment_link_template(
     cleaned_phone = paylink_phone_or_none(phone_number)
     if not cleaned_phone:
         log.error(
-            f"Phone '{phone_number}' failed UAE normalization "
+            f"Phone '{phone_number}' failed normalization "
             f"(got '{clean_phone_number(phone_number)}') - skipping paylink {order_id}"
         )
         return False
