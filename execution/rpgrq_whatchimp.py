@@ -74,6 +74,10 @@ BRAND_ALIASES = {
     "amaras watches": "Amara's Watches", "amara's watches": "Amara's Watches",
     "saqr": "Saqr", "saqr uae": "Saqr",
     "wrist gallery": "Wrist Gallery", "wrist gallery uae": "Wrist Gallery",
+    # The live bot is misspelled "Wirst Gallery Dubai" — matched here so the label
+    # stays correct even if that bot's id changes. Fix the name in WhatChimp too.
+    "wirst gallery dubai": "Wrist Gallery", "wirst gallery": "Wrist Gallery",
+    "wrist gallery dubai": "Wrist Gallery",
     # Grouped labels — still correct for the shared numbers behind them.
     "customer care": "Customer Care",
     # Shopping Assistance group (Elara / Diwan / Pelvini still share one number)
@@ -87,6 +91,26 @@ BRAND_ALIASES = {
 # NAMED "Customer Care" in WhatChimp but belongs to the Shopping Assistance group.
 # New-number bot_ids are TBD (capture from first inbound and add here).
 WHATCHIMP_BOT_ID_TO_BRAND = {
+    # --- 2026-09 Saudi portfolio -------------------------------------------
+    # These nine MUST be resolved by bot_id: their inbound payloads carry no
+    # phone_number_id, and WhatChimp reuses display names across brands — four
+    # bots are called "Customer Care" and three "Shopping Care". Resolving by
+    # name collapsed all nine onto one source, which (via the one-ticket-per
+    # phone+source rule) merged a customer's nine messages into a single ticket.
+    # bot_id is checked first, so it overrides the ambiguous names.
+    # Mapped from the 2026-09-14 23:24-23:37 walk-through, anchored on the two
+    # self-identifying bots: 460585 "Amara's Room" (1st) and 460575
+    # "Wirst Gallery Dubai" (3rd) both matched their expected position.
+    "460585": "Amara",            # Amara's Room      (bot named "Amara's Room")
+    "460576": "Amara's Watches",  #                   (bot named "Customer Care")
+    "460575": "Wrist Gallery",    #                   (bot named "Wirst Gallery Dubai" [sic])
+    "460584": "Viresta",          #                   (bot named "Shopping Care")
+    "460580": "Velix",            #                   (bot named "Shopping Care")
+    "460586": "Lune",             #                   (bot named "Shopping Care")
+    "460583": "Saqr",             #                   (bot named "Customer Care")
+    "460579": "Orlento",          #                   (bot named "Customer Care")
+    "460577": "Rimal",            #                   (bot named "Customer Care")
+    # --- legacy bots --------------------------------------------------------
     "382073": "Dialo",               # old Dialo
     "382036": "Amara",               # old Amara
     "352261": "Shopping Assistance", # old Elara bot (named "Customer Care" in WC)
