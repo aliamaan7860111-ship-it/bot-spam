@@ -231,18 +231,38 @@ async def patch_active_row_update(
     resp.raise_for_status()
 
 
-async def get_phone_name_and_url(
-    client: httpx.AsyncClient, page_id: str
-) -> tuple[str | None, str | None, str | None]:
-    """Single fetch returning (phone, customer_name, checkout_url) at send time."""
+async def get_recovery_snapshot(client: httpx.AsyncClient, page_id: str) -> dict[str, Any]:
+    """Everything about a row that the send moment needs, in one fetch.
+
+    The send path already re-read phone/name/url here so a later
+    checkouts/update correction is honoured. It now also carries the cart, which
+    GRQ OS records alongside the sent message -- same request, no extra call.
+    """
     resp = await client.get(f"{NOTION_BASE}/pages/{page_id}", headers=_headers())
     resp.raise_for_status()
     props = resp.json().get("properties", {})
-    phone = (props.get("Phone") or {}).get("phone_number")
     title_parts = (props.get("Customer Name") or {}).get("title", [])
     name = "".join(t.get("plain_text", "") for t in title_parts).strip()
-    checkout_url = (props.get("Shopify Checkout URL") or {}).get("url")
-    return phone, (name or None), checkout_url
+    items = (props.get("Cart Items") or {}).get("rich_text", [])
+    cid = (props.get("Shopify Checkout ID") or {}).get("rich_text", [])
+    abandoned = (props.get("Abandoned At") or {}).get("date") or {}
+    return {
+        "phone": (props.get("Phone") or {}).get("phone_number"),
+        "customer_name": name or None,
+        "checkout_url": (props.get("Shopify Checkout URL") or {}).get("url"),
+        "cart_value": (props.get("Cart Value") or {}).get("number"),
+        "cart_items": "".join(t.get("plain_text", "") for t in items).strip() or None,
+        "checkout_id": "".join(t.get("plain_text", "") for t in cid).strip() or None,
+        "abandoned_at": abandoned.get("start"),
+    }
+
+
+async def get_phone_name_and_url(
+    client: httpx.AsyncClient, page_id: str
+) -> tuple[str | None, str | None, str | None]:
+    """(phone, customer_name, checkout_url) at send time. Thin view of the snapshot."""
+    snap = await get_recovery_snapshot(client, page_id)
+    return snap["phone"], snap["customer_name"], snap["checkout_url"]
 
 
 async def patch_status(client: httpx.AsyncClient, page_id: str, status: str, **extra) -> None:

@@ -25,6 +25,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 
+import grq_os_writer as grq_os
 import notion_writer as nw
 import sent_log
 from config import (
@@ -171,9 +172,12 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
     assert HTTP is not None
     brand = BRANDS[brand_slug]
     try:
-        current_phone, customer_name, db_checkout_url = await nw.get_phone_name_and_url(HTTP, page_id)
+        snap = await nw.get_recovery_snapshot(HTTP, page_id)
     except Exception:
-        current_phone, customer_name, db_checkout_url = None, None, None
+        snap = {}
+    current_phone = snap.get("phone")
+    customer_name = snap.get("customer_name")
+    db_checkout_url = snap.get("checkout_url")
     phone = normalize_phone(current_phone or phone) or phone
     first_name = (customer_name or "").strip().split(" ")[0] or None
 
@@ -230,8 +234,25 @@ async def _do_send(brand_slug: str, page_id: str, phone: str) -> None:
         # Slot already reserved by claim(); just record the message id on it.
         if sender_id:
             sent_log.set_message_id(phone, sender_id, result.get("message_id"))
+        sent_at = _now_iso()
         await nw.patch_status(
-            HTTP, page_id, "Recovery Sent", recovery_sent_at=_now_iso()
+            HTTP, page_id, "Recovery Sent", recovery_sent_at=sent_at
+        )
+        # GRQ OS keeps the record of what recovery achieved. Only sends land
+        # here, which is the point: a customer who came back inside the delay
+        # was cancelled above and never belonged in a report about messages.
+        await grq_os.record_sent(
+            HTTP,
+            brand_slug=brand_slug,
+            phone=phone,
+            store_label=brand.recovery_brand or brand_slug,
+            customer_name=customer_name,
+            cart_value=snap.get("cart_value"),
+            cart_items=snap.get("cart_items"),
+            checkout_id=snap.get("checkout_id"),
+            checkout_url=final_checkout_url or None,
+            abandoned_at=snap.get("abandoned_at"),
+            recovery_sent_at=sent_at,
         )
         log.info("[%s] recovery sent | wa_message_id=%s", brand_slug, result.get("message_id"))
     elif result["status"] == "stubbed":
@@ -481,9 +502,49 @@ async def _handle_checkout(cfg: BrandConfig, payload: dict, *, fresh: bool) -> d
     return {"status": "ok", "page_id": page_id, "was_created": was_created}
 
 
+def _discount_codes(payload: dict) -> list[str]:
+    """Every discount code on the order, however Shopify chose to express it."""
+    codes: list[str] = []
+    for d in payload.get("discount_codes") or []:
+        code = (d.get("code") if isinstance(d, dict) else d) or ""
+        if str(code).strip():
+            codes.append(str(code).strip())
+    for app in payload.get("discount_applications") or []:
+        code = (app or {}).get("code") or ""
+        if str(code).strip() and str(code).strip() not in codes:
+            codes.append(str(code).strip())
+    return codes
+
+
 async def _handle_order(cfg: BrandConfig, payload: dict) -> dict:
     """Suppress any pending recovery for this checkout — order was placed."""
     assert HTTP is not None
+
+    # Resolve the GRQ OS record FIRST, and on phone rather than checkout id.
+    #
+    # This deliberately runs before the checkout_id guards below. Completing the
+    # original checkout keeps its id, but a customer who abandons, gets our
+    # message, and then builds a NEW cart arrives with a different id and no
+    # matching row — and that is precisely the recovery most worth counting.
+    # Matching on the customer catches both; matching on the checkout loses one.
+    order_phone = normalize_phone(_extract_phone(payload))
+    if order_phone:
+        try:
+            outcome = await grq_os.record_outcome(
+                HTTP,
+                brand_slug=cfg.slug,
+                phone=order_phone,
+                order_code=str(payload.get("name") or payload.get("order_number") or "") or None,
+                order_total=_extract_total(payload),
+                discount_codes=_discount_codes(payload),
+                recovery_code=cfg.checkout_discount_code,
+                at=_now_iso(),
+            )
+            if outcome:
+                log.info("[%s] recovery outcome for %s: %s", cfg.slug, order_phone, outcome)
+        except Exception:
+            log.exception("[%s] GRQ OS outcome failed (non-fatal)", cfg.slug)
+
     checkout_id = str(
         payload.get("checkout_id") or payload.get("checkout_token") or ""
     )
