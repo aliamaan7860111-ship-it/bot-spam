@@ -23,7 +23,12 @@ load_dotenv(PROJECT_ROOT / ".env")
 BRIDGE_BASE_URL = os.environ.get("BRIDGE_BASE_URL", "https://grqholdings.duckdns.org")
 SHOPIFY_API_VERSION = os.environ.get("SHOPIFY_API_VERSION", "2026-04")
 
-BRANDS = ["amara", "pelvini", "elara", "lune", "virex", "dialo", "rimal", "orlento", "velix", "diwan", "viresta"]
+# Single source of truth: config.BRAND_SLUGS. This used to be a hardcoded copy,
+# which silently drifted — the three stores added with the 2026-09 portfolio
+# (amarawatches / saqr / wristgallery) were missing here, so running this skipped
+# them and their abandoned-checkout recovery never received a single event.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from config import BRAND_SLUGS as BRANDS  # noqa: E402
 
 TOPIC_TO_PATH = {
     "checkouts/create": "checkout-created",
