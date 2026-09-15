@@ -556,12 +556,37 @@ def get_subscriber_custom_fields(
 #
 # Template variables are filled at SEND time (same mechanism as the
 # abandoned-checkout recovery template): tags fill positionally in body order.
-# #User-Name# -> templateVariable-name-1, #!amount!# -> templateVariable-amount-2,
-# #!url!# -> templateVariable-url-3. template_id is WhatChimp's INTERNAL id;
-# phone_number_id reuses the brand's confirmation sender number (BRAND_CONFIG).
+#
+# 442126 "payment_link_all" is the COLLECTIVE template that replaced the
+# Amara-only 428721 "payment_link_amara". The old one was created under the
+# retired portfolio, so the new sender numbers cannot see it at all -- it fails
+# as `template name (payment_link_amara) does not exist in en_US`.
+#
+# The new body inserts a brand line, which pushed every later tag down one:
+#
+#   Hi #User-Name#,                         -> {{1}}, filled by WhatChimp from
+#                                              the subscriber, not passed here
+#   Thank you for shopping with #!brand!#.  -> templateVariable-brand-2
+#   Amount: AED #!amount!#                  -> templateVariable-amount-3
+#   Pay securely here: #!url!#              -> templateVariable-url-4
+#
+# Only the POSITION binds to {{N}}; the label between the dashes is cosmetic.
+# template_id is WhatChimp's INTERNAL id; phone_number_id reuses the brand's
+# confirmation sender number (BRAND_CONFIG).
+#
+# Every brand in the portfolio is listed because the template is collective and
+# carries the brand as a variable. What actually gates sending is PAY_LINK_BRANDS
+# in .env (Amara today) together with the store having the "Pay By Link" payment
+# method enabled in Shopify -- so listing a brand here turns nothing on by
+# itself, it only means the routing exists when that gate opens.
 # ---------------------------------------------------------------------------
+_PAY_LINK_TEMPLATE_ALL = os.getenv("WHATCHIMP_PAYLINK_TEMPLATE_ALL", "442126")
+
 PAY_LINK_CONFIG = {
-    "AM": {"template_id": os.getenv("WHATCHIMP_PAYLINK_TEMPLATE_AMARA", "428721")},
+    prefix: {"template_id": _PAY_LINK_TEMPLATE_ALL}
+    # The nine on template 442127 — i.e. the live portfolio. Note VS is Viresta;
+    # VX is Virex, which is retired, and must not be here.
+    for prefix in ("AM", "AW", "SQ", "WG", "LU", "O", "VL", "VS", "R")
 }
 
 
@@ -590,8 +615,8 @@ def send_payment_link_template(
     """Send the 'Pay By Link' template carrying a Stripe checkout link.
 
     Ensures the subscriber exists (name set) so #User-Name# resolves, then sends
-    template PAY_LINK_CONFIG[prefix] with amount + url variables. Returns True
-    only on WhatChimp status == "1".
+    template PAY_LINK_CONFIG[prefix] with brand + amount + url variables.
+    Returns True only on WhatChimp status == "1".
     """
     if not WHATCHIMP_API_TOKEN:
         log.error("Missing WHATCHIMP_API_TOKEN in .env")
@@ -625,9 +650,14 @@ def send_payment_link_template(
         "phone_number_id": phone_number_id,
         "template_id":     template_id,
         "phone_number":    cleaned_phone,
+        # Positions, not labels, bind to {{N}}. {{1}} is #User-Name#, which
+        # WhatChimp fills from the subscriber synced just above; it is passed
+        # anyway so the greeting still renders if that lookup ever comes back
+        # empty, exactly as the confirmation sender does.
         "templateVariable-name-1":   clean_template_param(customer_name),
-        "templateVariable-amount-2": clean_template_param(amount),
-        "templateVariable-url-3":    clean_template_param(pay_url),
+        "templateVariable-brand-2":  clean_template_param(display_brand),
+        "templateVariable-amount-3": clean_template_param(amount),
+        "templateVariable-url-4":    clean_template_param(pay_url),
     }
     try:
         log.info(
