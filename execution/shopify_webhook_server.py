@@ -666,7 +666,11 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
     brands_info = {
         "AM": "AMARA",
         "E": "ELARA",
-        "Di": "DIALO",
+        # Dialo RETIRED 2026-09-15. Its Shopify store returns 402 Payment Required
+        # (unpaid/frozen), so every backfill cycle burned 4 retries and logged 2
+        # errors — 2,262 of them, all alerting through the error-logging bot for a
+        # store that cannot return data. Re-add only if the store is reactivated.
+        # "Di": "DIALO",
         "LU": "LUNE",
         "VX": "VIREX",
         "R": "RIMAL",
