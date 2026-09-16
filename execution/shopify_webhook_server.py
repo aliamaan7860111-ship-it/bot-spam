@@ -451,12 +451,94 @@ def build_notion_properties(data: dict) -> dict:
 # Server Request Handler
 # ---------------------------------------------------------------------------
 
+# Prefix -> the env-var suffix holding that store's Shopify credentials.
+# Module scope because both the backfill loop and the GRQ OS mirror
+# need to reach a store's Admin API.
+STORE_ENV_SUFFIX = {
+    "AM": "AMARA",
+    "E": "ELARA",
+    # Dialo RETIRED 2026-09-15. Its Shopify store returns 402 Payment Required
+    # (unpaid/frozen), so every backfill cycle burned 4 retries and logged 2
+    # errors — 2,262 of them, all alerting through the error-logging bot for a
+    # store that cannot return data. Re-add only if the store is reactivated.
+    # "Di": "DIALO",
+    "LU": "LUNE",
+    "VX": "VIREX",
+    "R": "RIMAL",
+    "O": "ORLENTO",
+    "VS": "VIRESTA",
+    "DX": "DIWAN",
+    "VL": "VELIX",
+    "SQ": "SAQR",
+    "AW": "AMARAWATCHES",
+    "WG": "WRISTGALLERY"
+}
+
+# A product's photograph, remembered for the life of the process.
+#
+# GRQ OS costs an order by showing the fulfilment team what was actually
+# bought, and the Shopify order webhook carries a product id but no picture.
+# One Admin API call per order resolves every product in it at once, and the
+# answers are kept: a store sells the same forty products all week, so after
+# the first few orders this stops making calls at all.
+_PRODUCT_IMAGES: dict[str, str] = {}
+
+
+def product_images(prefix: str, product_ids: list[str]) -> dict[str, str]:
+    """
+    Map Shopify product id -> image URL, for the ids not already known.
+
+    Best effort throughout. A store with no credentials, a slow shop, a
+    product with no photo: all of them return nothing and the order still
+    reaches GRQ OS, just without a picture. Nothing here is allowed to matter
+    enough to delay a webhook, so the timeout is short and every failure is
+    swallowed.
+    """
+    want = [pid for pid in dict.fromkeys(product_ids) if pid and f"{prefix}:{pid}" not in _PRODUCT_IMAGES]
+    if not want:
+        return {pid: _PRODUCT_IMAGES[f"{prefix}:{pid}"]
+                for pid in product_ids if _PRODUCT_IMAGES.get(f"{prefix}:{pid}")}
+
+    suffix = STORE_ENV_SUFFIX.get(prefix)
+    if suffix:
+        domain = os.getenv(f"SHOPIFY_DOMAIN_{suffix}", "").strip()
+        token = os.getenv(f"SHOPIFY_TOKEN_{suffix}", "").strip()
+        if domain and token:
+            try:
+                r = httpx.get(
+                    f"https://{domain}/admin/api/2024-10/products.json",
+                    params={"ids": ",".join(want[:50]), "fields": "id,image"},
+                    headers={"X-Shopify-Access-Token": token},
+                    timeout=6.0,
+                )
+                if r.status_code == 200:
+                    for prod in (r.json().get("products") or []):
+                        src = ((prod.get("image") or {}).get("src") or "").strip()
+                        _PRODUCT_IMAGES[f"{prefix}:{prod.get('id')}"] = src
+                    # A product Shopify answered about but gave no photo for is
+                    # remembered as having none, so it is not asked again on
+                    # every order for the rest of the week.
+                    for pid in want:
+                        _PRODUCT_IMAGES.setdefault(f"{prefix}:{pid}", "")
+                else:
+                    log.warning(f"Product images for {prefix}: HTTP {r.status_code}")
+            except Exception as e:
+                log.warning(f"Product images for {prefix} unavailable: {e}")
+
+    return {pid: _PRODUCT_IMAGES[f"{prefix}:{pid}"]
+            for pid in product_ids if _PRODUCT_IMAGES.get(f"{prefix}:{pid}")}
+
+
 def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> None:
     """
     Send the order on to GRQ OS, the CRM being built to replace this Notion
     database. Every store, not just one: the point of the parallel run is to
     see the whole book, and an order missing from it looks like a bug in GRQ
     OS rather than a gate here.
+
+    Each line carries its product photo, because GRQ OS costs an order by
+    showing the fulfilment team what was actually bought. The webhook does not
+    include one, so it is looked up once per order and cached.
 
     Nothing about Notion depends on this. grq_os_ingest returns False on any
     failure and never raises, and it is inert unless GRQ_OS_URL and
@@ -468,6 +550,10 @@ def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> None:
         shipping = payload.get("shipping_address") or {}
         billing = payload.get("billing_address") or {}
         addr = shipping or billing
+        images = product_images(
+            prefix,
+            [str(it.get("product_id") or "") for it in (payload.get("line_items") or [])],
+        )
         grq_os_ingest.order({
             "order_code":     data["order_id"],
             "brand_code":     (BRAND_FORMATTING.get(prefix) or {}).get("crm_prefix") or prefix,
@@ -488,6 +574,11 @@ def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> None:
                     "variant": it.get("variant_title") or None,
                     "quantity": it.get("quantity") or 1,
                     "unit_price": float(it.get("price") or 0) or None,
+                    # The photograph fulfilment prices the order against, and
+                    # the store's product id so the last price paid for the
+                    # same thing can be offered next time.
+                    "image_url": images.get(str(it.get("product_id") or "")),
+                    "product_ref": str(it.get("product_id") or "") or None,
                 }
                 for it in (payload.get("line_items") or [])
             ],
@@ -662,26 +753,7 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
     interval = int(os.getenv("SHOPIFY_BACKFILL_INTERVAL_SECONDS", "600"))
     log.info(f"⏰ Background backfill loop started (every {interval}s)")
     
-    # Mapping of prefixes to their suffixes for env configuration
-    brands_info = {
-        "AM": "AMARA",
-        "E": "ELARA",
-        # Dialo RETIRED 2026-09-15. Its Shopify store returns 402 Payment Required
-        # (unpaid/frozen), so every backfill cycle burned 4 retries and logged 2
-        # errors — 2,262 of them, all alerting through the error-logging bot for a
-        # store that cannot return data. Re-add only if the store is reactivated.
-        # "Di": "DIALO",
-        "LU": "LUNE",
-        "VX": "VIREX",
-        "R": "RIMAL",
-        "O": "ORLENTO",
-        "VS": "VIRESTA",
-        "DX": "DIWAN",
-        "VL": "VELIX",
-        "SQ": "SAQR",
-        "AW": "AMARAWATCHES",
-        "WG": "WRISTGALLERY"
-    }
+    brands_info = STORE_ENV_SUFFIX
 
     while True:
         try:
