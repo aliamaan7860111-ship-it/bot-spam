@@ -1,0 +1,17 @@
+[Unit]
+Description=notion-mirror — Notion order status into GRQ OS (one way)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bilal
+WorkingDirectory=/home/bilal/automation
+ExecStart=/home/bilal/automation/venv/bin/python execution/notion_mirror.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/bilal/automation/.tmp/notion_mirror.log
+StandardError=append:/home/bilal/automation/.tmp/notion_mirror.log
+
+[Install]
+WantedBy=multi-user.target
