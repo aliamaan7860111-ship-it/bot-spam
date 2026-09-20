@@ -836,6 +836,17 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
                     ok = await create_notion_order(http_client, properties)
                     if not ok:
                         order_dedup.release(order_id)
+                        continue
+
+                    # GRQ OS gets it too. The webhook path has always done this
+                    # and the backfill never did, so any store whose Shopify
+                    # webhook is not firing had its orders land in Notion and
+                    # nowhere else. That was 16% of the last nine days - 47 of
+                    # Viresta's 72, 11 of Amara Watches' 19 - invisible in GRQ
+                    # OS with nothing in any log to say so, because the backfill
+                    # is the quiet path that is supposed to catch what the
+                    # webhook missed.
+                    mirror_to_grq_os(data, prefix, order)
                     
             log.info("⏰ Background backfill cycle complete.")
         except Exception as loop_err:
