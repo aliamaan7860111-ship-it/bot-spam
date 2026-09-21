@@ -29,14 +29,29 @@ import httpx
 
 log = logging.getLogger("grq_os.work")
 
-GRQ_OS_URL = os.getenv("GRQ_OS_URL", "").strip().rstrip("/")
-INGEST_SECRET = os.getenv("GRQ_OS_INGEST_SECRET", "").strip()
-BYPASS = os.getenv("GRQ_OS_BYPASS", "").strip()
+# Config is read at call time, not at import. Reading it at import makes the
+# module silently inert whenever it is imported before load_dotenv runs - and
+# inert looks exactly like "nothing to do". That is the same shape as the
+# grq-ac bug where empty config quietly turned a signature check off.
+
+
+def _url() -> str:
+    return os.getenv("GRQ_OS_URL", "").strip().rstrip("/")
+
+
+def _secret() -> str:
+    return os.getenv("GRQ_OS_INGEST_SECRET", "").strip()
+
+
+def _bypass() -> str:
+    return os.getenv("GRQ_OS_BYPASS", "").strip()
+
+
 TIMEOUT = float(os.getenv("GRQ_OS_TIMEOUT", "30"))
 
 
 def configured() -> bool:
-    return bool(GRQ_OS_URL and INGEST_SECRET)
+    return bool(_url() and _secret())
 
 
 def _post(path: str, payload: dict) -> dict | None:
@@ -44,12 +59,12 @@ def _post(path: str, payload: dict) -> dict | None:
         return None
     raw = json.dumps(payload, ensure_ascii=False)
     # Sign the exact bytes sent: an Arabic customer name 401s otherwise.
-    sig = hmac.new(INGEST_SECRET.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+    sig = hmac.new(_secret().encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
     headers = {"Content-Type": "application/json", "x-grq-signature": sig}
-    if BYPASS:
-        headers["x-vercel-protection-bypass"] = BYPASS
+    if _bypass():
+        headers["x-vercel-protection-bypass"] = _bypass()
     try:
-        res = httpx.post(f"{GRQ_OS_URL}/api/ingest/{path}", content=raw.encode("utf-8"),
+        res = httpx.post(f"{_url()}/api/ingest/{path}", content=raw.encode("utf-8"),
                          headers=headers, timeout=TIMEOUT)
     except Exception as e:
         log.error("GRQ OS %s/%s failed: %s", path, payload.get("action"), e)
