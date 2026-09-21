@@ -26,6 +26,7 @@ load_dotenv()
 
 import notion_client as nc
 import filex_status_mapper
+import grq_os_ingest
 import out_for_delivery as ofd
 from filex_client import FilexClient
 
@@ -39,6 +40,33 @@ FULFILLMENT_GROUP_ID = os.getenv("TELEGRAM_FULFILLMENT_GROUP_ID")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("filex_reconcile")
+
+
+def _tell_grq_os(order: dict, raw_status: str, mapped: str, tracking_no: str, event_iso: str | None) -> None:
+    """
+    Send the same courier status to GRQ OS.
+
+    GRQ OS does its own promotion: `ingest_courier` maps the courier's word
+    through `status_options` and drags the ORDER STATUS along for the three
+    that mean something to the team - Shipped, Delivered, Return to Origin -
+    while refusing to walk back a decision a person made by hand. So only the
+    raw status goes over; the mapping is not duplicated here, where the two
+    copies would drift.
+
+    Fire and forget, like every other GRQ OS write on this box: a problem
+    there must never stop the Filex reconciliation, which is the job that
+    keeps Notion honest.
+    """
+    try:
+        grq_os_ingest.courier({
+            "order_code": order.get("order_id"),
+            "courier": "filex",
+            "status": raw_status or mapped,
+            "awb": tracking_no,
+            "at": event_iso,
+        })
+    except Exception as e:
+        log.warning("GRQ OS courier update skipped for %s: %s", order.get("order_id"), e)
 
 
 def send_telegram(text: str) -> None:
@@ -112,6 +140,7 @@ def reconcile_active_orders(cutoff_iso: str | None = None):
                     order["order_id"], order.get("filex_status"), mapped,
                 )
                 nc.set_filex_status(order["page_id"], mapped)
+                _tell_grq_os(order, r.get("trackingStatus", ""), mapped, tn, r.get("eventTime"))
                 # Also promote to the main ORDER STATUS for Shipped/Delivered/RTO.
                 # Pass current ORDER STATUS so we don't stomp downstream manual moves
                 # (e.g. ops marked the order as ↩️ RETURNED after verifying the return).

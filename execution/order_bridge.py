@@ -45,6 +45,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 import notion_client as notion
 import telegram_client as tg
 import grq_os_fulfilment as grq
+import grq_os_work as grqw
 
 # --- TJR Logistics integration (own-driver labels, separate from Filex) ---
 # Defensive: if the TJR package isn't deployed yet, the bot still starts and the
@@ -1054,6 +1055,7 @@ def _unlock_pages(page_ids_by_ref: dict[str, list[str]]) -> None:
 def _write_tracking_to_notion(
     page_ids_by_ref: dict[str, list[str]],
     tracking_pairs: list[dict],
+    orders_by_ref: dict[str, list[dict]] | None = None,
 ) -> list[str]:
     """Write tracking + status + timestamps to every Notion row that placed.
     Returns the list of tracking numbers that were written (in placebulk order)."""
@@ -1075,7 +1077,40 @@ def _write_tracking_to_notion(
             log.info(f"  ↳ Wrote tracking {tn} to {len(page_ids)} merged Notion rows ({ref})")
         if tn:
             written.append(tn)
+        _tell_grq_os_about_label(ref, tn, orders_by_ref)
     return written
+
+
+def _tell_grq_os_about_label(ref: str, tracking_no: str, orders_by_ref: dict[str, list[dict]] | None) -> None:
+    """
+    Tell GRQ OS a Filex label exists, by order code.
+
+    Eligibility for /print all still comes from Notion, because Notion is the
+    source of truth while both run. But the label has to be recorded in GRQ OS
+    the moment it is bought, or GRQ OS keeps showing the order as unlabelled -
+    its Filex queue would be wrong, and worse, `order_for_label` would answer
+    `place` for an order that already has a label and somebody would buy a
+    second one.
+
+    Matched on order code rather than id: the bridge is holding Notion rows
+    here, and the code is what both systems agree on.
+    """
+    if not grqw.configured() or not tracking_no:
+        return
+    for order in (orders_by_ref or {}).get(ref, []):
+        code = order.get("order_id")
+        if not code:
+            continue
+        try:
+            found = grqw.label_one(code)
+            if not found.get("found"):
+                log.warning("  GRQ OS has no order %s to record the label against", code)
+                continue
+            if found.get("action") == "refetch":
+                continue          # already recorded; nothing to do
+            grqw.record_labels([{"tracking_no": tracking_no, "order_ids": [found["order_id"]]}])
+        except Exception as e:
+            log.warning("  could not record the label in GRQ OS for %s: %s", code, e)
 
 
 # Validation reason categories — must match prefixes in build_payload's ValidationError messages.
@@ -1393,7 +1428,7 @@ async def cmd_print_all(update, context):
         return
 
     tracking_pairs = result.get("trackingnos", [])
-    tracking_numbers = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs)
+    tracking_numbers = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs, orders_by_ref)
 
     # 7. Fetch a single combined PDF for all placed shipments and post it
     # with a summary caption (totals + merged groups).
@@ -1552,6 +1587,7 @@ async def cmd_print_one(update, context, order_id: str) -> None:
         return
 
     page_ids_by_ref = {payload["ShipperRef"]: [order["page_id"]]}
+    orders_by_ref = {payload["ShipperRef"]: [order]}
     _lock_pages(page_ids_by_ref)
     try:
         result = client.place_orders([payload])
@@ -1562,7 +1598,7 @@ async def cmd_print_one(update, context, order_id: str) -> None:
         return
 
     tracking_pairs = result.get("trackingnos", [])
-    written = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs)
+    written = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs, orders_by_ref)
     if not written:
         await _safe_send_message(
             bot, chat_id,
