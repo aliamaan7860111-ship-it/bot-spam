@@ -15,10 +15,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 
 import notion_client as nc
 import whatchimp_client as wc
+import grq_os_work as grq
+
+# Where the OFD poller looks for shipped orders. Notion until this is switched
+# on, GRQ OS after. One environment variable, so the cutover can be undone by
+# restarting a service.
+OFD_FROM_GRQ_OS = os.getenv("OFD_FROM_GRQ_OS", "").strip() in ("1", "true", "yes")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,7 +79,7 @@ def send_out_for_delivery(order: dict) -> bool:
 
     sent = wc.send_out_for_delivery_template(phone, order_id, cfg)
     if sent:
-        nc.mark_out_for_delivery_sent(page_id)
+        _mark_sent(order)
         log.info("OFD: sent + marked %r", order_id)
         return True
 
@@ -84,9 +91,45 @@ def send_out_for_delivery(order: dict) -> bool:
     return False
 
 
+def _mark_sent(order: dict) -> None:
+    """
+    Record that the customer has been told, in whichever systems are live.
+
+    While the mirror is running, writing only to GRQ OS would be undone: the
+    mirror reads `Out For Delivery Sent` back off Notion a minute later and
+    clears the stamp, and the customer gets a second message. So both are
+    written until Notion is retired.
+    """
+    grq_id = order.get("grq_os_order_id")
+    if grq_id:
+        if not grq.mark_ofd_sent(grq_id, template="ofd"):
+            log.error("OFD: %r sent but GRQ OS would not record it", order.get("order_id"))
+    page_id = order.get("page_id")
+    if page_id:
+        try:
+            nc.mark_out_for_delivery_sent(page_id)
+        except Exception as e:
+            log.warning("OFD: could not mark Notion for %r (%s)", order.get("order_id"), e)
+
+
+def _grq_orders(grace_minutes: int) -> list[dict]:
+    """Shipped orders GRQ OS says nobody has told the customer about yet."""
+    out = []
+    for o in grq.claim_ofd(grace_minutes=grace_minutes):
+        out.append({
+            "order_id": o.get("order_code"),
+            # page_id is the sender's opaque key for the skip-this-run set.
+            "page_id": o.get("order_id"),
+            "grq_os_order_id": o.get("order_id"),
+            "phone": o.get("phone") or "",
+            "out_for_delivery_sent": False,
+        })
+    return out
+
+
 def poll_once(grace_minutes: int = 2) -> int:
     """One poll pass: send to every shipped-but-unnotified order. Returns count sent."""
-    orders = nc.query_shipped_unnotified(grace_minutes=grace_minutes)
+    orders = _grq_orders(grace_minutes) if OFD_FROM_GRQ_OS else nc.query_shipped_unnotified(grace_minutes=grace_minutes)
     if not orders:
         return 0
     sent = 0

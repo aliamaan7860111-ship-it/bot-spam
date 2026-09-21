@@ -33,6 +33,11 @@ ORDER_CUTOFF_DATE = datetime.fromisoformat(ORDER_CUTOFF_DATE_STR)
 # when a backlog of previously-failed orders becomes sendable after a fix.
 MAX_CONFIRM_AGE_HOURS = int(os.getenv("WHATSAPP_MAX_CONFIRM_AGE_HOURS", "24"))
 
+# Where the confirmation bot looks for new orders. Notion until this is
+# switched on, GRQ OS after. One environment variable, so the cutover can be
+# undone by restarting a service.
+CONFIRM_FROM_GRQ_OS = os.getenv("CONFIRM_FROM_GRQ_OS", "").strip() in ("1", "true", "yes")
+
 
 def _parse_floor(v):
     """Parse an absolute ISO cutoff (e.g. '2026-08-03T20:08:00+00:00'). None = disabled."""
@@ -64,6 +69,7 @@ def _created_after_floor(created, floor):
 
 # Local imports
 import notion_client as notion
+import grq_os_work as grq
 import whatchimp_client as wc
 import stripe_pay
 from order_bridge import BRAND_MAP, get_brand_from_order_id
@@ -183,10 +189,67 @@ def _send_pay_link(order: dict) -> bool:
     )
 
 
+
+def _grq_new_orders() -> list[dict]:
+    """
+    New orders GRQ OS says nobody has messaged yet.
+
+    The three age guards live on the database side now - the rolling window,
+    the absolute floor and the automation line - so they cannot drift apart
+    from the ones applied here. The two checks that are about THIS bot rather
+    than about the order stay local: which brands it serves, and that organic
+    orders are not part of the confirmation flow at all.
+    """
+    out = []
+    for o in grq.claim_confirmation(max_age_hours=MAX_CONFIRM_AGE_HOURS):
+        order_id = str(o.get("order_code") or "")
+        prefix = order_id[:2] if order_id[:2] in BRAND_MAP else order_id[:1]
+        if prefix not in BRAND_MAP:
+            continue
+        if notion.is_organic_order(order_id):
+            continue
+        out.append({
+            "order_id": order_id,
+            "page_id": o.get("order_id"),
+            "grq_os_order_id": o.get("order_id"),
+            "notion_page_id": o.get("notion_page_id"),
+            "phone": o.get("phone") or "",
+            "customer_name": o.get("customer") or "Customer",
+            "total_aed": "" if o.get("total") is None else str(o.get("total")),
+            "payment": o.get("payment_method") or "",
+            "order_status": "NEW",
+            "whatsapp_sent": False,
+            "brand_name": get_brand_from_order_id(order_id),
+        })
+    return out
+
+
+def _mark_sent(order: dict) -> None:
+    """
+    Record the send in whichever systems are live.
+
+    Writing only to GRQ OS while the mirror runs would be undone: the mirror
+    reads NEW back off Notion a minute later and the customer is messaged
+    twice. Both are written until Notion is retired.
+    """
+    grq_id = order.get("grq_os_order_id")
+    if grq_id and not grq.mark_confirmation_sent(grq_id, template="confirmation"):
+        log.error("confirmation sent for %s but GRQ OS would not record it", order.get("order_id"))
+    page_id = order.get("notion_page_id") if CONFIRM_FROM_GRQ_OS else order.get("page_id")
+    if page_id:
+        try:
+            notion.mark_whatsapp_sent(page_id)
+        except Exception as e:
+            log.warning("could not mark Notion for %s (%s)", order.get("order_id"), e)
+
+
 async def poll_whatsapp_once() -> int:
     """
     Poll Notion for NEW orders, trigger WhatChimp template delivery.
     """
+    if CONFIRM_FROM_GRQ_OS:
+        return await _send_all(_grq_new_orders())
+
     # Rolling window: only consider orders from the last MAX_CONFIRM_AGE_HOURS,
     # so an old backlog is never re-blasted after a fix.
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=MAX_CONFIRM_AGE_HOURS)).isoformat()
@@ -220,6 +283,11 @@ async def poll_whatsapp_once() -> int:
             o["brand_name"] = get_brand_from_order_id(order_id)
             new_orders.append(o)
     
+    return await _send_all(new_orders)
+
+
+async def _send_all(new_orders: list[dict]) -> int:
+    """Send the confirmation for each order. Shared by both work lists."""
     if not new_orders:
         return 0
 
@@ -248,7 +316,7 @@ async def poll_whatsapp_once() -> int:
                 brand_prefix=order_id[:2],
             )
         if success:
-            notion.mark_whatsapp_sent(order["page_id"])
+            _mark_sent(order)
             log.info(f"✅ WhatsApp ({order.get('brand_name')}) sent for {order.get('order_id')}")
             processed += 1
         
