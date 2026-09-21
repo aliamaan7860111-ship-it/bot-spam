@@ -44,6 +44,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Local imports
 import notion_client as notion
 import telegram_client as tg
+import grq_os_fulfilment as grq
 
 # --- TJR Logistics integration (own-driver labels, separate from Filex) ---
 # Defensive: if the TJR package isn't deployed yet, the bot still starts and the
@@ -224,6 +225,11 @@ log = setup_logging()
 
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
 
+# Where the bridge looks for work. Notion until this is switched on, GRQ OS
+# after. One environment variable so the cutover can be undone in the time it
+# takes to restart a service, which matters more than elegance on the day.
+FULFIL_FROM_GRQ_OS = os.getenv("FULFIL_FROM_GRQ_OS", "").strip() in ("1", "true", "yes")
+
 # In-memory lock: prevents duplicate sends when Notion API is slow to update
 _sending_in_progress: set[str] = set()
 
@@ -342,13 +348,141 @@ async def poll_notion_once(bot: Bot) -> int:
     return processed
 
 
+async def poll_grq_os_once(bot: Bot) -> int:
+    """
+    The same job as poll_notion_once, with GRQ OS holding the work list.
+
+    Three differences worth knowing.
+
+    The claim replaces the in-memory `_sending_in_progress` set. That set died
+    with the process, so a restart mid-send re-sent whatever it was holding;
+    a claim in the database survives a restart and expires on its own if the
+    bridge really did die.
+
+    The checkpoint after each album goes to GRQ OS instead of the ALBUMS SENT
+    property, and means the same thing: resume from album N rather than
+    sending the lot again.
+
+    And while both systems are live the result is written to BOTH. If it were
+    written only to GRQ OS, the Notion mirror would read `Confirmed |
+    Processing` back off Notion sixty seconds later and undo it - and the
+    order would be sent again on the next tick, forever. Dropping the Notion
+    write is the last step of the cutover, not the first.
+    """
+    fulfillment_group = tg.TELEGRAM_FULFILLMENT_GROUP_ID
+    if not fulfillment_group:
+        log.error("TELEGRAM_FULFILLMENT_GROUP_ID is not set")
+        return 0
+
+    claimed = grq.claim(limit=20, worker="order-bridge")
+    if not claimed:
+        return 0
+
+    log.info(f"Found {len(claimed)} order(s) needing fulfillment send (GRQ OS)")
+    processed = 0
+
+    for raw in claimed:
+        order = grq.to_bridge_order(raw)
+        order_id = order["order_id"]
+        grq_id = order["grq_os_order_id"]
+        start_album_index = order.get("albums_sent", 0) or 0
+
+        try:
+            async def on_album_sent(new_count: int, caption_msg_id):
+                if not grq.albums_sent(grq_id, new_count, caption_msg_id):
+                    # Losing a checkpoint is how an album gets sent twice, so
+                    # it is worth saying out loud rather than only in a log.
+                    log.error("  ✗ %s: album checkpoint %s did not save", order_id, new_count)
+
+            log.info(f"📤 Sending order {order_id} to fulfillment group (resume from album {start_album_index})...")
+
+            send_result = await tg.send_order_to_group(
+                bot, fulfillment_group, order,
+                header="✅ NEW ORDER FOR FULFILLMENT",
+                start_album_index=start_album_index,
+                on_album_sent=on_album_sent,
+            )
+
+            if not send_result["success"]:
+                log.error(f"  ✗ Send failed for {order_id} — releasing for the next cycle")
+                grq.release(grq_id, "the album did not go out")
+                continue
+
+            total_albums = send_result.get("total_albums", 0)
+            done_count = start_album_index + send_result.get("albums_sent_this_call", 0)
+            if total_albums == 0 or done_count >= total_albums:
+                if grq.finish(grq_id, total_albums or None):
+                    log.info(f"  ✓ Order {order_id} fully delivered, status -> Processed")
+                    processed += 1
+                    await _also_mark_notion_processed(order)
+                else:
+                    await _safe_send_message(
+                        bot, fulfillment_group,
+                        f"⚠️ {order_id}: sent, but GRQ OS would not mark it Processed. "
+                        f"It will not be re-sent; check it by hand.",
+                    )
+            else:
+                log.warning(f"  Partial send for {order_id}: {done_count}/{total_albums} albums — next poll resumes")
+
+            delivered = send_result.get("image_count", 0)
+            expected = send_result.get("expected_count", 0)
+            if (total_albums == 0 or done_count >= total_albums) and expected > 0 and delivered < expected:
+                await _safe_send_message(
+                    bot, fulfillment_group,
+                    f"⚠️ {order_id}: {delivered} of {expected} images sent, {expected - delivered} missing",
+                )
+
+        except Exception as e:
+            log.error(f"  ✗ {order_id}: {e}", exc_info=True)
+            grq.release(grq_id, str(e)[:200])
+        finally:
+            if processed < len(claimed):
+                await asyncio.sleep(1.5)
+
+    return processed
+
+
+async def _also_mark_notion_processed(order: dict) -> None:
+    """
+    Keep Notion level while both systems are live.
+
+    Without this the mirror pulls the order back to `Confirmed | Processing`
+    on its next pass and the album goes out again. Best effort: Notion falling
+    behind is a nuisance, but it must never stop the bridge, which has already
+    done the part that matters.
+    """
+    page_id = order.get("notion_page_id")
+    try:
+        if not page_id:
+            found = _resolve_order_id(order["order_id"])
+            page_id = (found or {}).get("page_id")
+        if not page_id:
+            log.warning("  %s: no Notion page to update; the mirror may undo this", order["order_id"])
+            return
+        await notion_write_with_retry(
+            nc.mark_order_processed, page_id,
+            description=f"status->Processed for {order['order_id']} (mirror parity)",
+        )
+    except Exception as e:
+        log.warning("  %s: could not mark Notion Processed (%s)", order["order_id"], e)
+
+
 async def notion_poller_loop(bot: Bot):
-    """Continuously poll Notion every POLL_INTERVAL_SECONDS."""
-    log.info(f"🔄 Notion poller started (Cutoff: {ORDER_CUTOFF_DATE_STR})")
+    """Continuously poll for confirmed orders every POLL_INTERVAL_SECONDS."""
+    if FULFIL_FROM_GRQ_OS and not grq.configured():
+        # Refusing to start is right: falling back to Notion silently would
+        # look like the cutover worked.
+        log.error("FULFIL_FROM_GRQ_OS is set but GRQ_OS_URL / GRQ_OS_INGEST_SECRET are not")
+        return
+
+    if FULFIL_FROM_GRQ_OS:
+        log.info("🔄 Fulfilment poller started — reading work from GRQ OS")
+    else:
+        log.info(f"🔄 Notion poller started (Cutoff: {ORDER_CUTOFF_DATE_STR})")
 
     while True:
         try:
-            count = await poll_notion_once(bot)
+            count = await (poll_grq_os_once(bot) if FULFIL_FROM_GRQ_OS else poll_notion_once(bot))
             if count > 0:
                 log.info(f"  Processed {count} order(s) this cycle")
         except Exception as e:
