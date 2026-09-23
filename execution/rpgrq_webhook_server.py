@@ -284,7 +284,13 @@ async def handle_incoming(
     # Message, and leaves the ticket's labels/agent assignment intact.
     await notion.set_pending(client, ticket["id"])
     await notion.stamp_customer_message(client, ticket["id"], now_iso)
-    await grq_leads.inbound(client, phone, brand, at=now_iso)
+    # The ticket is old but GRQ OS may be meeting this conversation for the
+    # first time - it starts empty by design and nothing was imported. So the
+    # owner has to travel with the message, or the lead is created ownerless
+    # while Notion has known who owns it for weeks.
+    await grq_leads.inbound(
+        client, phone, brand, agent=notion.ticket_agent_assigned(ticket), at=now_iso
+    )
     log.info(f"🔄 ping-pong {brand} / {phone}")
     await sync_labels_side_effect(client, ticket["id"], label_names_raw, ticket=ticket)
 
@@ -328,8 +334,12 @@ async def handle_outgoing(
     await sync_labels_side_effect(client, ticket["id"], label_names_raw, ticket=ticket)
 
     # When the agent answered is what decides whether a lead was worked or just
-    # received, so it is recorded before the slower sender lookup below.
-    await grq_leads.outbound(client, phone, brand, at=utc_iso_now())
+    # received, so it is recorded before the slower sender lookup below. The
+    # ticket's Agent Assigned already names the latest replier, which is a
+    # better answer than waiting for that lookup and is right often enough.
+    await grq_leads.outbound(
+        client, phone, brand, agent=notion.ticket_agent_assigned(ticket), at=utc_iso_now()
+    )
 
     # Identify the sender via targeted conversation lookup. During migration the
     # customer may be on the brand's OLD number, so try every candidate pnid and
