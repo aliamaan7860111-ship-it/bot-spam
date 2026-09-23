@@ -33,6 +33,7 @@ from execution import rpgrq_notion as notion
 from execution import rpgrq_whatchimp as wc
 from execution import rpgrq_order_sync as order_sync
 from execution.rpgrq_round_robin import RoundRobin, calculate_response_speed
+import grq_os_leads as grq_leads
 
 # ── Logging ──
 logging.basicConfig(
@@ -258,11 +259,16 @@ async def handle_incoming(
             log.error("incoming: no active agent, ticket created as Unassigned")
             new_id = await notion.create_ticket(client, phone, brand, "Unassigned", now_iso)
             if new_id:
+                await grq_leads.inbound(client, phone, brand, agent=None, at=now_iso)
                 await sync_labels_side_effect(client, new_id, label_names_raw, ticket=None)
             return
         new_id = await notion.create_ticket(client, phone, brand, agent["name"], now_iso)
         if new_id:
             log.info(f"🆕 new ticket {brand} / {phone} → {agent['name']}")
+            # GRQ OS gets the same conversation, with the same agent. Notion is
+            # still the system of record, so this is a copy and never a gate:
+            # grq_leads swallows its own failures.
+            await grq_leads.inbound(client, phone, brand, agent=agent["name"], at=now_iso)
             # Try every pnid for the brand (customer may be on the old number).
             if agent.get("team_member_id"):
                 pids = wc.phone_id_candidates(brand, phone_number_id)
@@ -278,6 +284,7 @@ async def handle_incoming(
     # Message, and leaves the ticket's labels/agent assignment intact.
     await notion.set_pending(client, ticket["id"])
     await notion.stamp_customer_message(client, ticket["id"], now_iso)
+    await grq_leads.inbound(client, phone, brand, at=now_iso)
     log.info(f"🔄 ping-pong {brand} / {phone}")
     await sync_labels_side_effect(client, ticket["id"], label_names_raw, ticket=ticket)
 
@@ -319,6 +326,10 @@ async def handle_outgoing(
 
     # Labels can sync regardless of who sent the message
     await sync_labels_side_effect(client, ticket["id"], label_names_raw, ticket=ticket)
+
+    # When the agent answered is what decides whether a lead was worked or just
+    # received, so it is recorded before the slower sender lookup below.
+    await grq_leads.outbound(client, phone, brand, at=utc_iso_now())
 
     # Identify the sender via targeted conversation lookup. During migration the
     # customer may be on the brand's OLD number, so try every candidate pnid and
