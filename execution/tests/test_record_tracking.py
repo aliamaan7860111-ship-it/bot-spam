@@ -68,21 +68,27 @@ class TestRecordTrackingNotionBranch(unittest.TestCase):
         self.assertEqual(seen["by_ref"]["AM 620+AM5159"], ["page-b", "page-c"])
 
     def test_does_not_call_itself(self):
-        """The regression itself: with the writer stubbed out, a self-call is
-        the only way execution can re-enter _record_tracking."""
-        depth = {"n": 0}
+        """The regression itself.
+
+        Hold a direct reference to the real function and call THAT, while the
+        module-level name points at a counter. A self-call inside the function
+        body resolves through the module global, so it lands on the counter;
+        calling the patched name here instead would count this very call and
+        prove nothing.
+        """
+        reentries = {"n": 0}
         real = ob._record_tracking
 
         def counting(*args, **kwargs):
-            depth["n"] += 1
-            return real(*args, **kwargs)
+            reentries["n"] += 1
+            return []
 
         with mock.patch.object(ob, "LABELS_FROM_GRQ_OS", False), \
              mock.patch.object(ob, "_write_tracking_to_notion", lambda *a, **k: []), \
              mock.patch.object(ob, "_record_tracking", counting):
-            ob._record_tracking(BY_REF, PAIRS, None)
+            real(BY_REF, PAIRS, None)
 
-        self.assertEqual(depth["n"], 0, "_record_tracking re-entered itself")
+        self.assertEqual(reentries["n"], 0, "_record_tracking re-entered itself")
 
 
 class TestRecordTrackingGrqOsBranch(unittest.TestCase):
