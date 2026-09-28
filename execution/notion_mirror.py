@@ -129,6 +129,9 @@ def to_payload(page: dict) -> dict:
         "internal_note": _text(q.get("INTERNAL NOTE")) or None,
         "cancellation_reason": _select(q.get("Cancellation Reason")),
         "private_driver": _checkbox(q.get("Private Driver")),
+        # The fact, not the intent: TJR has already printed this one.
+        # Without it GRQ OS sees courier=null and /pvt all buys a second label.
+        "private_label_created": _checkbox(q.get("Private Label Created")),
         "ofd_sent": _checkbox(q.get("Out For Delivery Sent")),
         "albums_sent": _number(q.get("ALBUMS SENT")),
         "dispatched_at": _date(q.get("Dispatched At")),
