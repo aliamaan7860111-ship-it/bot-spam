@@ -21,6 +21,7 @@ import time
 import notion_client as nc
 import whatchimp_client as wc
 import grq_os_work as grq
+import cutover
 
 # Where the OFD poller looks for shipped orders. Notion until this is switched
 # on, GRQ OS after. One environment variable, so the cutover can be undone by
@@ -95,17 +96,22 @@ def _mark_sent(order: dict) -> None:
     """
     Record that the customer has been told, in whichever systems are live.
 
-    While the mirror is running, writing only to GRQ OS would be undone: the
-    mirror reads `Out For Delivery Sent` back off Notion a minute later and
-    clears the stamp, and the customer gets a second message. So both are
-    written until Notion is retired.
+    While the mirror was running, writing only to GRQ OS would be undone: the
+    mirror read `Out For Delivery Sent` back off Notion a minute later and
+    cleared the stamp, and the customer got a second message. So both were
+    written until Notion was retired.
+
+    On the GRQ OS path there is no Notion page to write to - `claim_for_ofd`
+    deals in GRQ OS ids and never knew the page - so the Notion branch is
+    skipped outright rather than handed an id that is not a page id. That
+    combination was live in the code and had simply never run.
     """
     grq_id = order.get("grq_os_order_id")
     if grq_id:
         if not grq.mark_ofd_sent(grq_id, template="ofd"):
             log.error("OFD: %r sent but GRQ OS would not record it", order.get("order_id"))
-    page_id = order.get("page_id")
-    if page_id:
+    page_id = None if OFD_FROM_GRQ_OS else order.get("page_id")
+    if page_id and cutover.write_notion():
         try:
             nc.mark_out_for_delivery_sent(page_id)
         except Exception as e:

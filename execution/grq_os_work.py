@@ -122,6 +122,68 @@ def record_labels(labels: list[dict]) -> bool:
     return _post("labels", {"action": "labels", "labels": labels}) is not None
 
 
+def parcels_in_flight(within_days: int = 14, courier: str = "filex") -> list[dict]:
+    """
+    Every parcel still out with the courier, for the reconciler to ask about.
+
+    Delivered, returned and cancelled parcels are excluded on the far side -
+    re-asking about a finished one is how a stale event un-delivers an order.
+    """
+    body = _post("labels", {"action": "in_flight", "within_days": within_days, "courier": courier})
+    return (body or {}).get("orders") or []
+
+
+def parcels_stuck(hours: int = 24, courier: str = "filex") -> list[dict]:
+    """Label bought, never scanned. The parcel is on somebody's desk."""
+    body = _post("labels", {"action": "stuck", "hours": hours, "courier": courier})
+    return (body or {}).get("orders") or []
+
+
+def to_filex_order(row: dict) -> dict:
+    """
+    A GRQ OS label-board row in the shape the Filex payload builder wants.
+
+    The builder was written against `notion_client.parse_order`, and it stays
+    that way: it is the piece that knows Filex's rules about pieces, cities
+    and string lengths, and rewriting it to take a second shape would mean
+    two things to keep in step.
+
+    Three things need care:
+
+    * The address. Filex needs a city and `normalize_city` digs it out of the
+      address text, so the city column is appended when the line does not
+      already contain it. Otherwise a perfectly good Abu Dhabi order is
+      skipped as "missing city in address".
+
+    * The total. An order whose total is not known is passed through as None
+      on purpose, so the builder refuses it and it appears in the skip list
+      with a reason. Sending it as 0 would print a label that collects
+      nothing at the door, and nobody would find out until the driver did.
+
+    * `page_id`. The batch keys its lock set and its reply threads on this.
+      It is the GRQ OS id now, and nothing downstream sends it to Notion.
+    """
+    address = (row.get("address") or "").strip()
+    city = (row.get("city") or "").strip()
+    if city and city.lower() not in address.lower():
+        address = f"{address}, {city}" if address else city
+
+    return {
+        "order_id":          row.get("order_code"),
+        "page_id":           row.get("order_id"),
+        "grq_os_order_id":   row.get("order_id"),
+        "customer_name":     row.get("customer") or "",
+        "phone":             row.get("phone") or "",
+        "full_address":      address,
+        "total_aed":         row.get("total") if row.get("total_known") else None,
+        "item_qty":          row.get("item_qty") or "",
+        "internal_note":     row.get("internal_note") or "",
+        "fulfillment_message_id": row.get("fulfilment_message_id"),
+        # Empty means unlabelled, which is what `to_place` already promises.
+        "filex_status":      "",
+    }
+
+
 def supersede(order_id: str, courier: str, tracking: str | None = None, status: str | None = None) -> bool:
     """The parcel changed hands. One way: TJR does not go back to Filex."""
     return _post("labels", {
@@ -158,6 +220,20 @@ def mark_confirmation_sent(order_id: str, template: str | None = None) -> bool:
 def block_confirmation(order_id: str, reason: str) -> bool:
     """For a failure that can never succeed, so the poller stops reconsidering it."""
     return _post("notify", {"action": "block", "order_id": order_id, "reason": reason}) is not None
+
+
+def customer_confirmed(order_code: str, note: str | None = None) -> bool:
+    """
+    The customer pressed Confirm on the template.
+
+    By order code, because the webhook is holding what WhatChimp sent back
+    and that is the only identifier both systems agree on. Recorded as a
+    timeline event and nothing more - whether a press is a confirmation is
+    the agent's call.
+    """
+    return _post("notify", {
+        "action": "customer_confirmed", "order_code": order_code, "note": note,
+    }) is not None
 
 
 def release_confirmation(order_id: str) -> bool:

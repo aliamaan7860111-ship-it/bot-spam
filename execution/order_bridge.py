@@ -44,6 +44,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Local imports
 import notion_client as notion
 import telegram_client as tg
+import cutover
 import grq_os_fulfilment as grq
 import grq_os_work as grqw
 
@@ -53,6 +54,7 @@ import grq_os_work as grqw
 try:
     sys.path.insert(0, os.environ.get("TJR_PACKAGE_PATH", r"C:\Users\PMLS\Desktop\Personal\tjr-logistics"))
     from tjr_core.run_print import process_private_driver_orders
+    from tjr_core.parsing import extract_emirate
     from tjr_core.supabase_repo import SupabaseOrderRepository
     _TJR_AVAILABLE = True
 except Exception as _tjr_err:
@@ -230,6 +232,8 @@ POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
 # after. One environment variable so the cutover can be undone in the time it
 # takes to restart a service, which matters more than elegance on the day.
 FULFIL_FROM_GRQ_OS = os.getenv("FULFIL_FROM_GRQ_OS", "").strip() in ("1", "true", "yes")
+# /print all, /print <ID> and /pvt all: where eligibility comes from.
+LABELS_FROM_GRQ_OS = os.getenv("LABELS_FROM_GRQ_OS", "").strip() in ("1", "true", "yes")
 
 # In-memory lock: prevents duplicate sends when Notion API is slow to update
 _sending_in_progress: set[str] = set()
@@ -452,6 +456,8 @@ async def _also_mark_notion_processed(order: dict) -> None:
     behind is a nuisance, but it must never stop the bridge, which has already
     done the part that matters.
     """
+    if not cutover.write_notion():
+        return
     page_id = order.get("notion_page_id")
     try:
         if not page_id:
@@ -648,6 +654,37 @@ async def start_health_server():
                         f"  ✓ Filex update: ShipperRef={shipper_ref!r} "
                         f"Status={status_text!r} OrderDate={order_date!r}"
                     )
+
+                    # 4a. GRQ OS is told first, and on its own. It does its
+                    #     own lookup, its own mapping and its own stale guard,
+                    #     so the Notion machinery below is not on its path.
+                    _incoming_tn = (payload.get("TrackingNo") or payload.get("Track_id") or "").strip()
+                    _reached = _tell_grq_os_about_courier(
+                        shipper_ref, status_text, _incoming_tn, order_date
+                    )
+
+                    if not cutover.write_notion():
+                        log.info(
+                            "  filex_webhook: %s -> GRQ OS (%d order(s))",
+                            shipper_ref or "?", _reached,
+                        )
+                        body = json.dumps({
+                            "code": 200,
+                            "isUpdeted": bool(_reached),
+                            "message": "Updated successfully" if _reached
+                                       else f"Unknown ShipperRef {shipper_ref}",
+                        })
+                        status_line = "HTTP/1.1 200 OK\r\n"
+                        headers = (
+                            f"Content-Type: application/json\r\n"
+                            f"Content-Length: {len(body)}\r\n"
+                            f"Connection: close\r\n"
+                            f"\r\n"
+                        )
+                        response = status_line + headers + body
+                        writer.write(response.encode())
+                        await writer.drain()
+                        return
 
                     # 4. Look up Notion order
                     order = None
@@ -934,24 +971,21 @@ async def start_health_server():
                     current_action = action or "process"
                     log.info(f"  ✓ Processing button click for order {order_id}")
                     
-                    try:
-                        # Look up the order in Notion
-                        target_order = notion.find_order_by_id(order_id)
-                        if target_order:
-                            # Update the internal note to "Bot log: Confirmed"
-                            success = notion.update_internal_note(target_order["page_id"], "Bot log: Confirmed")
-                            if success:
-                                log.info(f"    ✓ Notion updated: Note -> Bot log: Confirmed")
-                                body = '{"status": 1, "message": "Updated Notion"}'
-                            else:
-                                log.error(f"    ✗ Failed to update Notion note")
-                                body = '{"status": 0, "message": "Notion update failed"}'
-                        else:
-                            log.warning(f"    ⚠️ Order {order_id} not found in Notion")
-                            body = '{"status": 1, "message": "Order not found but acknowledged"}'
-                    except Exception as e:
-                        log.error(f"    ✗ Notion search/update failed: {str(e)}")
-                        body = '{"status": 0, "message": "Notion error"}'
+                    # GRQ OS records the press as a timeline event. It does
+                    # not overwrite the internal note the way the Notion
+                    # version did: in GRQ OS that field is the team's, and a
+                    # bot standing on it would delete somebody's typing.
+                    grq_ok = grqw.customer_confirmed(order_id, "Customer pressed Confirm on the WhatsApp template")
+                    if grq_ok:
+                        log.info("    ✓ GRQ OS: customer confirmation recorded for %s", order_id)
+                    else:
+                        log.error("    ✗ GRQ OS would not record the confirmation for %s", order_id)
+
+                    if cutover.write_notion():
+                        body = _note_confirm_in_notion(order_id)
+                    else:
+                        body = ('{"status": 1, "message": "Recorded"}' if grq_ok
+                                else '{"status": 0, "message": "Not recorded"}')
                 else:
                     log.warning(f"  ⚠️ Webhook received with insufficient params (Need order_id and action)")
                     body = '{"status": 1, "message": "Insufficient parameters"}'
@@ -1038,18 +1072,121 @@ def get_filex_client() -> FilexClient:
     return _filex_client
 
 
+def _eligible_processed() -> list[dict]:
+    """
+    Every Processed order /print all should look at, from whichever system is
+    the book, in one shape.
+
+    The classification below this - labelled already, or place it - reads
+    `filex_status`, so the GRQ OS rows are given the same two states: empty
+    for the ones to place, the courier's word for the ones already done. That
+    keeps one classifier rather than two that can disagree about what
+    "already labelled" means, which is the disagreement that buys a second
+    label for a parcel that has one.
+    """
+    if not LABELS_FROM_GRQ_OS:
+        return nc.query_filex_processed()
+
+    board = grqw.labelling_board()
+    rows = [grqw.to_filex_order(r) for r in (board.get("to_place") or [])]
+    for r in (board.get("already_labelled") or []):
+        rows.append({
+            "order_id":        r.get("order_code"),
+            "page_id":         r.get("order_id"),
+            "filex_status":    r.get("delivery_status") or "Label Created",
+            "tracking_number": r.get("awb"),
+        })
+    return rows
+
+
+def _private_driver_waiting() -> list[dict]:
+    """Ticked for the private driver and not yet handed over."""
+    return grqw.private_board() if LABELS_FROM_GRQ_OS else nc.query_private_driver_processed()
+
+
+# The run id of the lock GRQ OS is currently holding, if any. A module global
+# for the same reason the Notion version needed none: /print is serialised by
+# the Telegram handler, one run at a time in one process.
+_label_run_id: str | None = None
+
+
 def _lock_pages(page_ids_by_ref: dict[str, list[str]]) -> None:
-    """Set Filex Submitted=✓ on every page in the lock set."""
+    """
+    Claim these orders so a second run cannot take them.
+
+    In Notion the lock is the "Filex Submitted" checkbox. In GRQ OS it is
+    `label_run_id`, which `orders_for_labelling` excludes on - same idea, with
+    an owner and a timestamp, so a run that dies half way can be seen rather
+    than guessed at.
+    """
+    global _label_run_id
+    if LABELS_FROM_GRQ_OS:
+        ids = [pid for pids in page_ids_by_ref.values() for pid in pids if pid]
+        _label_run_id = grqw.begin_label_run(ids, worker="print-all")
+        if not _label_run_id:
+            log.error("GRQ OS would not open a label run for %d order(s)", len(ids))
+        return
     for page_ids in page_ids_by_ref.values():
         for page_id in page_ids:
             nc.mark_filex_submitted(page_id, True)
 
 
 def _unlock_pages(page_ids_by_ref: dict[str, list[str]]) -> None:
-    """Revert Filex Submitted=☐ on every page in the lock set."""
+    """
+    Release the claim.
+
+    Called on failure, and again after a successful run: `record_filex_labels`
+    clears the lock on every order that came back with a tracking number, and
+    this releases whatever Filex quietly did not return. Without it those sit
+    locked out of the next /print all with nothing saying why.
+    """
+    global _label_run_id
+    if LABELS_FROM_GRQ_OS:
+        if _label_run_id:
+            grqw.end_label_run(_label_run_id)
+            _label_run_id = None
+        return
     for page_ids in page_ids_by_ref.values():
         for page_id in page_ids:
             nc.mark_filex_submitted(page_id, False)
+
+
+def _record_tracking(
+    page_ids_by_ref: dict[str, list[str]],
+    tracking_pairs: list[dict],
+    orders_by_ref: dict[str, list[dict]] | None = None,
+) -> list[str]:
+    """
+    Write the tracking back, to whichever system is the book.
+
+    GRQ OS takes the whole batch in one call, by id, because Filex merges a
+    customer's orders onto one shipment and `record_filex_labels` already
+    knows how to spread one tracking number across several orders. It also
+    refuses to relabel an order that already has a courier, which is the
+    guard that matters if this is ever run twice.
+    """
+    if LABELS_FROM_GRQ_OS:
+        batch, written = [], []
+        for entry in tracking_pairs:
+            ref, tn = entry.get("barcode"), entry.get("tracking_no")
+            ids = [i for i in page_ids_by_ref.get(ref, []) if i]
+            if not ids:
+                log.warning("Returned ref %s is not in our locked set", ref)
+                continue
+            if not tn:
+                continue
+            batch.append({"tracking_no": tn, "order_ids": ids})
+            written.append(tn)
+            if len(ids) > 1:
+                log.info(f"  ↳ Tracking {tn} covers {len(ids)} merged order(s) ({ref})")
+        if batch and not grqw.record_labels(batch):
+            # The labels are bought. Saying so loudly beats a silent gap
+            # between what Filex thinks and what the team can see.
+            log.error("Filex labels placed but GRQ OS would not record %d shipment(s)", len(batch))
+        _unlock_pages(page_ids_by_ref)   # release anything Filex did not return
+        return written
+
+    return _record_tracking(page_ids_by_ref, tracking_pairs, orders_by_ref)
 
 
 def _write_tracking_to_notion(
@@ -1111,6 +1248,73 @@ def _tell_grq_os_about_label(ref: str, tracking_no: str, orders_by_ref: dict[str
             grqw.record_labels([{"tracking_no": tracking_no, "order_ids": [found["order_id"]]}])
         except Exception as e:
             log.warning("  could not record the label in GRQ OS for %s: %s", code, e)
+
+
+def _note_confirm_in_notion(order_id: str) -> str:
+    """
+    The old home of a Confirm press: overwrite the Notion internal note.
+
+    Kept whole and unchanged so turning Notion back on restores exactly the
+    behaviour that was there. Returns the WhatChimp response body.
+    """
+    try:
+        target_order = notion.find_order_by_id(order_id)
+        if not target_order:
+            log.warning("    ⚠️ Order %s not found in Notion", order_id)
+            return '{"status": 1, "message": "Order not found but acknowledged"}'
+        if notion.update_internal_note(target_order["page_id"], "Bot log: Confirmed"):
+            log.info("    ✓ Notion updated: Note -> Bot log: Confirmed")
+            return '{"status": 1, "message": "Updated Notion"}'
+        log.error("    ✗ Failed to update Notion note")
+        return '{"status": 0, "message": "Notion update failed"}'
+    except Exception as e:
+        log.error("    ✗ Notion search/update failed: %s", e)
+        return '{"status": 0, "message": "Notion error"}'
+
+
+def _codes_in_ref(shipper_ref: str) -> list[str]:
+    """
+    The order codes behind one Filex shipment.
+
+    Filex merges a customer's orders from one store onto a single label, and
+    the ShipperRef is those codes joined with '+' ("AM3013+Di1665"). A status
+    event for the shipment is a status event for every order on it.
+    """
+    return [c.strip() for c in (shipper_ref or "").split("+") if c.strip()]
+
+
+def _tell_grq_os_about_courier(shipper_ref: str, status_text: str,
+                               tracking_no: str, event_iso: str | None) -> int:
+    """
+    Forward a Filex webhook event to GRQ OS, by order code.
+
+    Deliberately independent of the Notion lookup below it: none of that
+    machinery is on this path, so it keeps working after Notion is gone.
+
+    The mapping is not repeated here. `ingest_courier` maps the courier's word
+    through `status_options`, drags the order status along for the three that
+    mean something to the team, and refuses to walk back a decision a person
+    made by hand. Two copies of that table would drift.
+
+    Returns how many orders it reached, so the caller can tell "nothing
+    matched" apart from "GRQ OS is down".
+    """
+    if not grq_os_ingest.configured():
+        return 0
+    reached = 0
+    for code in _codes_in_ref(shipper_ref):
+        try:
+            if grq_os_ingest.courier({
+                "order_code": code,
+                "courier": "filex",
+                "status": status_text,
+                "awb": tracking_no or None,
+                "at": event_iso or None,
+            }):
+                reached += 1
+        except Exception as e:
+            log.warning("  filex_webhook: GRQ OS update failed for %s: %s", code, e)
+    return reached
 
 
 # Validation reason categories — must match prefixes in build_payload's ValidationError messages.
@@ -1188,6 +1392,56 @@ async def _send_long_message(bot, chat_id: int, body: str, fallback_filename: st
     )
 
 
+def _grq_private_driver_orders() -> list[tuple[str, dict]]:
+    """
+    The private driver's orders, as TJR payloads.
+
+    `source` is "api" rather than a new value: TJR's own database has a check
+    constraint on that column, and inventing a value there to describe which
+    of our systems asked is a second migration on a second database for no
+    operational difference. It did arrive over an API, which is what the word
+    means.
+
+    A total that is not known is passed through as None so TJR's validation
+    refuses it and the order lands in the skipped list with a reason. A label
+    that collects nothing at the door is worse than a label nobody printed.
+    """
+    out: list[tuple[str, dict]] = []
+    for r in grqw.private_board():
+        address = (r.get("address") or "").strip()
+        city = (r.get("city") or "").strip()
+        if city and city.lower() not in address.lower():
+            address = f"{address}, {city}" if address else city
+        out.append((r.get("order_code") or "?", {
+            "source":                "api",
+            "grq_os_order_id":       r.get("order_id"),
+            "order_ref":             r.get("order_code"),
+            "customer_name":         r.get("customer") or "",
+            "customer_phone":        r.get("phone") or "",
+            "emirate":               extract_emirate(address),
+            "address_details":       address,
+            "cod_amount":            r.get("total") if r.get("total_known") else None,
+            "product_details":       r.get("item_qty") or "",
+            "delivery_instructions": r.get("internal_note") or "",
+        }))
+    return out
+
+
+def _mark_private_driver_labelled(ref: str, payload: dict, order: dict) -> None:
+    """
+    The parcel has changed hands, so the courier changes with it.
+
+    In Notion this was a checkbox and a tracking number. In GRQ OS it is a
+    supersession: the order leaves Filex, TJR's status takes over, and the
+    old Filex status is filed in the timeline as history. One courier at a
+    time, one way - which is what stops the same parcel being counted in both
+    sections.
+    """
+    if not grqw.supersede(payload.get("grq_os_order_id"), "tjr",
+                          tracking=order.get("tracking_id"), status="created"):
+        log.error("  TJR labelled %s but GRQ OS would not move it off Filex", ref)
+
+
 async def _run_private_driver_labels(bot, chat_id):
     """Create Private-Driver orders in TJR (assigned to Subhan) and send their
     upgraded dashboard labels. Only orders with Private Driver checked that are NOT
@@ -1195,7 +1449,14 @@ async def _run_private_driver_labels(bot, chat_id):
     so the SAME orders are never pulled again. Returns the result dict, or None on a
     hard failure. Shared by /print all (batch) and /pvt all (standalone)."""
     try:
-        _tjr = process_private_driver_orders(SupabaseOrderRepository(), os.environ["TJR_TENANT_ID"])
+        if LABELS_FROM_GRQ_OS:
+            _tjr = process_private_driver_orders(
+                SupabaseOrderRepository(), os.environ["TJR_TENANT_ID"],
+                orders=_grq_private_driver_orders(),
+                on_created=_mark_private_driver_labelled,
+            )
+        else:
+            _tjr = process_private_driver_orders(SupabaseOrderRepository(), os.environ["TJR_TENANT_ID"])
     except Exception as e:
         await _safe_send_message(bot, chat_id, f"⚠️ TJR label step FAILED — private-driver orders not printed: {e}")
         log.error("TJR label step failed", exc_info=True)
@@ -1314,14 +1575,14 @@ async def cmd_print_all(update, context):
     else:
         # TJR auto-step off here — just tell the team how many wait (use /pvt all).
         try:
-            _pd = nc.query_private_driver_processed()
+            _pd = _private_driver_waiting()
             if _pd:
                 await _safe_send_message(bot, chat_id, f"ℹ️ {len(_pd)} private-driver order(s) not printed here — use /pvt all.")
         except Exception as e:
             log.warning("private-driver skip count failed: %s", e)
 
     # 1. Query every Processed order — no checkbox gates.
-    eligible = nc.query_filex_processed()
+    eligible = _eligible_processed()
     if not eligible:
         await _safe_send_message(bot, chat_id, "No orders with status Processed.")
         return
@@ -1428,7 +1689,7 @@ async def cmd_print_all(update, context):
         return
 
     tracking_pairs = result.get("trackingnos", [])
-    tracking_numbers = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs, orders_by_ref)
+    tracking_numbers = _record_tracking(page_ids_by_ref, tracking_pairs, orders_by_ref)
 
     # 7. Fetch a single combined PDF for all placed shipments and post it
     # with a summary caption (totals + merged groups).
@@ -1517,6 +1778,30 @@ def _resolve_order_id(raw: str) -> dict | None:
     return None
 
 
+def _resolve_one_for_label(order_id: str) -> dict | None:
+    """
+    One order from GRQ OS, in the shape /print <ID> has always worked with.
+
+    `order_for_label` answers the whole question in one call - is it
+    printable, has it already got a label, is it the private driver's - and
+    carries the payload fields with it, so nothing here has to go looking
+    twice and get two different answers.
+    """
+    row = grqw.label_one(order_id)
+    if not row.get("found"):
+        return None
+    out = grqw.to_filex_order(row)
+    out.update({
+        "order_status":    "Processed" if row.get("printable") else (row.get("status") or ""),
+        "printable":       bool(row.get("printable")),
+        "action":          row.get("action"),
+        # `refetch` is the only state that means "a label already exists".
+        "filex_status":    row.get("delivery_status") or ("Label Created" if row.get("action") == "refetch" else ""),
+        "tracking_number": row.get("awb") or "",
+    })
+    return out
+
+
 async def cmd_print_one(update, context, order_id: str) -> None:
     """/print <ORDER_ID> — single-order placement OR label re-fetch."""
     chat_id = update.effective_chat.id
@@ -1530,19 +1815,29 @@ async def cmd_print_one(update, context, order_id: str) -> None:
     log.info("/print %r triggered by %s in chat %s", order_id, user_id, chat_id)
 
     # 1. Lookup with spelling-variant tolerance.
-    order = _resolve_order_id(order_id)
+    order = _resolve_one_for_label(order_id) if LABELS_FROM_GRQ_OS else _resolve_order_id(order_id)
     if not order:
         await _safe_send_message(bot, chat_id, f"⚠️ Order {order_id} not found in CRM.")
         return
 
     canonical_id = order.get("order_id") or order_id
 
-    # 2. Status gate.
+    # 2. Status gate. GRQ OS answers this as a boolean rather than a word, so
+    #    renaming a status cannot quietly turn the gate off.
     status = (order.get("order_status") or "").strip()
-    if status != "Processed":
+    printable = order["printable"] if "printable" in order else (status == "Processed")
+    if not printable:
         await _safe_send_message(
             bot, chat_id,
             f"⚠️ {canonical_id} status is \"{status or '(blank)'}\" — only \"Processed\" orders can be printed.",
+        )
+        return
+
+    # A parcel going to the private driver must not be given a Filex label.
+    if order.get("action") == "private_driver":
+        await _safe_send_message(
+            bot, chat_id,
+            f"ℹ️ {canonical_id} is ticked for the private driver — use /pvt all, not /print.",
         )
         return
 
@@ -1598,7 +1893,7 @@ async def cmd_print_one(update, context, order_id: str) -> None:
         return
 
     tracking_pairs = result.get("trackingnos", [])
-    written = _write_tracking_to_notion(page_ids_by_ref, tracking_pairs, orders_by_ref)
+    written = _record_tracking(page_ids_by_ref, tracking_pairs, orders_by_ref)
     if not written:
         await _safe_send_message(
             bot, chat_id,

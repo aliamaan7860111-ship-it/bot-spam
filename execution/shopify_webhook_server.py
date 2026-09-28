@@ -28,6 +28,7 @@ log = logging.getLogger("shopify_webhook")
 # handler first makes basicConfig a no-op and silences all stdout/file logging.
 import error_reporter
 import order_dedup
+import cutover
 import grq_os_ingest
 error_reporter.install("shopify-webhook", host="gcp-vm")
 
@@ -529,7 +530,7 @@ def product_images(prefix: str, product_ids: list[str]) -> dict[str, str]:
             for pid in product_ids if _PRODUCT_IMAGES.get(f"{prefix}:{pid}")}
 
 
-def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> None:
+def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> bool:
     """
     Send the order on to GRQ OS, the CRM being built to replace this Notion
     database. Every store, not just one: the point of the parallel run is to
@@ -540,11 +541,11 @@ def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> None:
     showing the fulfilment team what was actually bought. The webhook does not
     include one, so it is looked up once per order and cached.
 
-    Nothing about Notion depends on this. grq_os_ingest returns False on any
-    failure and never raises, and it is inert unless GRQ_OS_URL and
-    GRQ_OS_INGEST_SECRET are both set, so this is a no-op until switched on.
-    GRQ OS is read-only for the team during the parallel run: updates still
-    happen in Notion, and the two are reconciled before anyone switches over.
+    This used to be a mirror and is now the write. While Notion was the book
+    a failure here was worth a warning and nothing more; now a failure here
+    is a lost order, so it returns whether it worked and the caller decides.
+    The caller releases the dedup claim on False, which is what lets Shopify
+    retry the webhook and the backfill pick it up on the next pass.
     """
     try:
         shipping = payload.get("shipping_address") or {}
@@ -554,7 +555,7 @@ def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> None:
             prefix,
             [str(it.get("product_id") or "") for it in (payload.get("line_items") or [])],
         )
-        grq_os_ingest.order({
+        return grq_os_ingest.order({
             "order_code":     data["order_id"],
             "brand_code":     (BRAND_FORMATTING.get(prefix) or {}).get("crm_prefix") or prefix,
             "channel":        "shopify",
@@ -597,9 +598,10 @@ def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> None:
             "source": "shopify-webhook",
         })
     except Exception as e:
-        # Belt and braces: the client already swallows everything, and a GRQ
-        # OS problem must never turn into a Notion capture outage.
-        log.warning(f"GRQ OS mirror skipped for {data.get('order_id')}: {e}")
+        # The client already swallows its own failures, so reaching here means
+        # something above it went wrong - a missing field, a bad image lookup.
+        log.error(f"GRQ OS write failed for {data.get('order_id')}: {e}", exc_info=True)
+        return False
 
 
 async def process_shopify_webhook(http_client: httpx.AsyncClient, payload: dict, prefix: str) -> tuple[int, str]:
@@ -622,7 +624,16 @@ async def process_shopify_webhook(http_client: httpx.AsyncClient, payload: dict,
         log.info(f"Order {order_id} already claimed — skipping (duplicate).")
         return 200, "Duplicate Order (already claimed)"
 
-    # 2. Guard against re-adding orders that predate the dedup DB (already in Notion).
+    # 2. With Notion retired, GRQ OS is the whole of step 2 and 3. It upserts
+    #    on the order code, so it is its own duplicate guard - no second read
+    #    is needed and the local claim above already stops the concurrent case.
+    if not cutover.write_notion():
+        if mirror_to_grq_os(data, prefix, payload):
+            return 200, "Order processed and sent to GRQ OS successfully"
+        order_dedup.release(order_id)   # let Shopify retry, and the backfill catch it
+        return 500, "Internal Server Error: Failed to write to GRQ OS"
+
+    # 2b. Guard against re-adding orders that predate the dedup DB (already in Notion).
     try:
         id_exists = await find_order_by_id(http_client, order_id)
     except Exception:
@@ -820,6 +831,12 @@ async def run_backfill_loop(http_client: httpx.AsyncClient):
                     # Atomic claim first — stops two backfill cycles (or a webhook
                     # + backfill) from both inserting the same order.
                     if not order_dedup.claim(order_id):
+                        continue
+
+                    if not cutover.write_notion():
+                        log.info(f"⏰ Found missing order {order_id} in backfill for {env_suffix}. Pushing to GRQ OS...")
+                        if not mirror_to_grq_os(data, prefix, order):
+                            order_dedup.release(order_id)
                         continue
 
                     # Already in Notion (predates the dedup DB)? keep claim, skip.

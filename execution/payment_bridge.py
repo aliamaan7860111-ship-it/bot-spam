@@ -42,6 +42,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "execution"))
 load_dotenv(PROJECT_ROOT / ".env")
 
 import notion_client as notion
+import cutover
+import grq_os_ingest
 
 logging.basicConfig(
     level=logging.INFO,
@@ -134,6 +136,24 @@ def handle_event(event: dict) -> None:
 
     amount = obj.get("amount_total")
     log.info(f"paid: order {order_id} (event {event_id}, amount {amount})")
+
+    # GRQ OS first, and by order code: it does its own lookup and its own
+    # de-duplication on the Stripe reference, so a retried webhook is free.
+    # An order that is paid and not marked paid is how a driver ends up
+    # asking a paying customer for money at the door, so this one is logged
+    # as an error rather than swallowed.
+    if not grq_os_ingest.payment({
+        "order_code": order_id,
+        "reference": obj.get("payment_intent") or event_id,
+        "amount": (amount / 100) if isinstance(amount, (int, float)) else None,
+        "method": "stripe",
+    }):
+        log.error(f"{order_id} paid, but GRQ OS would not record it")
+    else:
+        log.info(f"{order_id} marked paid in GRQ OS")
+
+    if not cutover.write_notion():
+        return
 
     try:
         order = notion.find_order_by_id(order_id)

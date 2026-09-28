@@ -80,3 +80,12 @@ def message(payload: dict) -> bool:
 
 def courier(payload: dict) -> bool:
     return _post("/api/ingest/courier", payload)
+
+
+def payment(payload: dict) -> bool:
+    """
+    Stripe says the customer paid.
+
+    Idempotent on the far side by `reference`, so a Stripe retry is free.
+    """
+    return _post("/api/ingest/payment", payload)

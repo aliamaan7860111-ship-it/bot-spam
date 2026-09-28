@@ -70,6 +70,7 @@ def _created_after_floor(created, floor):
 # Local imports
 import notion_client as notion
 import grq_os_work as grq
+import cutover
 import whatchimp_client as wc
 import stripe_pay
 from order_bridge import BRAND_MAP, get_brand_from_order_id
@@ -236,7 +237,7 @@ def _mark_sent(order: dict) -> None:
     if grq_id and not grq.mark_confirmation_sent(grq_id, template="confirmation"):
         log.error("confirmation sent for %s but GRQ OS would not record it", order.get("order_id"))
     page_id = order.get("notion_page_id") if CONFIRM_FROM_GRQ_OS else order.get("page_id")
-    if page_id:
+    if page_id and cutover.write_notion():
         try:
             notion.mark_whatsapp_sent(page_id)
         except Exception as e:

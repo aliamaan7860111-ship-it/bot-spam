@@ -25,10 +25,18 @@ import requests
 load_dotenv()
 
 import notion_client as nc
+import cutover
 import filex_status_mapper
 import grq_os_ingest
+import grq_os_work as grqw
 import out_for_delivery as ofd
 from filex_client import FilexClient
+
+# Where the list of parcels to ask Filex about comes from. Once Notion stops
+# being written, its list of active shipments stops growing - and a poller
+# whose work list has quietly stopped growing looks exactly like a poller
+# with nothing left to do.
+FILEX_FROM_GRQ_OS = os.getenv("FILEX_FROM_GRQ_OS", "").strip().lower() in ("1", "true", "yes", "on")
 
 FILEX_USERNAME       = os.getenv("FILEX_USERNAME")
 FILEX_PASSWORD       = os.getenv("FILEX_PASSWORD")
@@ -40,6 +48,31 @@ FULFILLMENT_GROUP_ID = os.getenv("TELEGRAM_FULFILLMENT_GROUP_ID")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("filex_reconcile")
+
+
+def _as_notion_shape(row: dict) -> dict:
+    """
+    A GRQ OS parcel in the shape this module has always spoken.
+
+    The two disagree on more than names. GRQ OS calls the courier's word
+    `delivery_status` and uses `order_id` for its own uuid; Notion calls them
+    `filex_status` and `order_id`-the-code. Reading the wrong key does not
+    fail, it compares against None - so every parcel looks like it just
+    changed status, on every pass, forever.
+
+    `page_id` is deliberately absent. There is no Notion page behind these,
+    and every Notion write downstream checks for one.
+    """
+    return {
+        "order_id":        row.get("order_code"),
+        "grq_os_order_id": row.get("order_id"),
+        "tracking_number": row.get("tracking_number"),
+        "filex_status":    row.get("delivery_status"),
+        "order_status":    row.get("order_status"),
+        "customer_name":   row.get("customer"),
+        "phone":           row.get("phone"),
+        "page_id":         None,
+    }
 
 
 def _tell_grq_os(order: dict, raw_status: str, mapped: str, tracking_no: str, event_iso: str | None) -> None:
@@ -84,7 +117,8 @@ def send_telegram(text: str) -> None:
 
 def alert_stuck_orders():
     """Find orders stuck at 'Label Created' for 24h+ and alert."""
-    stuck = nc.query_filex_stuck(hours=24)
+    stuck = ([_as_notion_shape(r) for r in grqw.parcels_stuck(hours=24)]
+             if FILEX_FROM_GRQ_OS else nc.query_filex_stuck(hours=24))
     if not stuck:
         log.info("No stuck orders.")
         return
@@ -101,7 +135,12 @@ def alert_stuck_orders():
 
 def reconcile_active_orders(cutoff_iso: str | None = None):
     """Poll Filex for status drift and update Notion when found."""
-    if cutoff_iso:
+    if FILEX_FROM_GRQ_OS:
+        # GRQ OS bounds this itself: active parcels only, behind the
+        # automation line, so the eleven thousand imported tracking numbers
+        # are never handed to a courier API.
+        active = [_as_notion_shape(r) for r in grqw.parcels_in_flight(within_days=14)]
+    elif cutoff_iso:
         active = nc.query_filex_active_since(cutoff_iso)
     else:
         active = nc.query_filex_active(within_days=14)
@@ -139,7 +178,8 @@ def reconcile_active_orders(cutoff_iso: str | None = None):
                     "Reconcile drift: %s %s -> %s",
                     order["order_id"], order.get("filex_status"), mapped,
                 )
-                nc.set_filex_status(order["page_id"], mapped)
+                if cutover.write_notion() and order.get("page_id"):
+                    nc.set_filex_status(order["page_id"], mapped)
                 _tell_grq_os(order, r.get("trackingStatus", ""), mapped, tn, r.get("eventTime"))
                 # Also promote to the main ORDER STATUS for Shipped/Delivered/RTO.
                 # Pass current ORDER STATUS so we don't stomp downstream manual moves
@@ -148,7 +188,11 @@ def reconcile_active_orders(cutoff_iso: str | None = None):
                     mapped, order.get("order_status"),
                 )
                 if promoted:
-                    nc.update_order_status(order["page_id"], promoted)
+                    # GRQ OS promotes the order status itself, inside
+                    # `ingest_courier`, and refuses to walk back a decision a
+                    # person made by hand. This branch is Notion only.
+                    if cutover.write_notion() and order.get("page_id"):
+                        nc.update_order_status(order["page_id"], promoted)
                     log.info(
                         "  ↳ ORDER STATUS promoted to %r for %s",
                         promoted, order["order_id"],
@@ -170,7 +214,8 @@ def reconcile_active_orders(cutoff_iso: str | None = None):
                     # Filex eventTime is naive PKT; tag as +05:00 so stored UTC matches reality.
                     if "T" in event_iso and "+" not in event_iso and "Z" not in event_iso:
                         event_iso = event_iso + "+05:00"
-                    nc.set_last_update(order["page_id"], event_iso)
+                    if cutover.write_notion() and order.get("page_id"):
+                        nc.set_last_update(order["page_id"], event_iso)
 
 
 def main():
