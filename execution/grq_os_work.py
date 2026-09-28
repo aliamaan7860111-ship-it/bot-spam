@@ -222,6 +222,12 @@ def block_confirmation(order_id: str, reason: str) -> bool:
     return _post("notify", {"action": "block", "order_id": order_id, "reason": reason}) is not None
 
 
+def notion_link(order_code: str, page_id: str) -> bool:
+    """Record which Notion page an order became, so the mirror matches on an
+    id rather than on an order code somebody might retype."""
+    return _post("notion", {"action": "link", "order_code": order_code, "page_id": page_id}) is not None
+
+
 def customer_confirmed(order_code: str, note: str | None = None) -> bool:
     """
     The customer pressed Confirm on the template.
