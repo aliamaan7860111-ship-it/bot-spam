@@ -368,11 +368,16 @@ async def poll_grq_os_once(bot: Bot) -> int:
     property, and means the same thing: resume from album N rather than
     sending the lot again.
 
-    And while both systems are live the result is written to BOTH. If it were
-    written only to GRQ OS, the Notion mirror would read `Confirmed |
-    Processing` back off Notion sixty seconds later and undo it - and the
-    order would be sent again on the next tick, forever. Dropping the Notion
-    write is the last step of the cutover, not the first.
+    And the result is written to GRQ OS alone. During the parallel run it went
+    to both, because the mirror would otherwise have read `Confirmed |
+    Processing` back off Notion sixty seconds later and undone it, and the
+    order would have gone out again on the next tick, forever. The mirror is
+    stopped now and `_also_mark_notion_processed` returns immediately, so the
+    Notion half is there for a rollback and nothing else.
+
+    An order with no product photographs still completes: `total_albums` of
+    zero takes the same finish path as a sent album, so it reaches Processed
+    on the caption alone rather than sitting claimed until the lock expires.
     """
     fulfillment_group = tg.TELEGRAM_FULFILLMENT_GROUP_ID
     if not fulfillment_group:
