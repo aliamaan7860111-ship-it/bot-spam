@@ -1191,7 +1191,7 @@ def _record_tracking(
         _unlock_pages(page_ids_by_ref)   # release anything Filex did not return
         return written
 
-    return _record_tracking(page_ids_by_ref, tracking_pairs, orders_by_ref)
+    return _write_tracking_to_notion(page_ids_by_ref, tracking_pairs, orders_by_ref)
 
 
 def _write_tracking_to_notion(
