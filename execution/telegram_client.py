@@ -18,6 +18,9 @@ import io
 import json
 import asyncio
 import logging
+
+import cutover
+import grq_os_work
 from pathlib import Path
 from typing import TypedDict
 
@@ -745,6 +748,15 @@ def create_command_handlers(notion_module):
         arg = parts[1].strip()
 
         # --- #reset 24h ---
+        if arg.lower() == "24h" and cutover.notion_retired():
+            await update.message.reply_text(
+                "ℹ️ `#reset 24h` is not available now that GRQ OS is the book. "
+                "It would re-send the album for every order placed that day. "
+                "Reset them one at a time: `#reset AM1234`.",
+                parse_mode="Markdown",
+            )
+            return
+
         if arg.lower() == "24h":
             await update.message.reply_text("🔄 Resetting orders from the last 24 hours...", parse_mode="Markdown")
 
@@ -778,6 +790,18 @@ def create_command_handlers(notion_module):
 
         # --- #reset ORDER-ID ---
         order_id = arg
+
+        if cutover.notion_retired():
+            ok_reset, why = grq_os_work.reset_fulfilment(order_id, note="#reset in Telegram")
+            await update.message.reply_text(
+                f"✅ `{order_id}` is back at Confirmation Sent. Move it to "
+                f"CONFIRMED | PROCESSING and the album will go again."
+                if ok_reset else
+                f"❌ Could not reset `{order_id}`. {why}",
+                parse_mode="Markdown",
+            )
+            return
+
         order = notion_module.find_order_by_id(order_id)
         if not order:
             await update.message.reply_text(

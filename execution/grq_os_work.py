@@ -222,6 +222,20 @@ def block_confirmation(order_id: str, reason: str) -> bool:
     return _post("notify", {"action": "block", "order_id": order_id, "reason": reason}) is not None
 
 
+def reset_fulfilment(order_code: str, note: str | None = None) -> tuple[bool, str]:
+    """
+    Undo sending an order to the fulfilment group, so the album can go again.
+
+    Returns (ok, message) rather than a bare bool: every refusal here is
+    worth repeating to whoever typed the command. "That parcel is already
+    with Filex" is the answer, not a failure to report.
+    """
+    body = _post("fulfilment", {"action": "reset", "order_code": order_code, "note": note})
+    if body is not None:
+        return True, "reset"
+    return False, "GRQ OS would not reset it - see the log for why"
+
+
 def notion_link(order_code: str, page_id: str) -> bool:
     """Record which Notion page an order became, so the mirror matches on an
     id rather than on an order code somebody might retype."""
