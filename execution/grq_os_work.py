@@ -226,14 +226,38 @@ def reset_fulfilment(order_code: str, note: str | None = None) -> tuple[bool, st
     """
     Undo sending an order to the fulfilment group, so the album can go again.
 
-    Returns (ok, message) rather than a bare bool: every refusal here is
-    worth repeating to whoever typed the command. "That parcel is already
-    with Filex" is the answer, not a failure to report.
+    Returns (ok, message) and the message is the REAL one. Every refusal
+    from this endpoint is a sentence written for the person who typed the
+    command - "that parcel is already with Filex" is the answer, not a
+    failure to report one. The first version threw the body away and said
+    "see the log", which sent the operator looking for a log on a box they
+    have no shell on.
+
+    It does not go through `_post` for that reason: `_post` logs the body
+    and returns None, which is right for fire-and-forget and wrong here.
     """
-    body = _post("fulfilment", {"action": "reset", "order_code": order_code, "note": note})
-    if body is not None:
+    if not configured():
+        return False, "this bot has no GRQ OS credentials"
+    payload = {"action": "reset", "order_code": order_code, "note": note}
+    raw = json.dumps(payload, ensure_ascii=False)
+    sig = hmac.new(_secret().encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+    headers = {"Content-Type": "application/json", "x-grq-signature": sig}
+    if _bypass():
+        headers["x-vercel-protection-bypass"] = _bypass()
+    try:
+        res = httpx.post(f"{_url()}/api/ingest/fulfilment", content=raw.encode("utf-8"),
+                         headers=headers, timeout=TIMEOUT)
+    except Exception as e:
+        log.error("GRQ OS reset failed for %s: %s", order_code, e)
+        return False, f"could not reach GRQ OS: {e}"
+    if res.status_code == 200:
         return True, "reset"
-    return False, "GRQ OS would not reset it - see the log for why"
+    try:
+        why = res.json().get("error") or res.text[:160]
+    except Exception:
+        why = res.text[:160]
+    log.info("GRQ OS refused the reset of %s: %s", order_code, why)
+    return False, why
 
 
 def notion_link(order_code: str, page_id: str) -> bool:

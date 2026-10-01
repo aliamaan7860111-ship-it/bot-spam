@@ -21,6 +21,14 @@ import logging
 
 import cutover
 import grq_os_work
+
+# The one chat allowed to undo a send. A string in the environment; coerced
+# once here so the comparison against Telegram's int chat_id cannot quietly
+# never match.
+try:
+    _FULFILMENT_GROUP = int(os.getenv("TELEGRAM_FULFILLMENT_GROUP_ID") or 0)
+except (TypeError, ValueError):
+    _FULFILMENT_GROUP = 0
 from pathlib import Path
 from typing import TypedDict
 
@@ -792,6 +800,12 @@ def create_command_handlers(notion_module):
         order_id = arg
 
         if cutover.notion_retired():
+            # Same door as /print and /pvt. This one never had it, which
+            # mattered less when it only flipped a Notion status and
+            # matters more now that it unwinds a guard.
+            if _FULFILMENT_GROUP and update.effective_chat.id != _FULFILMENT_GROUP:
+                await update.message.reply_text("#reset is only available in the fulfillment group.")
+                return
             ok_reset, why = grq_os_work.reset_fulfilment(order_id, note="#reset in Telegram")
             await update.message.reply_text(
                 f"✅ `{order_id}` is back at Confirmation Sent. Move it to "
