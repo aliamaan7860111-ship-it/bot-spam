@@ -95,6 +95,24 @@ def claim(limit: int = 20, worker: str = "order-bridge", stale_minutes: int = 10
     return (body or {}).get("orders") or []
 
 
+def adopt_photos(order_code: str, images: list[str]) -> list[str]:
+    """
+    Give GRQ OS links that are about to expire; get back permanent ones.
+
+    GRQ OS copies the bytes into its own bucket, puts them on the order and
+    its line items, and returns the new URLs in the order given. An empty
+    list back means none of them could be kept, which is worth a log and not
+    worth blocking the send: a caption with no photographs still beats no
+    order in the group.
+    """
+    body = _post({"action": "photos", "order_code": order_code, "images": images})
+    if body is None:
+        return []
+    for note in body.get("skipped") or []:
+        log.warning("  %s: photo not kept - %s", order_code, note)
+    return body.get("urls") or []
+
+
 def albums_sent(order_id: str, sent: int, message_id: int | None = None) -> bool:
     return _post({"action": "albums", "order_id": order_id, "sent": sent, "message_id": message_id}) is not None
 

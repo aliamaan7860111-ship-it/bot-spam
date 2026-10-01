@@ -494,6 +494,25 @@ def find_order_by_id(order_id: str) -> dict | None:
         return None
 
 
+def get_page_image_urls(page_id: str) -> list[str]:
+    """
+    The IMAGE URL files on one page, as links.
+
+    These expire in about an hour, so they are only ever worth reading
+    immediately before something is done with them. The caller hands them
+    straight to GRQ OS, which keeps a copy.
+    """
+    try:
+        with httpx.Client(timeout=30) as client:
+            resp = client.get(f"{NOTION_API_BASE}/pages/{page_id}", headers=_headers())
+            resp.raise_for_status()
+            page = resp.json()
+    except Exception as e:
+        log.error("Could not read Notion page %s for images: %s", page_id, e)
+        return []
+    return _get_files(page.get("properties", {}) or {}, FIELD_IMAGE_URL)
+
+
 # ---------------------------------------------------------------------------
 # Update Operations
 # ---------------------------------------------------------------------------

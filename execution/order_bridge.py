@@ -397,6 +397,22 @@ async def poll_grq_os_once(bot: Bot) -> int:
         grq_id = order["grq_os_order_id"]
         start_album_index = order.get("albums_sent", 0) or 0
 
+        # An order-form order keeps its photographs on a Notion page behind a
+        # link that dies within the hour, and GRQ OS was never given them. Read
+        # them while they are alive and let GRQ OS keep a copy; from then on the
+        # picture belongs to us and shows on the order and in costing too.
+        if not order.get("image_urls") and not order.get("order_source_url"):
+            page_id = order.get("notion_page_id")
+            if page_id:
+                expiring = notion.get_page_image_urls(page_id)
+                if expiring:
+                    kept = grq.adopt_photos(order_id, expiring)
+                    if kept:
+                        order["image_urls"] = kept
+                        log.info("  %s: kept %d order-form photo(s) from Notion", order_id, len(kept))
+                    else:
+                        log.warning("  %s: %d photo(s) on Notion, none could be kept", order_id, len(expiring))
+
         try:
             async def on_album_sent(new_count: int, caption_msg_id):
                 if not grq.albums_sent(grq_id, new_count, caption_msg_id):
