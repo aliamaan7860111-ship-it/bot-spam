@@ -196,14 +196,30 @@ def supersede(order_id: str, courier: str, tracking: str | None = None, status: 
 # Messages to customers
 # ---------------------------------------------------------------------------
 
-def claim_ofd(limit: int = 50, grace_minutes: int = 2, worker: str = "grq-ofd") -> list[dict]:
+def claim_ofd(limit: int = 50, grace_minutes: int = 2, worker: str = "grq-ofd",
+              stale_minutes: int = 10) -> list[dict]:
+    """
+    Orders whose customer has not been told, TAKEN so nobody else takes them.
+
+    This used to be a read dressed up as a claim: it returned rows and wrote
+    nothing, so the only thing stopping a second message was `ofd_sent_at`,
+    stamped after the WhatsApp had already gone. The claim is real now and
+    expires on its own if the send never finishes.
+    """
     body = _post("notify", {"action": "claim_ofd", "limit": limit,
-                            "grace_minutes": grace_minutes, "worker": worker})
+                            "grace_minutes": grace_minutes, "worker": worker,
+                            "stale_minutes": stale_minutes})
     return (body or {}).get("orders") or []
 
 
 def mark_ofd_sent(order_id: str, template: str | None = None) -> bool:
     return _post("notify", {"action": "ofd_sent", "order_id": order_id, "template": template}) is not None
+
+
+def release_ofd(order_id: str, reason: str | None = None) -> bool:
+    """Hand an order back when the message did not go out."""
+    return _post("notify", {"action": "release_ofd", "order_id": order_id,
+                            "reason": reason}) is not None
 
 
 def claim_confirmation(limit: int = 20, worker: str = "whatsapp-bot",

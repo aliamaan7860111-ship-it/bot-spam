@@ -29,7 +29,6 @@ import cutover
 import filex_status_mapper
 import grq_os_ingest
 import grq_os_work as grqw
-import out_for_delivery as ofd
 from filex_client import FilexClient
 
 # Where the list of parcels to ask Filex about comes from. Once Notion stops
@@ -197,18 +196,18 @@ def reconcile_active_orders(cutoff_iso: str | None = None):
                         "  ↳ ORDER STATUS promoted to %r for %s",
                         promoted, order["order_id"],
                     )
-                    if promoted == nc.STATUS_SHIPPED:
-                        # Fire the out-for-delivery WhatsApp the instant we auto-promote
-                        # to SHIPPED. `order` was queried while not-yet-shipped, so its
-                        # out_for_delivery_sent is False; send_out_for_delivery's own guard
-                        # + the success-set checkbox prevent any double-send vs. the poller.
-                        try:
-                            ofd.send_out_for_delivery(order)
-                        except Exception as e:
-                            log.error(
-                                "OFD at-source send failed for %s: %s",
-                                order["order_id"], e,
-                            )
+                    # The out-for-delivery WhatsApp used to be fired here, the
+                    # instant we promoted to SHIPPED, and the comment said the
+                    # double-send was prevented by "the success-set checkbox".
+                    # That checkbox was Notion's. Notion is retired, so this
+                    # path sent the customer a message and recorded it nowhere:
+                    # the order dict has no GRQ OS id and no page worth
+                    # writing to, so `_mark_sent` did nothing and the poller
+                    # was free to send it again.
+                    #
+                    # `grq-ofd` polls GRQ OS every 30 seconds and now takes a
+                    # real claim before sending. One sender, one latch; the
+                    # only cost is up to half a minute.
                 event_iso = r.get("eventTime")
                 if event_iso:
                     # Filex eventTime is naive PKT; tag as +05:00 so stored UTC matches reality.

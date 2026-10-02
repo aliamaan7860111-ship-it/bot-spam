@@ -78,6 +78,22 @@ def send_out_for_delivery(order: dict) -> bool:
         _skip_this_run.add(page_id)
         return False
 
+    """
+    The guardrail: never send a message that cannot be recorded.
+
+    A send that leaves no trace is sent again on the next pass, and the
+    next, for as long as the order stays shipped. That is the only way this
+    turns into a customer being messaged repeatedly, so the check is made
+    before the message rather than discovered after it.
+    """
+    if not _can_record(order):
+        log.error(
+            "OFD: refusing to message %r - there is nowhere to record it, "
+            "and an unrecorded send is one that repeats forever", order_id,
+        )
+        _skip_this_run.add(page_id)
+        return False
+
     sent = wc.send_out_for_delivery_template(phone, order_id, cfg)
     if sent:
         _mark_sent(order)
@@ -87,9 +103,30 @@ def send_out_for_delivery(order: dict) -> bool:
     # Rejected by WhatChimp (template/locale error, bad number, etc.). The client already
     # logged the reason — give up on this order until the next service restart rather than
     # re-attempting every 30s.
+    #
+    # The claim is handed back so the row is not held for the full stale
+    # window: nothing was sent, so nothing needs protecting from a second
+    # send.
+    grq_id = order.get("grq_os_order_id")
+    if grq_id:
+        grq.release_ofd(grq_id, "WhatChimp rejected the template")
     log.error("OFD: send failed for %r — no retry until service restart", order_id)
     _skip_this_run.add(page_id)
     return False
+
+
+def _can_record(order: dict) -> bool:
+    """
+    Whether this send can be written down afterwards.
+
+    On the GRQ OS path that means a GRQ OS order id. On the Notion path it
+    means a page id and a Notion that is still being written to. The
+    at-source caller in `filex_reconcile` had neither once Notion retired,
+    which is exactly the hole this closes.
+    """
+    if order.get("grq_os_order_id"):
+        return True
+    return bool(order.get("page_id")) and cutover.write_notion() and not OFD_FROM_GRQ_OS
 
 
 def _mark_sent(order: dict) -> None:
