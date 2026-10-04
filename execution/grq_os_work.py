@@ -24,6 +24,7 @@ import hmac
 import json
 import logging
 import os
+import time
 
 import httpx
 
@@ -54,6 +55,41 @@ def configured() -> bool:
     return bool(_url() and _secret())
 
 
+
+# A dropped connection is worth another go; an HTTP answer is not. Only the
+# transport failures are retried - httpx.TransportError covers timeouts,
+# connect/read/write errors and protocol errors, which is where the TLS
+# handshake timeout lands.
+_ATTEMPTS = 3
+_BACKOFF_SECONDS = 1.5
+
+
+def _post_with_retry(url: str, raw: bytes, headers: dict, what: str):
+    """
+    POST, retrying only when the request never got an answer.
+
+    Returns the response, or None when every attempt failed in transit.
+    Safe to retry: every endpoint these clients call is idempotent, and the
+    calls that matter most run after a message has already been sent - the
+    one case where giving up quietly causes a customer to be messaged twice.
+    """
+    for attempt in range(1, _ATTEMPTS + 1):
+        try:
+            return httpx.post(url, content=raw, headers=headers, timeout=TIMEOUT)
+        except httpx.TransportError as e:
+            if attempt == _ATTEMPTS:
+                log.error("GRQ OS %s failed after %d attempts: %s", what, _ATTEMPTS, e)
+                return None
+            log.warning("GRQ OS %s did not get through (%s); retrying %d/%d",
+                        what, e, attempt + 1, _ATTEMPTS)
+            time.sleep(_BACKOFF_SECONDS * attempt)
+        except Exception as e:
+            # Not a transport problem - repeating it will not help.
+            log.error("GRQ OS %s failed: %s", what, e)
+            return None
+    return None
+
+
 def _post(path: str, payload: dict) -> dict | None:
     if not configured():
         return None
@@ -63,11 +99,9 @@ def _post(path: str, payload: dict) -> dict | None:
     headers = {"Content-Type": "application/json", "x-grq-signature": sig}
     if _bypass():
         headers["x-vercel-protection-bypass"] = _bypass()
-    try:
-        res = httpx.post(f"{_url()}/api/ingest/{path}", content=raw.encode("utf-8"),
-                         headers=headers, timeout=TIMEOUT)
-    except Exception as e:
-        log.error("GRQ OS %s/%s failed: %s", path, payload.get("action"), e)
+    res = _post_with_retry(f"{_url()}/api/ingest/{path}", raw.encode("utf-8"), headers,
+                           f"{path}/{payload.get('action')}")
+    if res is None:
         return None
     if res.status_code == 200:
         return res.json()
