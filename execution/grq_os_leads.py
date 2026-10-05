@@ -86,6 +86,53 @@ async def _post(client: httpx.AsyncClient, payload: dict) -> bool:
     return False
 
 
+async def next_agent(client: httpx.AsyncClient, at: str | None = None) -> dict | None:
+    """
+    Whose turn it is, decided by the rota in GRQ OS.
+
+    Returns the bot's own shape - {name, team_member_id, shift_start,
+    shift_end} - so nothing downstream has to change. None means GRQ OS
+    could not be reached, or genuinely nobody is on and nobody is coming.
+
+    The rule itself lives in the database: shifts that cross midnight, off
+    days that belong to the day the shift started, and the gaps between
+    shifts going to whoever opens next.
+    """
+    if not configured():
+        return None
+    payload = {"action": "next_agent", "at": at}
+    raw = json.dumps(payload, ensure_ascii=False)
+    sig = hmac.new(_secret().encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+    headers = {"Content-Type": "application/json", "x-grq-signature": sig}
+    if _bypass():
+        headers["x-vercel-protection-bypass"] = _bypass()
+    try:
+        res = await client.post(
+            f"{_url()}/api/ingest/leads",
+            content=raw.encode("utf-8"),
+            headers=headers,
+            timeout=TIMEOUT,
+        )
+    except Exception as e:
+        log.error("GRQ OS could not say whose turn it is: %s", e)
+        return None
+    if res.status_code != 200:
+        log.error("GRQ OS next_agent: %s %s", res.status_code, res.text[:160])
+        return None
+
+    a = (res.json() or {}).get("agent")
+    if not a:
+        log.error("Nobody is on shift and nobody is coming - check the rota")
+        return None
+    return {
+        "name": a.get("name"),
+        "team_member_id": a.get("whatchimp_member_id"),
+        "shift_start": a.get("starts_hour"),
+        "shift_end": a.get("ends_hour"),
+        "off_days": a.get("off_days") or [],
+    }
+
+
 async def inbound(
     client: httpx.AsyncClient,
     phone: str,

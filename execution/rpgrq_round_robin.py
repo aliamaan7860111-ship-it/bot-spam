@@ -17,6 +17,7 @@ from typing import Optional
 import httpx
 
 from execution import rpgrq_notion as notion
+import grq_os_leads as grq_leads
 
 log = logging.getLogger("rpgrq.rr")
 
@@ -85,9 +86,30 @@ class RoundRobin:
 
     async def next_agent(self, client: httpx.AsyncClient) -> Optional[dict]:
         """
-        Return the next agent in rotation based on shift-aware pool selection.
-        Thread/task-safe via internal asyncio lock.
+        Whose turn it is. Asked of GRQ OS, which owns the rota.
+
+        The local pool logic below is kept for the tests that cover it, but
+        it is no longer what decides: it reads hours as PAKISTAN time and
+        cannot express a shift that crosses midnight, so under the schedule
+        that started on 4 October it would put Maira on shift at no point
+        in the day and apply the other two an hour late.
+
+        There is no fallback to the Notion roster. It holds the old timings
+        and will not be updated again, so assigning from it would be worse
+        than not assigning - a lead given to somebody who is asleep looks
+        handled.
         """
+        async with self._lock:
+            chosen = await grq_leads.next_agent(client)
+            if chosen and chosen.get("name"):
+                log.info("RR (GRQ OS rota) -> %s", chosen["name"])
+                self._pointer_name = chosen["name"]
+                return chosen
+            log.error("GRQ OS did not name an agent; this lead goes unassigned")
+            return None
+
+    async def _next_agent_from_notion(self, client: httpx.AsyncClient) -> Optional[dict]:
+        """The previous behaviour, kept only so its tests still have a subject."""
         async with self._lock:
             roster = await notion.get_active_roster(client)
             if not roster:
