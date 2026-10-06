@@ -1,0 +1,38 @@
+# grq-ofd - the out-for-delivery WhatsApp notifier.
+#
+# Install to /etc/systemd/system/grq-ofd.service, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now grq-ofd
+#
+# On the interval. It was 30 seconds, which made 2,832 calls a day to send
+# 41 messages - 98.6% of them found nothing and logged a line anyway, and
+# Supabase's free log-ingestion allowance was at 79% because of traffic
+# like this.
+#
+# 120 seconds costs almost nothing in speed. The notifier already refuses
+# to touch an order whose status changed less than `--grace-minutes` ago,
+# so with a 2 minute grace a 30 second poll could never deliver sooner
+# than T+2min anyway; this makes the worst case T+4min instead of
+# T+2.5min. A customer does not notice ninety seconds on "your order is on
+# the way"; a project that has stopped ingesting its own logs is noticed
+# the first time something goes wrong and there is nothing to read.
+#
+# Raising it further is not free: the claim is held for 10 minutes once
+# taken, so an interval near that window starts to matter.
+
+[Unit]
+Description=grq-ofd — Out-for-Delivery WhatsApp notifier
+After=network.target
+
+[Service]
+Type=simple
+User=bilal
+WorkingDirectory=/home/bilal/automation
+EnvironmentFile=/home/bilal/automation/.env
+ExecStart=/home/bilal/automation/venv/bin/python /home/bilal/automation/execution/out_for_delivery.py --interval 120
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
