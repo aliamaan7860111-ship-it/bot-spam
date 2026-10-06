@@ -204,10 +204,25 @@ def _grq_new_orders() -> list[dict]:
     out = []
     for o in grq.claim_confirmation(max_age_hours=MAX_CONFIRM_AGE_HOURS):
         order_id = str(o.get("order_code") or "")
+        grq_id = o.get("order_id")
         prefix = order_id[:2] if order_id[:2] in BRAND_MAP else order_id[:1]
+
+        """
+        Taking an order and silently dropping it is what made the same
+        orders be offered 143 times each - once every ten minutes for a
+        full day, until they aged out of the window. If this bot will not
+        send an order, it says so, and the order stops being offered.
+        """
         if prefix not in BRAND_MAP:
+            log.info("confirm: %s is a brand this bot does not serve - handing it back", order_id)
+            if grq_id:
+                grq.block_confirmation(grq_id, "No WhatsApp template configured for this store")
             continue
         if notion.is_organic_order(order_id):
+            # Already a conversation: the team took this one by hand.
+            if grq_id:
+                grq.block_confirmation(
+                    grq_id, "Taken by hand - the team is already talking to this customer")
             continue
         out.append({
             "order_id": order_id,
