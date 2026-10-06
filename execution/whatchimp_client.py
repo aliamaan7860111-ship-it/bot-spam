@@ -425,6 +425,12 @@ def send_template_message(
 
     Always pre-syncs the subscriber's custom fields against the brand's own
     phone_number_id so the flow's `#order_id#` merge tag resolves on click.
+
+    Returns True when WhatChimp ACCEPTED the message, which is not the same
+    as the customer receiving it. Meta decides delivery afterwards and this
+    stack never learns the outcome: there is no delivery-receipt webhook and
+    no status poll. A red tick in the WhatChimp inbox is a message this
+    function already returned True for.
     """
     if not WHATCHIMP_API_TOKEN:
         log.error("Missing WHATCHIMP_API_TOKEN in .env")
@@ -492,7 +498,11 @@ def send_template_message(
         data = resp.json()
 
         if str(data.get("status")) == "1":
-            log.info(f"✅ SUCCESS: {order_id} confirmation delivered")
+            # Accepted and queued for Meta. NOT delivered - that is decided
+            # later and nothing here ever hears the answer, so saying
+            # "delivered" would be a claim we cannot support. A red tick in
+            # the WhatChimp inbox is Meta refusing it after this point.
+            log.info(f"✅ ACCEPTED by WhatChimp: {order_id} queued for sending")
             return True
         else:
             log.error(f"❌ API Rejected ({display_brand}): {data.get('message', data)}")
