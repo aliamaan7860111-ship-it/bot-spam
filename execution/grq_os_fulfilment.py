@@ -34,6 +34,9 @@ import time
 
 import httpx
 
+import grq_os_db as db
+import grq_os_work as work
+
 log = logging.getLogger("order_bridge.grq_os")
 
 # Config is read at call time, not at import. Reading it at import makes the
@@ -96,8 +99,34 @@ def _post_with_retry(url: str, raw: bytes, headers: dict, what: str):
     return None
 
 
+
+
+def _try_direct(payload: dict):
+    """
+    (handled, body) - False when this one still needs the endpoint.
+
+    `photos` is the reason this is a table rather than a blanket switch: it
+    downloads images and writes them to storage, which Postgres cannot do.
+    """
+    if not db.enabled():
+        return False, None
+    entry = work._FULFILMENT_DIRECT.get(payload.get("action"))
+    if entry is None:
+        return False, None
+    fn, args, envelope = entry(payload)
+    try:
+        return True, envelope(db.rpc(fn, args))
+    except db.Failed as e:
+        log.error("GRQ OS fulfilment %s direct: %s", payload.get("action"), e)
+        return True, None
+
+
 def _post(payload: dict) -> dict | None:
     """Signed POST. Returns the parsed body, or None if anything went wrong."""
+    handled, body = _try_direct(payload)
+    if handled:
+        return body
+
     if not configured():
         return None
     raw = json.dumps(payload, ensure_ascii=False)

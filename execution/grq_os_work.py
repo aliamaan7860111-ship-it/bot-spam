@@ -28,6 +28,8 @@ import time
 
 import httpx
 
+import grq_os_db as db
+
 log = logging.getLogger("grq_os.work")
 
 # Config is read at call time, not at import. Reading it at import makes the
@@ -90,7 +92,125 @@ def _post_with_retry(url: str, raw: bytes, headers: dict, what: str):
     return None
 
 
+
+
+# ---------------------------------------------------------------------------
+# Straight to the database
+# ---------------------------------------------------------------------------
+#
+# Each entry turns one endpoint action into the function call the endpoint
+# would have made, and rebuilds the envelope it would have returned. Same
+# RPC, same parameter names, same defaults - read off the route so the two
+# cannot disagree.
+#
+# An action missing from here goes the long way round, which is right for
+# anything that is more than a function call.
+
+def _clamp(v, lo, hi, default):
+    try:
+        return max(lo, min(hi, int(v if v is not None else default)))
+    except (TypeError, ValueError):
+        return default
+
+
+_NOTIFY_DIRECT = {
+    "claim_ofd": lambda p: (
+        "claim_for_ofd",
+        {"p_limit": _clamp(p.get("limit"), 0, 200, 50),
+         "p_grace_minutes": p.get("grace_minutes", 2),
+         "p_worker": p.get("worker") or "grq-ofd",
+         "p_stale_minutes": p.get("stale_minutes", 10)},
+        lambda d: {"orders": d},
+    ),
+    "claim_confirmation": lambda p: (
+        "claim_for_confirmation",
+        {"p_limit": _clamp(p.get("limit"), 0, 100, 20),
+         "p_worker": p.get("worker") or "whatsapp-bot",
+         "p_max_age_hours": p.get("max_age_hours", 24),
+         "p_stale_minutes": p.get("stale_minutes", 10)},
+        lambda d: {"orders": d},
+    ),
+    "ofd_sent": lambda p: (
+        "mark_ofd_sent",
+        {"p_order": p.get("order_id"), "p_template": p.get("template")},
+        lambda d: {"ok": True},
+    ),
+    "release_ofd": lambda p: (
+        "release_ofd",
+        {"p_order": p.get("order_id"), "p_reason": p.get("reason")},
+        lambda d: {"ok": True},
+    ),
+    "confirmation_sent": lambda p: (
+        "mark_confirmation_sent",
+        {"p_order": p.get("order_id"), "p_template": p.get("template")},
+        lambda d: {"ok": True},
+    ),
+    "block": lambda p: (
+        "block_confirmation",
+        {"p_order": p.get("order_id"), "p_reason": p.get("reason")},
+        lambda d: {"ok": True},
+    ),
+    "release": lambda p: (
+        "release_confirmation",
+        {"p_order": p.get("order_id")},
+        lambda d: {"ok": True},
+    ),
+}
+
+_FULFILMENT_DIRECT = {
+    "claim": lambda p: (
+        "claim_for_fulfilment",
+        {"p_limit": _clamp(p.get("limit"), 0, 100, 20),
+         "p_worker": p.get("worker") or "order-bridge",
+         "p_stale_minutes": p.get("stale_minutes", 10)},
+        lambda d: {"orders": d},
+    ),
+    "albums": lambda p: (
+        "record_albums_sent",
+        {"p_order": p.get("order_id"), "p_sent": p.get("sent"),
+         "p_message_id": p.get("message_id")},
+        lambda d: {"albums_sent": d},
+    ),
+    "finish": lambda p: (
+        "finish_fulfilment",
+        {"p_order": p.get("order_id"), "p_total_albums": p.get("total_albums")},
+        lambda d: {"ok": True},
+    ),
+    "release": lambda p: (
+        "release_fulfilment",
+        {"p_order": p.get("order_id"), "p_reason": p.get("reason")},
+        lambda d: {"ok": True},
+    ),
+}
+
+_DIRECT = {"notify": _NOTIFY_DIRECT, "fulfilment": _FULFILMENT_DIRECT}
+
+
+def _try_direct(path: str, payload: dict):
+    """
+    (handled, body). `handled` is False when this one still needs Vercel.
+
+    A refusal from the database is a refusal either way, so it comes back
+    as None exactly as a 409 from the endpoint would.
+    """
+    if not db.enabled():
+        return False, None
+    entry = _DIRECT.get(path, {}).get(payload.get("action"))
+    if entry is None:
+        return False, None
+    fn, args, envelope = entry(payload)
+    try:
+        return True, envelope(db.rpc(fn, args))
+    except db.Failed as e:
+        log.error("GRQ OS %s/%s direct: %s", path, payload.get("action"), e)
+        return True, None
+
+
 def _post(path: str, payload: dict) -> dict | None:
+    handled, body = _try_direct(path, payload)
+    if handled:
+        return body
+
     if not configured():
         return None
     raw = json.dumps(payload, ensure_ascii=False)
