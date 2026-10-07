@@ -1,0 +1,9 @@
+[Unit]
+Description=Nexa nightly 30-day ad spend re-pull
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Asia/Dubai
+Persistent=true
+
+[Install]
+WantedBy=timers.target

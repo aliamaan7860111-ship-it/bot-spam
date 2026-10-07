@@ -1,0 +1,12 @@
+[Unit]
+Description=Nexa: pull the last 3 days of ad spend from Triple Whale
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=bilal
+WorkingDirectory=/home/bilal/automation
+EnvironmentFile=/home/bilal/automation/.env
+ExecStart=/home/bilal/automation/venv/bin/python /home/bilal/automation/execution/nexa_ad_pull.py --mode hourly
+StandardOutput=append:/home/bilal/automation/.tmp/nexa_ad_pull.log
+StandardError=append:/home/bilal/automation/.tmp/nexa_ad_pull.log

@@ -1,0 +1,12 @@
+[Unit]
+Description=Nexa: re-pull the last 30 days of ad spend (platform restatements)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=bilal
+WorkingDirectory=/home/bilal/automation
+EnvironmentFile=/home/bilal/automation/.env
+ExecStart=/home/bilal/automation/venv/bin/python /home/bilal/automation/execution/nexa_ad_pull.py --mode nightly
+StandardOutput=append:/home/bilal/automation/.tmp/nexa_ad_pull.log
+StandardError=append:/home/bilal/automation/.tmp/nexa_ad_pull.log
