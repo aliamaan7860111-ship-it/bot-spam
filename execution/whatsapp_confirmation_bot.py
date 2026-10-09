@@ -313,10 +313,31 @@ async def _send_all(new_orders: list[dict]) -> int:
     for order in new_orders:
         phone = order.get("phone", "")
         if not phone:
+            # Same reasoning as a malformed one: there is nothing to retry.
+            grq_id = order.get("grq_os_order_id")
+            if grq_id:
+                grq.block_confirmation(grq_id, "No phone number on the order")
             continue
             
         order_id = order.get("order_id", "")
+        grq_id = order.get("grq_os_order_id")
         prefix = order_id[:2] if order_id[:2] in BRAND_MAP else order_id[:1]
+
+        def _unsendable(reason: str, _grq=grq_id, _code=order_id) -> None:
+            """
+            WhatChimp refused for a reason that will not change.
+
+            Without this the order is handed back by `claim_for_confirmation`
+            every ten minutes until it ages out, and then nobody is told. It
+            goes to the Confirmation Blocked queue instead, where the number
+            can be corrected and the block lifted.
+
+            Bound at definition because this runs inside a loop; a late-bound
+            closure would block whichever order happened to be last.
+            """
+            log.error("confirm: %s cannot be sent - %s", _code, reason)
+            if _grq:
+                grq.block_confirmation(_grq, reason)
 
         # "Pay By Link" orders (pilot: PAY_LINK_BRANDS) get a Stripe payment
         # link instead of the COD confirmation template.
@@ -330,6 +351,7 @@ async def _send_all(new_orders: list[dict]) -> int:
                 total=str(order.get("total_aed") or "0"),
                 brand_name=order.get("brand_name", ""),
                 brand_prefix=order_id[:2],
+                on_permanent_failure=_unsendable,
             )
         if success:
             _mark_sent(order)

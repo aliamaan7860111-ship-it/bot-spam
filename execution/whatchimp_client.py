@@ -411,6 +411,26 @@ def create_or_update_subscriber(
         log.error(f"  ✗ Subscriber sync failed: {str(e)}")
         return False
 
+# Rejections that will read exactly the same on the thousandth attempt.
+#
+# All of them say the number cannot be delivered to, which is a fact about the
+# order and not about this moment. Everything NOT on this list is treated as
+# worth retrying, because the cost of retrying a permanent failure is noise
+# and the cost of abandoning a transient one is a lost sale.
+PERMANENT_REJECTIONS = (
+    "phone number is malformed",
+    "invalid phone number",
+    "not a valid phone number",
+    "recipient phone number not in allowed list",
+)
+
+
+def is_permanent_rejection(message: str) -> bool:
+    """Whether WhatChimp's refusal is about the order rather than the moment."""
+    m = (message or "").lower()
+    return any(p in m for p in PERMANENT_REJECTIONS)
+
+
 def send_template_message(
     phone_number: str,
     customer_name: str,
@@ -418,6 +438,7 @@ def send_template_message(
     total: str = "",
     brand_name: str = "",
     brand_prefix: str = "",
+    on_permanent_failure=None,
 ) -> bool:
     """
     Sends the WhatsApp confirmation template. Routes sender number, template ID,
@@ -425,6 +446,11 @@ def send_template_message(
 
     Always pre-syncs the subscriber's custom fields against the brand's own
     phone_number_id so the flow's `#order_id#` merge tag resolves on click.
+
+    `on_permanent_failure(reason)` is called when WhatChimp refuses for a
+    reason that will not change - a number Meta cannot resolve. The caller
+    uses it to stop the order being offered again. It is not called for a
+    timeout or an unrecognised refusal: those are retried.
 
     Returns True when WhatChimp ACCEPTED the message, which is not the same
     as the customer receiving it. Meta decides delivery afterwards and this
@@ -505,7 +531,12 @@ def send_template_message(
             log.info(f"✅ ACCEPTED by WhatChimp: {order_id} queued for sending")
             return True
         else:
-            log.error(f"❌ API Rejected ({display_brand}): {data.get('message', data)}")
+            reason = str(data.get("message", data))
+            log.error(f"❌ API Rejected ({display_brand}): {reason}")
+            if on_permanent_failure and is_permanent_rejection(reason):
+                # Reported once, here, so the retry loop ends on the first
+                # refusal rather than after a day of identical alerts.
+                on_permanent_failure(f"{reason} ({cleaned_phone})")
             return False
     except Exception as e:
         log.error(f"Request failed: {e}")
