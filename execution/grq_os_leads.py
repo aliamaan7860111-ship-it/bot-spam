@@ -140,11 +140,21 @@ async def inbound(
     agent: str | None = None,
     name: str | None = None,
     at: str | None = None,
+    bot_id: str | None = None,
+    phone_number_id: str | None = None,
 ) -> bool:
-    """A customer messaged. `brand` is the store's name, as the bot resolves it."""
+    """
+    A customer messaged. `brand` is the store's name, as the bot resolves it.
+
+    `bot_id` and `phone_number_id` say which of OUR numbers it landed on, which
+    is what decides whether this is a checkout enquiry or a campaign lead.
+    Both are sent because WhatChimp sends one or the other depending on the
+    bot. Neither is a brand: a store can have both kinds of number.
+    """
     return await _post(client, {
         "action": "inbound", "phone": phone, "brand_code": brand,
         "agent": agent, "name": name, "at": at, "source": "whatsapp",
+        "bot_id": bot_id, "phone_number_id": phone_number_id,
     })
 
 
@@ -154,9 +164,18 @@ async def outbound(
     brand: str,
     agent: str | None = None,
     at: str | None = None,
+    bot_id: str | None = None,
+    phone_number_id: str | None = None,
 ) -> bool:
-    """An agent replied. Never creates a conversation."""
+    """
+    An agent replied. Never creates a conversation.
+
+    The number matters here too: a customer can have a checkout conversation
+    and a campaign one with the same store, and stamping the reply on the
+    wrong one would mark one answered and leave the other waiting forever.
+    """
     return await _post(client, {
         "action": "outbound", "phone": phone, "brand_code": brand,
         "agent": agent, "at": at,
+        "bot_id": bot_id, "phone_number_id": phone_number_id,
     })

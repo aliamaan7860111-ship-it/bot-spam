@@ -143,6 +143,45 @@ _PNID_KEYS = (
 _PNID_SHAPES_LOGGED: set = set()
 
 
+# Numbers already reported, so a campaign landing a hundred messages on an
+# unmapped bot is one thing to fix rather than a hundred alerts.
+_unmapped_seen: set[str] = set()
+
+
+def _report_unmapped(brand: str, bot_name: str, bot_id: str, phone_number_id: str) -> None:
+    """
+    A WhatsApp number nobody has classified, said loudly and once.
+
+    An unmapped bot still gets a Notion ticket - resolve_source never returns
+    None - but `upsert_lead` raises on the unknown store name and grq_leads
+    swallows it, so the GRQ OS lead is lost without a sound. The ids are the
+    point of the message: they are what gets pasted into whatsapp_numbers and
+    the brand map.
+    """
+    key = bot_id or phone_number_id or bot_name or "?"
+    if key in _unmapped_seen:
+        return
+    _unmapped_seen.add(key)
+    try:
+        import error_reporter
+        error_reporter.report(
+            f"WhatsApp number not mapped: {bot_name!r} - leads from it reach Notion "
+            f"but are dropped by GRQ OS until it is added",
+            error_type="unmapped_whatsapp_number",
+            context={
+                "bot_id": bot_id,
+                "phone_number_id": phone_number_id,
+                "bot_name": bot_name,
+                "captured_as": brand,
+                "fix": "add to whatsapp_numbers (GRQ OS) and BRAND_BY_PHONE_ID/"
+                       "WHATCHIMP_BOT_ID_TO_BRAND (rpgrq_whatchimp.py)",
+            },
+        )
+    except Exception:
+        # Reporting a problem must never become one.
+        log.exception("could not report the unmapped number")
+
+
 def _extract_phone_number_id(payload: dict) -> str:
     """Best-effort phone_number_id from an inbound/outbound WhatChimp payload."""
     for key in _PNID_KEYS:
@@ -243,6 +282,11 @@ async def handle_incoming(
             f"(bot_name={bot_name!r} bot_id={bot_id!r} pnid={phone_number_id!r}) "
             f"— add to BRAND_ALIASES/WHATCHIMP_BOT_ID_TO_BRAND"
         )
+        # The Notion ticket survives an unmapped bot; the GRQ OS lead does not.
+        # resolve_brand_loose finds no store, upsert_lead raises, and grq_leads
+        # swallows it by design - so the lead is lost in silence unless this
+        # says so somewhere a person looks.
+        _report_unmapped(brand, bot_name, bot_id, phone_number_id)
 
     # Idempotency
     if wa_message_id and not message_id_seen.add(wa_message_id):
@@ -259,7 +303,8 @@ async def handle_incoming(
             log.error("incoming: no active agent, ticket created as Unassigned")
             new_id = await notion.create_ticket(client, phone, brand, "Unassigned", now_iso)
             if new_id:
-                await grq_leads.inbound(client, phone, brand, agent=None, at=now_iso)
+                await grq_leads.inbound(client, phone, brand, agent=None, at=now_iso,
+                                        bot_id=bot_id, phone_number_id=phone_number_id)
                 await sync_labels_side_effect(client, new_id, label_names_raw, ticket=None)
             return
         new_id = await notion.create_ticket(client, phone, brand, agent["name"], now_iso)
@@ -268,7 +313,8 @@ async def handle_incoming(
             # GRQ OS gets the same conversation, with the same agent. Notion is
             # still the system of record, so this is a copy and never a gate:
             # grq_leads swallows its own failures.
-            await grq_leads.inbound(client, phone, brand, agent=agent["name"], at=now_iso)
+            await grq_leads.inbound(client, phone, brand, agent=agent["name"], at=now_iso,
+                                    bot_id=bot_id, phone_number_id=phone_number_id)
             # Try every pnid for the brand (customer may be on the old number).
             if agent.get("team_member_id"):
                 pids = wc.phone_id_candidates(brand, phone_number_id)
@@ -289,7 +335,8 @@ async def handle_incoming(
     # owner has to travel with the message, or the lead is created ownerless
     # while Notion has known who owns it for weeks.
     await grq_leads.inbound(
-        client, phone, brand, agent=notion.ticket_agent_assigned(ticket), at=now_iso
+        client, phone, brand, agent=notion.ticket_agent_assigned(ticket), at=now_iso,
+        bot_id=bot_id, phone_number_id=phone_number_id,
     )
     log.info(f"🔄 ping-pong {brand} / {phone}")
     await sync_labels_side_effect(client, ticket["id"], label_names_raw, ticket=ticket)
@@ -338,7 +385,8 @@ async def handle_outgoing(
     # ticket's Agent Assigned already names the latest replier, which is a
     # better answer than waiting for that lookup and is right often enough.
     await grq_leads.outbound(
-        client, phone, brand, agent=notion.ticket_agent_assigned(ticket), at=utc_iso_now()
+        client, phone, brand, agent=notion.ticket_agent_assigned(ticket), at=utc_iso_now(),
+        bot_id=bot_id, phone_number_id=phone_number_id,
     )
 
     # Identify the sender via targeted conversation lookup. During migration the

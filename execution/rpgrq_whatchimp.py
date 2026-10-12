@@ -45,6 +45,13 @@ BRAND_BY_PHONE_ID = {
     "1306342719226934": "Velix",
     "1354836361042768": "Wrist Gallery",
     "1260047933866516": "Viresta",
+    # --- 2026-10 campaign numbers --------------------------------------------
+    # Direct click-to-WhatsApp ad campaigns, one per store. They resolve to the
+    # SAME brand as that store's checkout number on purpose: the store is the
+    # store. What separates them is `whatsapp_numbers.lead_source` in GRQ OS,
+    # which is keyed on these ids.
+    "1381222078405551": "Amara",                # +966 57 258 5689, campaign
+    "1307625215775108": "Lune",                 # +966 57 144 2240, campaign
     # --- legacy numbers (kept: customers may still be on them) ----------------
     # A SHARED number cannot identify the store, so these must keep the grouped
     # label. Do not "upgrade" them to a per-brand label.
