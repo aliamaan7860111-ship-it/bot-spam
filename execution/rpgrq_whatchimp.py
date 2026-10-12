@@ -69,6 +69,9 @@ BRAND_BY_PHONE_ID = {
 BRAND_ALIASES = {
     "amara": "Amara", "amaras room": "Amara", "amara's room": "Amara",
     "amaras room dubai": "Amara", "amara's room dubai": "Amara",
+    # The campaign bot is named "Amara Room" - no apostrophe, no "s". That one
+    # spelling was missing, and it is the one the live bot sends.
+    "amara room": "Amara",
     "rimal": "Rimal", "rimal uae": "Rimal",
     "dialo": "Dialo", "dialo uae": "Dialo",
     # Stores that now have their OWN number resolve to their own label. bot_id is
@@ -109,6 +112,11 @@ WHATCHIMP_BOT_ID_TO_BRAND = {
     # self-identifying bots: 460585 "Amara's Room" (1st) and 460575
     # "Wirst Gallery Dubai" (3rd) both matched their expected position.
     "460585": "Amara",            # Amara's Room      (bot named "Amara's Room")
+    # --- 2026-10 campaign numbers -------------------------------------------
+    # Click-to-WhatsApp ad campaigns. Same brand as the store's checkout
+    # number on purpose; whatsapp_numbers.lead_source in GRQ OS is what tells
+    # the two kinds of conversation apart.
+    "475155": "Amara",            # +966 57 258 5689, campaign (bot "Amara Room")
     "460576": "Amara's Watches",  #                   (bot named "Customer Care")
     "460575": "Wrist Gallery",    #                   (bot named "Wirst Gallery Dubai" [sic])
     "460584": "Viresta",          #                   (bot named "Shopping Care")
