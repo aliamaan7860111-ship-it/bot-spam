@@ -431,6 +431,21 @@ def is_permanent_rejection(message: str) -> bool:
     return any(p in m for p in PERMANENT_REJECTIONS)
 
 
+# Refusals about OUR sender rather than the customer. Equally permanent - no
+# amount of retrying brings a deleted WhatsApp account back - but the order
+# is fine and the fix is a configuration one, so it is worth saying which.
+SENDER_FAULTS = (
+    "whatsapp account not found",
+    "phone number id is invalid",
+)
+
+
+def is_sender_fault(message: str) -> bool:
+    """Whether the refusal is about the number WE send from."""
+    m = (message or "").lower()
+    return any(p in m for p in SENDER_FAULTS)
+
+
 def send_template_message(
     phone_number: str,
     customer_name: str,
@@ -533,10 +548,17 @@ def send_template_message(
         else:
             reason = str(data.get("message", data))
             log.error(f"❌ API Rejected ({display_brand}): {reason}")
-            if on_permanent_failure and is_permanent_rejection(reason):
+            if on_permanent_failure:
                 # Reported once, here, so the retry loop ends on the first
                 # refusal rather than after a day of identical alerts.
-                on_permanent_failure(f"{reason} ({cleaned_phone})")
+                if is_sender_fault(reason):
+                    on_permanent_failure(
+                        f"Our WhatsApp sender for {display_brand} is not reachable "
+                        f"({reason.strip()} - phone_number_id {phone_number_id}). "
+                        f"The order is fine; the number needs fixing, then release this."
+                    )
+                elif is_permanent_rejection(reason):
+                    on_permanent_failure(f"{reason} ({cleaned_phone})")
             return False
     except Exception as e:
         log.error(f"Request failed: {e}")
