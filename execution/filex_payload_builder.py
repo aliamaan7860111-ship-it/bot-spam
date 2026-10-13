@@ -61,6 +61,34 @@ def parse_total(raw) -> float:
     return value
 
 
+# What people put between two phone numbers when they only have one box.
+_PHONE_SPLIT = re.compile(r"\s*(?:/|\\|,|;|&|\bor\b|\band\b|\+971(?=\s*\d)|\|)\s*", re.I)
+
+
+def split_phones(raw: str) -> list[str]:
+    """
+    One field, however many numbers the customer typed into it.
+
+    "+971 56 669 4718/+971 56 436 3637" is two numbers, not a twenty-two
+    digit one. Returns them normalised to UAE 0XXXXXXXXX, in the order
+    given, with anything implausible dropped rather than guessed at.
+    """
+    out: list[str] = []
+    for part in _PHONE_SPLIT.split(raw or ""):
+        digits = clean_phone_number(part)
+        if digits.startswith("971"):
+            digits = "0" + digits[3:]
+        # UAE numbers are ten digits as 0XXXXXXXXX. Foreign ones are kept as
+        # their digits and sent as given, which is what has always happened
+        # and what Filex accepts - VL 215 is a +44 customer with a real
+        # order. The only thing refused is something that cannot be dialled:
+        # too short, or too long because two numbers were glued together.
+        ok = (len(digits) == 10 and digits.startswith("0")) or (9 <= len(digits) <= 15)
+        if ok and digits not in out:
+            out.append(digits)
+    return out
+
+
 def build_payload(order: dict) -> dict:
     """
     Convert a parsed Notion order into a Filex placebulk item dict.
@@ -83,12 +111,21 @@ def build_payload(order: dict) -> dict:
     phone_raw = (order.get("phone") or "").strip()
     if not phone_raw:
         raise ValidationError("missing phone")
-    phone = clean_phone_number(phone_raw)
-    # clean_phone_number returns 971XXXXXXXXX; convert to UAE 0XXXXXXXXX
-    if phone.startswith("971"):
-        phone = "0" + phone[3:]
-    if not phone or len(phone) < 10:
-        raise ValidationError(f"missing phone (invalid after normalization: {phone!r})")
+
+    # Split before validating: a customer who gave two numbers should be
+    # served, not refused for being helpful.
+    phones = split_phones(phone_raw)
+    if not phones:
+        raise ValidationError(f"no usable phone number in {phone_raw!r}")
+    phone = phones[0]
+    phone2 = phones[1] if len(phones) > 1 else ""
+
+    # The old check was `len(phone) < 10` and said nothing about too long,
+    # which is how 0566694718971564363637 reached Filex and took a batch of
+    # 37 down with it. This is the upper bound that was missing; split_phones
+    # already enforces it, and this says so where the failure would be read.
+    if not (9 <= len(phone) <= 15):
+        raise ValidationError(f"invalid phone after normalization: {phone!r} (from {phone_raw!r})")
 
     address = (order.get("full_address") or "").strip()
     if not address:
@@ -114,7 +151,9 @@ def build_payload(order: dict) -> dict:
         "City": city,
         "Area": "",
         "Street": address[:200],  # Filex limits street length
-        "MobileNumber2": "",
+        # A second number the customer gave. The driver gets both, which is
+        # the point of them offering it.
+        "MobileNumber2": phone2,
         "Remarks": (order.get("internal_note") or "")[:200],
         "NumberOfPieces": str(pieces),
         "Desc1": desc[:200],
