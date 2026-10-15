@@ -403,12 +403,6 @@ def format_fulfillment_message(order: dict) -> str:
     """
     lines = [
         f"*Order ID:* `{safe_markdown(order.get('order_id', 'N/A'))}`",
-    ]
-    # Orders merged into this one: one parcel, so the packer is told the
-    # pictures below cover all of them.
-    if order.get("merged_codes"):
-        lines.append(f"*Merged in:* {safe_markdown(', '.join(order['merged_codes']))}")
-    lines += [
         "",
         "",
         f"*Customer:* {safe_markdown(order.get('customer_name', 'N/A'))}",

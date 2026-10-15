@@ -324,7 +324,6 @@ def combine_merged(order: dict, fetch) -> bool:
 
     order["image_urls"] = images
     order["line_items"] = lines
-    order["merged_codes"] = [p.get("order_code") for p in merged if p.get("order_code")]
     log.info("  %s: combined %d merged order(s) - %d picture(s), %d line(s)",
              order.get("order_id"), len(merged), len(images), len(lines))
     return True

@@ -50,7 +50,6 @@ class MergedFulfilment(unittest.TestCase):
         self.assertTrue(grq.combine_merged(order, _shopify({URL_93: ["Jumbo"], URL_92: ["Mono"]})))
         self.assertEqual(order["image_urls"], ["cdn:Jumbo", "cdn:Mono"])
         self.assertEqual([l["title"] for l in order["line_items"]], ["Jumbo", "Mono"])
-        self.assertEqual(order["merged_codes"], ["AM5392"])
 
     def test_a_page_that_gives_nothing_falls_back_for_that_part_only(self):
         order = grq.to_bridge_order(_claimed())
@@ -71,18 +70,18 @@ class MergedFulfilment(unittest.TestCase):
         order = grq.to_bridge_order(_claimed(merged=False))
         self.assertFalse(grq.combine_merged(order, _shopify({URL_93: ["Jumbo"]})))
         self.assertNotIn("line_items", order)
-        self.assertNotIn("merged_codes", order)
 
     def test_identical_lines_are_subtracted_one_for_one(self):
         self.assertEqual(grq._without([MONO, MONO, JUMBO], [MONO]), [MONO, JUMBO])
 
-    def test_the_caption_names_the_merged_orders(self):
+    def test_the_caption_does_not_mention_the_merged_order(self):
+        # The packers see one order; the merged code is the CRM's business.
         order = grq.to_bridge_order(_claimed())
         grq.combine_merged(order, _shopify({URL_93: ["Jumbo"], URL_92: ["Mono"]}))
         caption = tg.format_fulfillment_message(order)
-        self.assertIn("Merged in:", caption)
-        self.assertIn("AM5392", caption)
-        self.assertNotIn("Merged in:", tg.format_fulfillment_message(grq.to_bridge_order(_claimed(False))))
+        self.assertIn("AM5393", caption)
+        self.assertNotIn("AM5392", caption)
+        self.assertNotIn("erged", caption)
 
 
 if __name__ == "__main__":
