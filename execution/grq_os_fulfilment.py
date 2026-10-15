@@ -211,6 +211,12 @@ def to_bridge_order(claimed: dict) -> dict:
         if url:
             fallback_images.extend([url] * int(it.get("quantity") or 1))
 
+    # Orders merged into this one. `items` above already holds all of them;
+    # `own_items` is what was this order's to begin with, so each Shopify
+    # page can be paired with the items it actually describes.
+    merged = claimed.get("merged") or []
+    own_items = _without(items, [it for part in merged for it in (part.get("items") or [])])
+
     total = claimed.get("total")
     return {
         # The bridge logs and captions by order code.
@@ -229,4 +235,96 @@ def to_bridge_order(claimed: dict) -> dict:
         "item_qty": ", ".join(parts),
         "image_urls": fallback_images,
         "albums_sent": int(claimed.get("albums_sent") or 0),
+        "own_items": own_items,
+        "merged_parts": merged,
     }
+
+
+def _item_key(it: dict) -> tuple:
+    return (it.get("product_title"), it.get("variant"), it.get("sku"),
+            it.get("quantity"), it.get("image_url"))
+
+
+def _without(items: list[dict], remove: list[dict]) -> list[dict]:
+    """`items` minus `remove`, one for one - two identical lines stay two."""
+    left = list(remove)
+    out = []
+    for it in items:
+        k = _item_key(it)
+        hit = next((i for i, r in enumerate(left) if _item_key(r) == k), None)
+        if hit is None:
+            out.append(it)
+        else:
+            left.pop(hit)
+    return out
+
+
+def item_images(items: list[dict]) -> list[str]:
+    """GRQ OS's own picture per unit, for a part with no Shopify page."""
+    out: list[str] = []
+    for it in items:
+        url = (it.get("image_url") or "").strip()
+        if url:
+            out.extend([url] * int(it.get("quantity") or 1))
+    return out
+
+
+def item_lines(items: list[dict]) -> list[dict]:
+    """GRQ OS items in the line-item shape the caption prints."""
+    return [{"title": it.get("product_title") or it.get("sku") or "Item",
+             "variant": it.get("variant") or "",
+             "quantity": int(it.get("quantity") or 1)} for it in items]
+
+
+def combine_merged(order: dict, fetch) -> bool:
+    """
+    One album for an order that other orders were merged into.
+
+    The sender reads pictures and sizes from ONE Shopify order-status page.
+    A merged order has one page per original order, so reading only the
+    survivor's sent AM5393 to the packers without the cap AM5392 brought in.
+    This reads every page and pairs each with its own items, then sets
+    `image_urls` and `line_items` on the order so the sender uses them as
+    they are instead of fetching the survivor's page again.
+
+    A part whose page gives nothing - no link (a typed order), or Shopify
+    not answering - falls back to GRQ OS's own pictures for exactly that
+    part's items, so one bad page never drops the other orders' items.
+
+    `fetch(url, holder)` is telegram_client.fetch_order_images_graphql:
+    returns image URLs and may put `line_items` on `holder`.
+
+    Returns False (and touches nothing) when nothing was merged in.
+    """
+    merged = order.get("merged_parts") or []
+    if not merged:
+        return False
+
+    parts = [(order.get("order_id"), order.get("order_source_url") or "", order.get("own_items") or [])]
+    parts += [(p.get("order_code"), p.get("order_source_url") or "", p.get("items") or []) for p in merged]
+
+    images: list[str] = []
+    lines: list[dict] = []
+    for code, url, items in parts:
+        holder: dict = {}
+        got = []
+        if url:
+            try:
+                got = fetch(url, holder) or []
+            except Exception as e:  # one page failing must not sink the rest
+                log.warning("  %s: Shopify page for merged part failed: %s", code, e)
+        if got:
+            images += got
+            lines += holder.get("line_items") or item_lines(items)
+        else:
+            if url:
+                log.warning("  %s: no pictures from its Shopify page; using GRQ OS's", code)
+            images += item_images(items)
+            lines += item_lines(items)
+
+    order["image_urls"] = images
+    order["line_items"] = lines
+    order["merged_codes"] = [p.get("order_code") for p in merged if p.get("order_code")]
+    log.info("  %s: combined %d merged order(s) - %d picture(s), %d line(s)",
+             order.get("order_id"), len(merged), len(images), len(lines))
+    return True

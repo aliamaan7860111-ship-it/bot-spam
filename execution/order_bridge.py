@@ -413,6 +413,10 @@ async def poll_grq_os_once(bot: Bot) -> int:
                     else:
                         log.warning("  %s: %d photo(s) on Notion, none could be kept", order_id, len(expiring))
 
+        # Orders merged into this one each have their own Shopify page; read
+        # them all so the packers get every item, not just the survivor's.
+        grq.combine_merged(order, tg.fetch_order_images_graphql)
+
         try:
             async def on_album_sent(new_count: int, caption_msg_id):
                 if not grq.albums_sent(grq_id, new_count, caption_msg_id):
