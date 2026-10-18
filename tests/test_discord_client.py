@@ -24,7 +24,7 @@ class DiscordMessage(unittest.TestCase):
         msg = dc.build_messages(raw(), ["https://cdn/a.png", "https://cdn/b.png"])
         self.assertEqual(len(msg), 1)
         inner = msg[0]["components"][0]["components"]
-        buttons = [b for c in inner if c["type"] == 1 for b in c["components"]]
+        buttons = [b for c in inner if c["type"] == 1 for b in c["components"] if b["custom_id"].startswith("cost:")]
         self.assertEqual([b["custom_id"] for b in buttons], ["cost:id-0", "cost:id-1"])
         self.assertTrue(all(b["label"] == "Enter cost" for b in buttons))
         self.assertEqual(msg[0]["flags"], 1 << 15)
@@ -40,7 +40,7 @@ class DiscordMessage(unittest.TestCase):
             it["image_url"] = None
         inner = dc.build_messages(r, ["https://shop/a.png"])[0]["components"][0]["components"]
         self.assertEqual([c["accessory"]["media"]["url"] for c in inner if c["type"] == 9], ["https://shop/a.png"])
-        self.assertEqual(sum(1 for c in inner if c["type"] == 1), 2)  # both still get a button
+        self.assertEqual(sum(1 for c in inner if c["type"] == 1 and c["components"][0]["custom_id"].startswith("cost:")), 2)  # both still get a button
 
     def test_never_more_than_forty_components(self):
         for n in (1, 10, 11, 25):
@@ -49,7 +49,7 @@ class DiscordMessage(unittest.TestCase):
 
     def test_a_big_order_is_split_and_every_item_gets_a_button(self):
         msgs = dc.build_messages(raw(25), [])
-        ids = [b["custom_id"] for m in msgs for c in m["components"][0]["components"] if c["type"] == 1 for b in c["components"]]
+        ids = [b["custom_id"] for m in msgs for c in m["components"][0]["components"] if c["type"] == 1 for b in c["components"] if b["custom_id"].startswith("cost:")]
         self.assertEqual(len(ids), 25)
         self.assertGreater(len(msgs), 1)
 
@@ -66,6 +66,18 @@ class DiscordMessage(unittest.TestCase):
         sec = [c for c in inner if c["type"] == 9][0]
         self.assertIn("AED 120", sec["components"][0]["content"])
         self.assertEqual([c for c in inner if c["type"] == 1][0]["components"][0]["label"], "Edit cost")
+
+    def test_unprocess_button_at_the_foot_of_the_last_post_only(self):
+        msgs = dc.build_messages(raw(9), [])
+        def unprocess(m):
+            return [b for c in m["components"][0]["components"] if c["type"] == 1
+                    for b in c["components"] if b["custom_id"].startswith("unprocess:")]
+        self.assertEqual(unprocess(msgs[0]), [])
+        last = unprocess(msgs[-1])
+        self.assertEqual(len(last), 1)
+        self.assertEqual(last[0]["custom_id"], "unprocess:AM5459")
+        self.assertEqual(last[0]["style"], 4)
+        self.assertEqual(msgs[-1]["components"][0]["components"][-1]["components"][0]["label"], "Unprocess")
 
     def test_disabled_without_token_or_channel(self):
         import os

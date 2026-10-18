@@ -38,7 +38,7 @@ log = logging.getLogger("order_bridge.discord")
 API = "https://discord.com/api/v10"
 IS_COMPONENTS_V2 = 1 << 15
 MAX_COMPONENTS = 40          # Discord's cap per message, nested ones included
-ITEMS_PER_MESSAGE = 7        # 3 fixed components + 5 per item stays under 40
+ITEMS_PER_MESSAGE = 7        # 3 fixed + 5 per item + 2 for Unprocess = 40, the cap
 
 
 def _token() -> str:
@@ -124,6 +124,15 @@ def build_messages(raw: dict, image_urls: list[str]) -> list[dict]:
             }]})
         if not chunk:
             inner.append({"type": 10, "content": "_No items on this order in the CRM._"})
+        if n == len(chunks) - 1:
+            # Unprocess: sends the order back to Confirmation Sent in the CRM
+            # (the same undo as Telegram's #reset) and removes this post. The
+            # CRM checks the clicker's role (Sales, Management, admins) and
+            # asks them to confirm first.
+            inner.append({"type": 1, "components": [{
+                "type": 2, "style": 4, "label": "Unprocess",
+                "custom_id": f"unprocess:{code}"[:100],
+            }]})
         messages.append({
             "flags": IS_COMPONENTS_V2,
             "allowed_mentions": {"parse": []},
