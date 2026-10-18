@@ -47,6 +47,7 @@ import telegram_client as tg
 import cutover
 import grq_os_fulfilment as grq
 import grq_os_work as grqw
+import discord_client as discord  # the #fulfillment channel, alongside Telegram
 
 # --- TJR Logistics integration (own-driver labels, separate from Filex) ---
 # Defensive: if the TJR package isn't deployed yet, the bot still starts and the
@@ -445,6 +446,13 @@ async def poll_grq_os_once(bot: Bot) -> int:
                     log.info(f"  ✓ Order {order_id} fully delivered, status -> Processed")
                     processed += 1
                     await _also_mark_notion_processed(order)
+                    # Discord #fulfillment too, during the move from Telegram. Its
+                    # own failure is logged and never undoes the Telegram send.
+                    if discord.enabled():
+                        try:
+                            await asyncio.to_thread(discord.post_order, raw, list(order.get("image_urls") or []))
+                        except Exception as e:  # noqa: BLE001
+                            log.error("  ✗ %s: Discord post failed: %s", order_id, e)
                 else:
                     await _safe_send_message(
                         bot, fulfillment_group,
