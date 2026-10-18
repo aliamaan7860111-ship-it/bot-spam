@@ -26,6 +26,7 @@ import os
 import sys
 import json
 import asyncio
+import time
 import argparse
 import logging
 import signal
@@ -507,8 +508,31 @@ async def _also_mark_notion_processed(order: dict) -> None:
         log.warning("  %s: could not mark Notion Processed (%s)", order["order_id"], e)
 
 
+# Set by POST /wake (the database calls it the moment an order becomes
+# CONFIRMED | PROCESSING - migration 0173). The poller waits on it instead of
+# sleeping blind, so an order goes out in seconds rather than up to
+# POLL_INTERVAL_SECONDS later. The timer stays as the safety net: a missed
+# wake costs at most one interval, never an order.
+_wake: asyncio.Event | None = None
+_last_wake = 0.0
+WAKE_MIN_GAP = 1.0  # seconds; a burst of wakes is one check
+
+
+def wake_poller() -> bool:
+    """Ask the poller to check now. Returns False if it was asked under a second ago."""
+    global _last_wake
+    now = time.monotonic()
+    if _wake is None or now - _last_wake < WAKE_MIN_GAP:
+        return False
+    _last_wake = now
+    _wake.set()
+    return True
+
+
 async def notion_poller_loop(bot: Bot):
-    """Continuously poll for confirmed orders every POLL_INTERVAL_SECONDS."""
+    """Poll for confirmed orders every POLL_INTERVAL_SECONDS, or at once when woken."""
+    global _wake
+    _wake = asyncio.Event()
     if FULFIL_FROM_GRQ_OS and not grq.configured():
         # Refusing to start is right: falling back to Notion silently would
         # look like the cutover worked.
@@ -528,7 +552,12 @@ async def notion_poller_loop(bot: Bot):
         except Exception as e:
             log.error(f"Poller error: {e}", exc_info=True)
 
-        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+        try:
+            await asyncio.wait_for(_wake.wait(), timeout=POLL_INTERVAL_SECONDS)
+            log.info("  ⚡ woken - checking for confirmed orders now")
+        except asyncio.TimeoutError:
+            pass
+        _wake.clear()
 
 
 # (WhatsApp logic moved to dedicated whatsapp_confirmation_bot.py)
@@ -572,6 +601,21 @@ async def start_health_server():
             method = first_line[0].upper()
             path = first_line[1] if len(first_line) > 1 else "/"
             
+            # --- Wake: an order was just confirmed, check now ---------------
+            # Called by the database (pg_net, migration 0173). It carries no
+            # data and changes nothing - the worst a stray call can do is an
+            # early check - and wake_poller() limits it to one a second.
+            if path.split("?")[0] == "/wake":
+                woke = wake_poller()
+                body = json.dumps({"ok": True, "woke": woke})
+                writer.write((
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    "Connection: close\r\n\r\n" + body).encode())
+                await writer.drain()
+                return
+
             # --- Webhook Handling ---
             if "/filex_webhook" in path:
                 log.info(f"📦 Filex Webhook ({method}): {path}")
