@@ -24,15 +24,23 @@ class DiscordMessage(unittest.TestCase):
         msg = dc.build_messages(raw(), ["https://cdn/a.png", "https://cdn/b.png"])
         self.assertEqual(len(msg), 1)
         inner = msg[0]["components"][0]["components"]
-        buttons = [c["accessory"] for c in inner if c["type"] == 9]
+        buttons = [b for c in inner if c["type"] == 1 for b in c["components"]]
         self.assertEqual([b["custom_id"] for b in buttons], ["cost:id-0", "cost:id-1"])
         self.assertTrue(all(b["label"] == "Enter cost" for b in buttons))
         self.assertEqual(msg[0]["flags"], 1 << 15)
 
-    def test_photos_go_in_one_gallery_capped_at_ten(self):
-        msg = dc.build_messages(raw(), [f"https://cdn/{i}.png" for i in range(14)])
-        gallery = [c for c in msg[0]["components"][0]["components"] if c["type"] == 12][0]
-        self.assertEqual(len(gallery["items"]), 10)
+    def test_each_item_has_its_own_photo_beside_it(self):
+        inner = dc.build_messages(raw(), [])[0]["components"][0]["components"]
+        photos = [c["accessory"]["media"]["url"] for c in inner if c["type"] == 9]
+        self.assertEqual(photos, ["https://cdn/0.png", "https://cdn/1.png"])
+
+    def test_an_item_without_its_own_photo_uses_the_order_photos(self):
+        r = raw(2)
+        for it in r["items"]:
+            it["image_url"] = None
+        inner = dc.build_messages(r, ["https://shop/a.png"])[0]["components"][0]["components"]
+        self.assertEqual([c["accessory"]["media"]["url"] for c in inner if c["type"] == 9], ["https://shop/a.png"])
+        self.assertEqual(sum(1 for c in inner if c["type"] == 1), 2)  # both still get a button
 
     def test_never_more_than_forty_components(self):
         for n in (1, 10, 11, 25):
@@ -41,7 +49,7 @@ class DiscordMessage(unittest.TestCase):
 
     def test_a_big_order_is_split_and_every_item_gets_a_button(self):
         msgs = dc.build_messages(raw(25), [])
-        ids = [c["accessory"]["custom_id"] for m in msgs for c in m["components"][0]["components"] if c["type"] == 9]
+        ids = [b["custom_id"] for m in msgs for c in m["components"][0]["components"] if c["type"] == 1 for b in c["components"]]
         self.assertEqual(len(ids), 25)
         self.assertGreater(len(msgs), 1)
 
@@ -54,9 +62,10 @@ class DiscordMessage(unittest.TestCase):
     def test_an_item_already_costed_shows_it_and_offers_edit(self):
         r = raw(1)
         r["items"][0]["unit_cost"] = 120
-        sec = [c for c in dc.build_messages(r, [])[0]["components"][0]["components"] if c["type"] == 9][0]
+        inner = dc.build_messages(r, [])[0]["components"][0]["components"]
+        sec = [c for c in inner if c["type"] == 9][0]
         self.assertIn("AED 120", sec["components"][0]["content"])
-        self.assertEqual(sec["accessory"]["label"], "Edit cost")
+        self.assertEqual([c for c in inner if c["type"] == 1][0]["components"][0]["label"], "Edit cost")
 
     def test_disabled_without_token_or_channel(self):
         import os

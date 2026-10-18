@@ -8,10 +8,14 @@ is one message, built with Discord's Components V2 layout:
 
     ## AM1234
     customer, phone, address, amount
-    [ the product photos, up to 10 ]
     ─────────────
-    Bag A · Size M · x1          [ Enter cost ]
+    Bag A · Size M · x1                  [photo]
     Cost: -
+    [ Enter cost ]
+
+Each item carries its own photo beside it and its own button under it, so
+whoever enters a cost can see which item it is (Discord's pop-up form cannot
+show a picture, so the photo has to be in the message, next to the button).
 
 The "Enter cost" button carries the GRQ OS order_items id (custom_id
 "cost:<id>"). A click goes to the CRM (crm.grq.ae/api/discord/interactions),
@@ -34,8 +38,7 @@ log = logging.getLogger("order_bridge.discord")
 API = "https://discord.com/api/v10"
 IS_COMPONENTS_V2 = 1 << 15
 MAX_COMPONENTS = 40          # Discord's cap per message, nested ones included
-MAX_GALLERY = 10             # images in one media gallery
-ITEMS_PER_MESSAGE = 10       # 4 fixed components + 3 per item stays under 40
+ITEMS_PER_MESSAGE = 7        # 3 fixed components + 5 per item stays under 40
 
 
 def _token() -> str:
@@ -93,25 +96,32 @@ def build_messages(raw: dict, image_urls: list[str]) -> list[dict]:
         details.append(f"**Note:** {_md(raw['internal_note'])[:500]}")
 
     photos = [u for u in image_urls if isinstance(u, str) and u.startswith("http")]
+
+    def photo_for(idx: int, it: dict) -> str | None:
+        url = it.get("image_url")
+        if isinstance(url, str) and url.startswith("http"):
+            return url
+        return photos[idx] if idx < len(photos) else None
+
     chunks = [items[i:i + ITEMS_PER_MESSAGE] for i in range(0, len(items), ITEMS_PER_MESSAGE)] or [[]]
 
     messages = []
     for n, chunk in enumerate(chunks):
         inner: list[dict] = [{"type": 10, "content": "\n".join(details) if n == 0
                               else f"## {_md(code)} (continued)"}]
-        if n == 0 and photos:
-            inner.append({"type": 12, "items": [{"media": {"url": u}} for u in photos[:MAX_GALLERY]]})
         inner.append({"type": 14, "divider": True, "spacing": 1})
-        for it in chunk:
-            inner.append({
-                "type": 9,
-                "components": [{"type": 10, "content": _item_line(it)}],
-                "accessory": {
-                    "type": 2, "style": 2 if it.get("unit_cost") is not None else 1,
-                    "label": "Edit cost" if it.get("unit_cost") is not None else "Enter cost",
-                    "custom_id": f"cost:{it['id']}",
-                },
-            })
+        for k, it in enumerate(chunk):
+            text = {"type": 10, "content": _item_line(it)}
+            photo = photo_for(n * ITEMS_PER_MESSAGE + k, it)
+            # The photo beside the item; a Section needs an accessory, so an
+            # item with no photo is a plain text block instead.
+            inner.append({"type": 9, "components": [text], "accessory": {"type": 11, "media": {"url": photo}}}
+                         if photo else text)
+            inner.append({"type": 1, "components": [{
+                "type": 2, "style": 2 if it.get("unit_cost") is not None else 1,
+                "label": "Edit cost" if it.get("unit_cost") is not None else "Enter cost",
+                "custom_id": f"cost:{it['id']}",
+            }]})
         if not chunk:
             inner.append({"type": 10, "content": "_No items on this order in the CRM._"})
         messages.append({
