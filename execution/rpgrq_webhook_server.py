@@ -60,6 +60,24 @@ LABEL_MAP = {
 }
 
 
+# A customer tapping a reaction (thumbs-up, heart) on one of our messages
+# reaches /rpgrq/incoming like a message, as text '#ATTACHMENT:reaction#<emoji>'.
+# It is not a message and asks nothing: counting it stamped Last Customer
+# Message seconds after our reply, and the lead read "waiting on us" when we
+# had spoken last (22 of the 25 such leads traced on 2026-10-19). The text
+# field's name varies by bot, so every known key is checked.
+_TEXT_KEYS = ("message", "message_text", "text", "user_message", "msg")
+REACTION_PREFIX = "#attachment:reaction#"
+
+
+def is_reaction(payload: dict) -> bool:
+    for key in _TEXT_KEYS:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value.lower().startswith(REACTION_PREFIX)
+    return False
+
+
 # ────────────────────────────────────────────────────────────
 # Dedup caches (bounded, in-memory)
 # ────────────────────────────────────────────────────────────
@@ -291,6 +309,11 @@ async def handle_incoming(
     # Idempotency
     if wa_message_id and not message_id_seen.add(wa_message_id):
         log.debug(f"incoming: duplicate message_id {wa_message_id}")
+        return
+
+    # A reaction is not the customer's turn: no ticket, no stamp, no lead.
+    if is_reaction(payload):
+        log.info(f"incoming: reaction from {phone}/{brand} ignored (not a message)")
         return
 
     now_iso = utc_iso_now()
