@@ -183,7 +183,56 @@ _FULFILMENT_DIRECT = {
     ),
 }
 
-_DIRECT = {"notify": _NOTIFY_DIRECT, "fulfilment": _FULFILMENT_DIRECT}
+def _or(v, default):
+    """The route's `x ?? default`: only a missing value takes the default, 0 stays 0."""
+    return default if v is None else v
+
+
+# /api/ingest/labels, action for action (2026-10-26): same RPC, same parameter
+# names and defaults, same response envelope as app/api/ingest/labels/route.ts.
+_LABELS_DIRECT = {
+    "board": lambda p: (
+        "orders_for_labelling", {"p_limit": _or(p.get("limit"), 200)}, lambda d: d,
+    ),
+    "private": lambda p: (
+        "orders_for_private_labelling", {"p_limit": _or(p.get("limit"), 200)}, lambda d: {"orders": d},
+    ),
+    "one": lambda p: (
+        "order_for_label", {"p_code": p.get("order_code")}, lambda d: d,
+    ),
+    "begin": lambda p: (
+        "begin_label_run",
+        {"p_orders": p.get("order_ids"), "p_worker": _or(p.get("worker"), "print-all")},
+        lambda d: {"run_id": d},
+    ),
+    "end": lambda p: (
+        "end_label_run", {"p_run": p.get("run_id")}, lambda d: {"released": d},
+    ),
+    "labels": lambda p: (
+        "record_filex_labels", {"p": p.get("labels")}, lambda d: {"written": d},
+    ),
+    "supersede": lambda p: (
+        "supersede_courier",
+        {k: v for k, v in {"p_order": p.get("order_id"), "p_courier": p.get("courier"),
+                           "p_tracking": p.get("tracking"), "p_status": p.get("status")}.items()
+         if v is not None},
+        lambda d: {"ok": True},
+    ),
+    "in_flight": lambda p: (
+        "parcels_in_flight",
+        {"p_within_days": _or(p.get("within_days"), 14), "p_courier": _or(p.get("courier"), "filex"),
+         "p_limit": _or(p.get("limit"), 500)},
+        lambda d: {"orders": d},
+    ),
+    "stuck": lambda p: (
+        "parcels_stuck_at_label",
+        {"p_hours": _or(p.get("hours"), 24), "p_courier": _or(p.get("courier"), "filex"),
+         "p_limit": _or(p.get("limit"), 200)},
+        lambda d: {"orders": d},
+    ),
+}
+
+_DIRECT = {"notify": _NOTIFY_DIRECT, "fulfilment": _FULFILMENT_DIRECT, "labels": _LABELS_DIRECT}
 
 
 def _try_direct(path: str, payload: dict):
