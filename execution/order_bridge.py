@@ -139,6 +139,7 @@ BRAND_MAP = {
     "AW": "Amara's Watches",
     "SQ": "Saqr",
     "WG": "Wrist Gallery",
+    "JW": "Jewara",
 }
 
 def get_brand_from_order_id(order_id: str) -> str:

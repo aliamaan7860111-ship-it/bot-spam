@@ -172,7 +172,8 @@ DOMAIN_TO_PREFIX = {
     "g1ynuh-q0": "VL",        # Velix
     "jagi40-rc": "SQ",        # SAQR
     "9wmkfq-00": "AW",        # Amara's Watches
-    "cthip4-0m": "WG"         # Wrist Gallery
+    "cthip4-0m": "WG",        # Wrist Gallery
+    "zft5jj-0u": "JW"         # Jewara
 }
 
 def get_store_prefix(path: str, headers: dict) -> str:
@@ -272,6 +273,11 @@ BRAND_FORMATTING = {
         "strip_prefixes": ["WG"],
         "strip_suffixes": ["11"],
         "crm_prefix": "WG"
+    },
+    "JW": {  # Jewara: "#JW10018" -> strip "JW" + trailing "8" -> "JW1001"
+        "strip_prefixes": ["JW"],
+        "strip_suffixes": ["8"],
+        "crm_prefix": "JW"
     }
 }
 
@@ -472,7 +478,8 @@ STORE_ENV_SUFFIX = {
     "VL": "VELIX",
     "SQ": "SAQR",
     "AW": "AMARAWATCHES",
-    "WG": "WRISTGALLERY"
+    "WG": "WRISTGALLERY",
+    "JW": "JEWARA"
 }
 
 # A product's photograph, remembered for the life of the process.
