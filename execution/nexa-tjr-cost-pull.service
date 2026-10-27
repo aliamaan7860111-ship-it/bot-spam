@@ -1,0 +1,12 @@
+[Unit]
+Description=Nexa: copy TJR parcel costs and driver expenses into GRQ OS
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=bilal
+WorkingDirectory=/home/bilal/automation
+EnvironmentFile=/home/bilal/automation/.env
+ExecStart=/home/bilal/automation/venv/bin/python /home/bilal/automation/execution/nexa_tjr_cost_pull.py
+StandardOutput=append:/home/bilal/automation/.tmp/nexa_tjr_cost_pull.log
+StandardError=append:/home/bilal/automation/.tmp/nexa_tjr_cost_pull.log
