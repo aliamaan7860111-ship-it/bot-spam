@@ -43,7 +43,7 @@ class DiscordMessage(unittest.TestCase):
         self.assertEqual(sum(1 for c in inner if c["type"] == 1 and c["components"][0]["custom_id"].startswith("cost:")), 2)  # both still get a button
 
     def test_never_more_than_forty_components(self):
-        for n in (1, 10, 11, 25):
+        for n in (1, 6, 7, 8, 10, 11, 14, 25):
             for m in dc.build_messages(raw(n), ["https://cdn/x.png"]):
                 self.assertLessEqual(dc._count(m["components"]), 40, f"{n} items")
 
@@ -59,12 +59,13 @@ class DiscordMessage(unittest.TestCase):
         self.assertIn("Bag \\\\*0\\\\*", text)     # asterisks escaped
         self.assertEqual(dc.build_messages(raw(), [])[0]["allowed_mentions"], {"parse": []})
 
-    def test_an_item_already_costed_shows_it_and_offers_edit(self):
+    def test_an_item_already_costed_says_so_but_never_the_amount(self):
         r = raw(1)
         r["items"][0]["unit_cost"] = 120
         inner = dc.build_messages(r, [])[0]["components"][0]["components"]
         sec = [c for c in inner if c["type"] == 9][0]
-        self.assertIn("AED 120", sec["components"][0]["content"])
+        self.assertIn("✅ Cost entered", sec["components"][0]["content"])
+        self.assertNotIn("120", sec["components"][0]["content"])
         self.assertEqual([c for c in inner if c["type"] == 1][0]["components"][0]["label"], "Edit cost")
 
     def test_unprocess_button_at_the_foot_of_the_last_post_only(self):
@@ -77,7 +78,8 @@ class DiscordMessage(unittest.TestCase):
         self.assertEqual(len(last), 1)
         self.assertEqual(last[0]["custom_id"], "unprocess:AM5459")
         self.assertEqual(last[0]["style"], 4)
-        self.assertEqual(msgs[-1]["components"][0]["components"][-1]["components"][0]["label"], "Unprocess")
+        self.assertEqual([b["label"] for b in msgs[-1]["components"][0]["components"][-1]["components"]],
+                         ["View costs", "Unprocess"])
 
     def test_disabled_without_token_or_channel(self):
         import os
@@ -92,3 +94,29 @@ class DiscordMessage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ViewCosts(unittest.TestCase):
+    def buttons(self, msg):
+        return [b for c in msg["components"][0]["components"] if c["type"] == 1 for b in c["components"]]
+
+    def test_view_costs_sits_beside_unprocess_on_the_last_message_only(self):
+        for n in (1, 7, 14, 25):
+            msgs = dc.build_messages(raw(n), [])
+            last = [b["custom_id"] for b in self.buttons(msgs[-1]) if not b["custom_id"].startswith("cost:")]
+            self.assertEqual(last[:1], [f"costs:{raw(n)['order_code']}"], f"{n} items")
+            self.assertTrue(last[1].startswith("unprocess:"))
+            for m in msgs[:-1]:
+                self.assertFalse(any(b["custom_id"].startswith("costs:") for b in self.buttons(m)))
+
+    def test_no_amount_anywhere_but_the_selling_price(self):
+        r = raw(3)
+        for it in r["items"]:
+            it["unit_cost"] = 987
+        self.assertNotIn("987", str(dc.build_messages(r, [])))
+
+    def test_every_item_still_gets_its_button_when_the_last_message_is_split(self):
+        msgs = dc.build_messages(raw(7), [])
+        ids = [b["custom_id"] for m in msgs for b in self.buttons(m) if b["custom_id"].startswith("cost:")]
+        self.assertEqual(len(ids), 7)
+        self.assertEqual(len(msgs), 2)

@@ -75,8 +75,10 @@ def _item_line(it: dict) -> str:
     if it.get("variant") and str(it["variant"]).lower() != "default title":
         bits.append(_md(it["variant"]))
     bits.append(f"x{int(it.get('quantity') or 1)}")
-    cost = it.get("unit_cost")
-    cost_line = f"✅ Cost: **AED {float(cost):g}**" if cost is not None else "Cost: -"
+    # Whether it is costed, never the amount: everyone in the channel sees this
+    # post, and costs are for Fulfillment and Management only (2026-10-28). They
+    # see amounts privately through "View costs" and the prefilled form.
+    cost_line = "✅ Cost entered" if it.get("unit_cost") is not None else "Cost: -"
     return " · ".join(bits) + "\n" + cost_line
 
 
@@ -104,6 +106,10 @@ def build_messages(raw: dict, image_urls: list[str]) -> list[dict]:
         return photos[idx] if idx < len(photos) else None
 
     chunks = [items[i:i + ITEMS_PER_MESSAGE] for i in range(0, len(items), ITEMS_PER_MESSAGE)] or [[]]
+    # A full last message has no room for the View costs button (Discord's
+    # 40-component cap), so its last item starts a message of its own.
+    if len(chunks[-1]) == ITEMS_PER_MESSAGE:
+        chunks.append([chunks[-1].pop()])
 
     messages = []
     for n, chunk in enumerate(chunks):
@@ -129,10 +135,12 @@ def build_messages(raw: dict, image_urls: list[str]) -> list[dict]:
             # (the same undo as Telegram's #reset) and removes this post. The
             # CRM checks the clicker's role (Sales, Management, admins) and
             # asks them to confirm first.
-            inner.append({"type": 1, "components": [{
-                "type": 2, "style": 4, "label": "Unprocess",
-                "custom_id": f"unprocess:{code}"[:100],
-            }]})
+            # View costs: the order's costs, shown privately to Fulfillment and
+            # Management only - the CRM checks the role.
+            inner.append({"type": 1, "components": [
+                {"type": 2, "style": 2, "label": "View costs", "custom_id": f"costs:{code}"[:100]},
+                {"type": 2, "style": 4, "label": "Unprocess", "custom_id": f"unprocess:{code}"[:100]},
+            ]})
         messages.append({
             "flags": IS_COMPONENTS_V2,
             "allowed_mentions": {"parse": []},
