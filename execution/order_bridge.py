@@ -573,6 +573,32 @@ async def notion_poller_loop(bot: Bot):
 ORDER_CUTOFF_DATE_STR = os.getenv("TELEGRAM_ORDER_CUTOFF_DATE", os.getenv("ORDER_CUTOFF_DATE", "2026-02-23T17:23:00+05:00"))
 ORDER_CUTOFF_DATE = datetime.fromisoformat(ORDER_CUTOFF_DATE_STR)
 
+async def _start_discord_print(lines: list[str], request_text: str) -> tuple[str, dict]:
+    """Verify a /print-all request from the CRM and start the run. (status line, body)."""
+    import hmac as _hmac
+    import hashlib as _hashlib
+    secret = os.getenv("GRQ_OS_INGEST_SECRET", "")
+    sig = ""
+    for line in lines[1:]:
+        if not line:
+            break
+        if line.lower().startswith("x-grq-signature:"):
+            sig = line.split(":", 1)[1].strip()
+    body = request_text.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in request_text else ""
+    want = _hmac.new(secret.encode(), body.encode("utf-8"), _hashlib.sha256).hexdigest() if secret else ""
+    if not secret or not sig or not _hmac.compare_digest(sig, want):
+        return "401 Unauthorized", {"ok": False, "error": "bad signature"}
+    if _PRINT_LOCK.locked():
+        return "409 Conflict", {"ok": False, "busy": True}
+    try:
+        by = str(json.loads(body or "{}").get("by") or "someone")[:60]
+    except ValueError:
+        by = "someone"
+    asyncio.get_running_loop().create_task(discord_print_all(by))
+    log.info("/print all started from Discord by %s", by)
+    return "202 Accepted", {"ok": True, "started": True}
+
+
 async def start_health_server():
     """
     Tiny HTTP server for health checks. UptimeRobot
@@ -606,6 +632,23 @@ async def start_health_server():
             # Called by the database (pg_net, migration 0173). It carries no
             # data and changes nothing - the worst a stray call can do is an
             # early check - and wake_poller() limits it to one a second.
+            # --- /print all from Discord ------------------------------------
+            # The CRM's Discord endpoint posts here after the member's role and
+            # a confirm click. Signed with the ingest secret (HMAC-SHA256 of the
+            # body, the same scheme the CRM's ingest endpoints verify), so only
+            # the CRM can start a run that buys labels. Answers at once; the run
+            # reports to #fulfillment.
+            if path.split("?")[0] == "/print-all" and method == "POST":
+                status, out = await _start_discord_print(lines, request_text)
+                body = json.dumps(out)
+                writer.write((
+                    f"HTTP/1.1 {status}\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    "Connection: close\r\n\r\n" + body).encode())
+                await writer.drain()
+                return
+
             if path.split("?")[0] == "/wake":
                 woke = wake_poller()
                 body = json.dumps({"ok": True, "woke": woke})
@@ -1629,6 +1672,12 @@ async def cmd_print(update, context):
     await cmd_print_one(update, context, order_id)
 
 
+# One label run at a time, whoever starts it (Telegram or Discord): two runs
+# at once would race for the same orders. begin_label_run locks orders in the
+# database as well; this stops the second run before it buys anything.
+_PRINT_LOCK = asyncio.Lock()
+
+
 async def cmd_print_all(update, context):
     """
     /print all  — place all eligible Notion orders in Filex, write back
@@ -1644,7 +1693,34 @@ async def cmd_print_all(update, context):
 
     user_id = update.effective_user.id if update.effective_user else "?"
     log.info("/print all triggered by %s in chat %s", user_id, chat_id)
+    if _PRINT_LOCK.locked():
+        await _safe_send_message(bot, chat_id, "⏳ A /print all is already running - wait for its labels.")
+        return
+    async with _PRINT_LOCK:
+        await run_print_all(bot, chat_id)
 
+
+async def discord_print_all(by: str) -> None:
+    """/print all started from Discord: the same run, reporting to #fulfillment."""
+    sink = discord.ChannelSink()
+    if _PRINT_LOCK.locked():
+        await sink.send_message(None, "⏳ A /print all is already running - wait for its labels.")
+        return
+    async with _PRINT_LOCK:
+        await sink.send_message(None, f"🖨️ **/print all** started by {by}. Labels will be posted here.")
+        try:
+            await run_print_all(sink, 0)
+        except Exception as e:  # noqa: BLE001 - say so in the channel, then alert
+            log.error("Discord /print all failed", exc_info=True)
+            await sink.send_message(None, f"⚠️ /print all stopped with an error: {e}")
+            try:
+                error_reporter.report(f"Discord /print all failed: {e}", severity="error")
+            except Exception:  # noqa: BLE001
+                pass
+
+
+async def run_print_all(bot, chat_id) -> None:
+    """The print run itself. `bot` is a Telegram bot or discord.ChannelSink."""
     # 0. Private-driver orders -> TJR own-driver labels (assigned to Subhan), a
     #    SEPARATE PDF from the Filex flow below (Filex excludes these orders). The
     #    same step is runnable on its own via /pvt all. Failures are never swallowed.

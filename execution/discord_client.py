@@ -189,3 +189,63 @@ def post_order(raw: dict, image_urls: list[str]) -> list[str]:
             return ids
     log.info("  ✓ %s posted to Discord #fulfillment (%d message(s))", raw.get("order_code"), len(ids))
     return ids
+
+
+
+class ChannelSink:
+    """
+    The two calls /print all makes on a Telegram bot - send_message and
+    send_document - posting to #fulfillment instead (2026-10-28), so the same
+    print run, with all its guardrails, reports to Discord when it was started
+    from Discord. The chat id is ignored: everything goes to the fulfilment
+    channel. Never raises - a print run must not die on a chat hiccup.
+    """
+
+    LIMIT = 1900  # Discord's cap is 2000 characters
+
+    def _post(self, data: dict, files: dict | None = None) -> bool:
+        if not enabled():
+            return False
+        import json as _json
+        url = f"{API}/channels/{_channel()}/messages"
+        headers = {"Authorization": f"Bot {_token()}", "User-Agent": "GRQBot (print, 1.0)"}
+        for attempt in range(4):
+            try:
+                if files:
+                    r = httpx.post(url, headers=headers, timeout=60,
+                                   data={"payload_json": _json.dumps(data)}, files=files)
+                else:
+                    r = httpx.post(url, headers=headers, timeout=30, json=data)
+            except httpx.TransportError as e:
+                log.warning("Discord print post did not get through (%s); retrying", e)
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            if r.status_code == 429:
+                time.sleep(min(float((r.json() or {}).get("retry_after", 2)), 30) + 0.25)
+                continue
+            if r.status_code >= 300:
+                log.error("Discord print post refused: %s %s", r.status_code, r.text[:300])
+                return False
+            return True
+        return False
+
+    async def send_message(self, chat_id, text, **_kwargs):
+        import asyncio as _asyncio
+        text = str(text or "")
+        if len(text) <= self.LIMIT:
+            await _asyncio.to_thread(self._post, {"content": text, "allowed_mentions": {"parse": []}})
+        else:  # too long for one message: the full text as a file, the start as the message
+            await _asyncio.to_thread(
+                self._post,
+                {"content": text[:300].rsplit("\n", 1)[0] + "\n…(full list attached)", "allowed_mentions": {"parse": []}},
+                {"files[0]": ("details.txt", text.encode("utf-8"), "text/plain")},
+            )
+
+    async def send_document(self, chat_id, document=None, filename="file", caption=None, **_kwargs):
+        import asyncio as _asyncio
+        body = document if isinstance(document, (bytes, bytearray)) else bytes(str(document or ""), "utf-8")
+        content = str(caption or "")[: self.LIMIT]
+        await _asyncio.to_thread(
+            self._post, {"content": content, "allowed_mentions": {"parse": []}},
+            {"files[0]": (filename, bytes(body), "application/octet-stream")},
+        )
