@@ -54,7 +54,7 @@ class PrintEndpoint(unittest.TestCase):
         async def go():
             started = []
             with mock.patch.dict(os.environ, {"GRQ_OS_INGEST_SECRET": env_secret}), \
-                 mock.patch.object(ob, "discord_print_all", new=mock.AsyncMock(side_effect=lambda by: started.append(by))):
+                 mock.patch.object(ob, "discord_print_all", new=mock.AsyncMock(side_effect=lambda by, what="all": started.append(by))):
                 if locked:
                     await ob._PRINT_LOCK.acquire()
                 try:
@@ -113,3 +113,31 @@ class TelegramWaitsToo(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PvtFromDiscord(unittest.TestCase):
+    def test_what_pvt_starts_the_pvt_run(self):
+        async def go():
+            calls = []
+            body = json.dumps({"by": "Ahmed", "what": "pvt"})
+            with mock.patch.dict(os.environ, {"GRQ_OS_INGEST_SECRET": "s3cret"}), \
+                 mock.patch.object(ob, "discord_print_all", new=mock.AsyncMock(side_effect=lambda by, what: calls.append((by, what)))):
+                lines, text = request(body, "s3cret")
+                res = await ob._start_discord_print(lines, text)
+                await asyncio.sleep(0)
+            return res, calls
+        (status, _), calls = asyncio.run(go())
+        self.assertEqual(status, "202 Accepted")
+        self.assertEqual(calls, [("Ahmed", "pvt")])
+
+    def test_the_pvt_run_says_when_there_is_nothing_to_label(self):
+        sent = []
+
+        async def go():
+            sink = mock.Mock()
+            sink.send_message = mock.AsyncMock(side_effect=lambda chat, text: sent.append(text))
+            with mock.patch.object(ob, "_TJR_AVAILABLE", True), \
+                 mock.patch.object(ob, "_run_private_driver_labels", new=mock.AsyncMock(return_value={"pdf": None, "skipped": [], "label_error": None})):
+                await ob.run_pvt_all(sink, 0)
+        asyncio.run(go())
+        self.assertIn("No new private-driver orders to label.", sent)

@@ -591,11 +591,13 @@ async def _start_discord_print(lines: list[str], request_text: str) -> tuple[str
     if _PRINT_LOCK.locked():
         return "409 Conflict", {"ok": False, "busy": True}
     try:
-        by = str(json.loads(body or "{}").get("by") or "someone")[:60]
+        req = json.loads(body or "{}")
     except ValueError:
-        by = "someone"
-    asyncio.get_running_loop().create_task(discord_print_all(by))
-    log.info("/print all started from Discord by %s", by)
+        req = {}
+    by = str(req.get("by") or "someone")[:60]
+    what = "pvt" if req.get("what") == "pvt" else "all"
+    asyncio.get_running_loop().create_task(discord_print_all(by, what))
+    log.info("%s started from Discord by %s", "/pvt all" if what == "pvt" else "/print all", by)
     return "202 Accepted", {"ok": True, "started": True}
 
 
@@ -1644,9 +1646,11 @@ async def cmd_pvt_all(update, context):
         return
     user_id = update.effective_user.id if update.effective_user else "?"
     log.info("/pvt all triggered by %s in chat %s", user_id, chat_id)
-    _tjr = await _run_private_driver_labels(bot, chat_id)
-    if _tjr is not None and not _tjr["pdf"] and not _tjr["skipped"] and not _tjr.get("label_error"):
-        await _safe_send_message(bot, chat_id, "No new private-driver orders to label.")
+    if _PRINT_LOCK.locked():
+        await _safe_send_message(bot, chat_id, "⏳ A label run is already going - wait for its labels.")
+        return
+    async with _PRINT_LOCK:
+        await run_pvt_all(bot, chat_id)
 
 
 async def cmd_print(update, context):
@@ -1700,23 +1704,41 @@ async def cmd_print_all(update, context):
         await run_print_all(bot, chat_id)
 
 
-async def discord_print_all(by: str) -> None:
-    """/print all started from Discord: the same run, reporting to #fulfillment."""
+async def discord_print_all(by: str, what: str = "all") -> None:
+    """
+    A label run started from Discord, reporting to #fulfillment.
+      all  /print all - Filex labels (and the private-driver step when on)
+      pvt  /pvt all   - TJR labels for private-driver orders only, no Filex
+    """
     sink = discord.ChannelSink()
+    name = "/pvt all" if what == "pvt" else "/print all"
     if _PRINT_LOCK.locked():
-        await sink.send_message(None, "⏳ A /print all is already running - wait for its labels.")
+        await sink.send_message(None, "⏳ A label run is already going - wait for its labels.")
         return
     async with _PRINT_LOCK:
-        await sink.send_message(None, f"🖨️ **/print all** started by {by}. Labels will be posted here.")
+        await sink.send_message(None, f"🖨️ **{name}** started by {by}. Labels will be posted here.")
         try:
-            await run_print_all(sink, 0)
+            if what == "pvt":
+                await run_pvt_all(sink, 0)
+            else:
+                await run_print_all(sink, 0)
         except Exception as e:  # noqa: BLE001 - say so in the channel, then alert
-            log.error("Discord /print all failed", exc_info=True)
-            await sink.send_message(None, f"⚠️ /print all stopped with an error: {e}")
+            log.error("Discord %s failed", name, exc_info=True)
+            await sink.send_message(None, f"⚠️ {name} stopped with an error: {e}")
             try:
-                error_reporter.report(f"Discord /print all failed: {e}", severity="error")
+                error_reporter.report(f"Discord {name} failed: {e}", severity="error")
             except Exception:  # noqa: BLE001
                 pass
+
+
+async def run_pvt_all(bot, chat_id) -> None:
+    """The /pvt all run itself (TJR labels for private-driver orders). Telegram bot or ChannelSink."""
+    if not _TJR_AVAILABLE:
+        await _safe_send_message(bot, chat_id, "⚠️ TJR integration is not available.")
+        return
+    _tjr = await _run_private_driver_labels(bot, chat_id)
+    if _tjr is not None and not _tjr["pdf"] and not _tjr["skipped"] and not _tjr.get("label_error"):
+        await _safe_send_message(bot, chat_id, "No new private-driver orders to label.")
 
 
 async def run_print_all(bot, chat_id) -> None:
