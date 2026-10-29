@@ -149,8 +149,14 @@ def reconcile_active_orders(cutoff_iso: str | None = None):
 
     client = FilexClient(FILEX_USERNAME, FILEX_PASSWORD, FILEX_ACCOUNT_NUMBER, FILEX_API_BASE)
 
-    # Build tracking_no -> page lookup
-    by_tn = {o["tracking_number"]: o for o in active if o.get("tracking_number")}
+    # tracking_no -> EVERY order on it. Same-customer orders merged onto one
+    # Filex label share a tracking number; a dict of one order per number kept
+    # only the last of them, so the others never moved (VL 238 shipped while
+    # VL 239 on the same label sat at Label Created, 2026-10-29).
+    by_tn: dict[str, list[dict]] = {}
+    for o in active:
+        if o.get("tracking_number"):
+            by_tn.setdefault(o["tracking_number"], []).append(o)
     if not by_tn:
         log.info("No tracking numbers in active orders.")
         return
@@ -166,55 +172,58 @@ def reconcile_active_orders(cutoff_iso: str | None = None):
             continue
         for r in results:
             tn = r["tracking_No"]
-            order = by_tn.get(tn)
-            if not order:
-                continue
-            mapped = filex_status_mapper.map_status(
-                r.get("trackingStatus", ""), order.get("filex_status"),
+            for order in by_tn.get(tn, []):
+                _reconcile_one(order, r, tn)
+
+
+def _reconcile_one(order: dict, r: dict, tn: str) -> None:
+    """Bring one order in line with one Filex status reading (every order on a shared label gets its own call)."""
+    mapped = filex_status_mapper.map_status(
+        r.get("trackingStatus", ""), order.get("filex_status"),
+    )
+    if mapped != order.get("filex_status"):
+        log.info(
+            "Reconcile drift: %s %s -> %s",
+            order["order_id"], order.get("filex_status"), mapped,
+        )
+        if cutover.write_notion() and order.get("page_id"):
+            nc.set_filex_status(order["page_id"], mapped)
+        _tell_grq_os(order, r.get("trackingStatus", ""), mapped, tn, r.get("eventTime"))
+        # Also promote to the main ORDER STATUS for Shipped/Delivered/RTO.
+        # Pass current ORDER STATUS so we don't stomp downstream manual moves
+        # (e.g. ops marked the order as ↩️ RETURNED after verifying the return).
+        promoted = filex_status_mapper.order_status_from_filex(
+            mapped, order.get("order_status"),
+        )
+        if promoted:
+            # GRQ OS promotes the order status itself, inside
+            # `ingest_courier`, and refuses to walk back a decision a
+            # person made by hand. This branch is Notion only.
+            if cutover.write_notion() and order.get("page_id"):
+                nc.update_order_status(order["page_id"], promoted)
+            log.info(
+                "  ↳ ORDER STATUS promoted to %r for %s",
+                promoted, order["order_id"],
             )
-            if mapped != order.get("filex_status"):
-                log.info(
-                    "Reconcile drift: %s %s -> %s",
-                    order["order_id"], order.get("filex_status"), mapped,
-                )
-                if cutover.write_notion() and order.get("page_id"):
-                    nc.set_filex_status(order["page_id"], mapped)
-                _tell_grq_os(order, r.get("trackingStatus", ""), mapped, tn, r.get("eventTime"))
-                # Also promote to the main ORDER STATUS for Shipped/Delivered/RTO.
-                # Pass current ORDER STATUS so we don't stomp downstream manual moves
-                # (e.g. ops marked the order as ↩️ RETURNED after verifying the return).
-                promoted = filex_status_mapper.order_status_from_filex(
-                    mapped, order.get("order_status"),
-                )
-                if promoted:
-                    # GRQ OS promotes the order status itself, inside
-                    # `ingest_courier`, and refuses to walk back a decision a
-                    # person made by hand. This branch is Notion only.
-                    if cutover.write_notion() and order.get("page_id"):
-                        nc.update_order_status(order["page_id"], promoted)
-                    log.info(
-                        "  ↳ ORDER STATUS promoted to %r for %s",
-                        promoted, order["order_id"],
-                    )
-                    # The out-for-delivery WhatsApp used to be fired here, the
-                    # instant we promoted to SHIPPED, and the comment said the
-                    # double-send was prevented by "the success-set checkbox".
-                    # That checkbox was Notion's. Notion is retired, so this
-                    # path sent the customer a message and recorded it nowhere:
-                    # the order dict has no GRQ OS id and no page worth
-                    # writing to, so `_mark_sent` did nothing and the poller
-                    # was free to send it again.
-                    #
-                    # `grq-ofd` polls GRQ OS every 30 seconds and now takes a
-                    # real claim before sending. One sender, one latch; the
-                    # only cost is up to half a minute.
-                event_iso = r.get("eventTime")
-                if event_iso:
-                    # Filex eventTime is naive PKT; tag as +05:00 so stored UTC matches reality.
-                    if "T" in event_iso and "+" not in event_iso and "Z" not in event_iso:
-                        event_iso = event_iso + "+05:00"
-                    if cutover.write_notion() and order.get("page_id"):
-                        nc.set_last_update(order["page_id"], event_iso)
+            # The out-for-delivery WhatsApp used to be fired here, the
+            # instant we promoted to SHIPPED, and the comment said the
+            # double-send was prevented by "the success-set checkbox".
+            # That checkbox was Notion's. Notion is retired, so this
+            # path sent the customer a message and recorded it nowhere:
+            # the order dict has no GRQ OS id and no page worth
+            # writing to, so `_mark_sent` did nothing and the poller
+            # was free to send it again.
+            #
+            # `grq-ofd` polls GRQ OS every 30 seconds and now takes a
+            # real claim before sending. One sender, one latch; the
+            # only cost is up to half a minute.
+        event_iso = r.get("eventTime")
+        if event_iso:
+            # Filex eventTime is naive PKT; tag as +05:00 so stored UTC matches reality.
+            if "T" in event_iso and "+" not in event_iso and "Z" not in event_iso:
+                event_iso = event_iso + "+05:00"
+            if cutover.write_notion() and order.get("page_id"):
+                nc.set_last_update(order["page_id"], event_iso)
 
 
 def main():
