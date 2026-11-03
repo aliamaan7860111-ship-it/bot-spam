@@ -489,12 +489,42 @@ STORE_ENV_SUFFIX = {
 # One Admin API call per order resolves every product in it at once, and the
 # answers are kept: a store sells the same forty products all week, so after
 # the first few orders this stops making calls at all.
-_PRODUCT_IMAGES: dict[str, str] = {}
+#
+# The photo is the VARIANT's (2026-11-03): a product's featured image is one
+# colour, and the customer may have bought another - VS1398 ordered the Taupe
+# Polene Cyme and GRQ OS (and so Discord) showed the Cognac one, while the
+# Telegram album, which reads each line's own image, was right. Each product
+# is kept as its featured photo plus every variant's own photo.
+_PRODUCT_IMAGES: dict[str, dict] = {}
 
 
-def product_images(prefix: str, product_ids: list[str]) -> dict[str, str]:
+def _product_photos(prod: dict) -> dict:
+    """One Admin API product as {"main": featured src, "variants": {variant id: its own src}}."""
+    images = prod.get("images") or []
+    by_id = {img.get("id"): (img.get("src") or "").strip() for img in images}
+    variants: dict[str, str] = {}
+    for v in prod.get("variants") or []:
+        src = by_id.get(v.get("image_id")) or ""
+        if src:
+            variants[str(v.get("id"))] = src
+    for img in images:  # older themes link the photo to the variant from the image side
+        for vid in img.get("variant_ids") or []:
+            src = (img.get("src") or "").strip()
+            if src:
+                variants.setdefault(str(vid), src)
+    return {"main": ((prod.get("image") or {}).get("src") or "").strip(), "variants": variants}
+
+
+def pick_line_image(photos: dict | None, variant_id) -> str | None:
+    """The variant's own photo when the store has one, else the product's featured photo."""
+    photos = photos or {}
+    return (photos.get("variants") or {}).get(str(variant_id or "")) or photos.get("main") or None
+
+
+def line_images(prefix: str, line_items: list[dict]) -> list[str | None]:
     """
-    Map Shopify product id -> image URL, for the ids not already known.
+    The photo for each line item, in order: its variant's picture, else the
+    product's featured one, else None.
 
     Best effort throughout. A store with no credentials, a slow shop, a
     product with no photo: all of them return nothing and the order still
@@ -502,39 +532,36 @@ def product_images(prefix: str, product_ids: list[str]) -> dict[str, str]:
     enough to delay a webhook, so the timeout is short and every failure is
     swallowed.
     """
+    product_ids = [str(it.get("product_id") or "") for it in line_items]
     want = [pid for pid in dict.fromkeys(product_ids) if pid and f"{prefix}:{pid}" not in _PRODUCT_IMAGES]
-    if not want:
-        return {pid: _PRODUCT_IMAGES[f"{prefix}:{pid}"]
-                for pid in product_ids if _PRODUCT_IMAGES.get(f"{prefix}:{pid}")}
 
     suffix = STORE_ENV_SUFFIX.get(prefix)
-    if suffix:
+    if want and suffix:
         domain = os.getenv(f"SHOPIFY_DOMAIN_{suffix}", "").strip()
         token = os.getenv(f"SHOPIFY_TOKEN_{suffix}", "").strip()
         if domain and token:
             try:
                 r = httpx.get(
                     f"https://{domain}/admin/api/2024-10/products.json",
-                    params={"ids": ",".join(want[:50]), "fields": "id,image"},
+                    params={"ids": ",".join(want[:50]), "fields": "id,image,images,variants"},
                     headers={"X-Shopify-Access-Token": token},
                     timeout=6.0,
                 )
                 if r.status_code == 200:
                     for prod in (r.json().get("products") or []):
-                        src = ((prod.get("image") or {}).get("src") or "").strip()
-                        _PRODUCT_IMAGES[f"{prefix}:{prod.get('id')}"] = src
+                        _PRODUCT_IMAGES[f"{prefix}:{prod.get('id')}"] = _product_photos(prod)
                     # A product Shopify answered about but gave no photo for is
                     # remembered as having none, so it is not asked again on
                     # every order for the rest of the week.
                     for pid in want:
-                        _PRODUCT_IMAGES.setdefault(f"{prefix}:{pid}", "")
+                        _PRODUCT_IMAGES.setdefault(f"{prefix}:{pid}", {"main": "", "variants": {}})
                 else:
                     log.warning(f"Product images for {prefix}: HTTP {r.status_code}")
             except Exception as e:
                 log.warning(f"Product images for {prefix} unavailable: {e}")
 
-    return {pid: _PRODUCT_IMAGES[f"{prefix}:{pid}"]
-            for pid in product_ids if _PRODUCT_IMAGES.get(f"{prefix}:{pid}")}
+    return [pick_line_image(_PRODUCT_IMAGES.get(f"{prefix}:{pid}"), it.get("variant_id"))
+            for pid, it in zip(product_ids, line_items)]
 
 
 def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> bool:
@@ -558,10 +585,8 @@ def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> bool:
         shipping = payload.get("shipping_address") or {}
         billing = payload.get("billing_address") or {}
         addr = shipping or billing
-        images = product_images(
-            prefix,
-            [str(it.get("product_id") or "") for it in (payload.get("line_items") or [])],
-        )
+        lines = payload.get("line_items") or []
+        images = line_images(prefix, lines)
         return grq_os_ingest.order({
             "order_code":     data["order_id"],
             "brand_code":     (BRAND_FORMATTING.get(prefix) or {}).get("crm_prefix") or prefix,
@@ -585,10 +610,10 @@ def mirror_to_grq_os(data: dict, prefix: str, payload: dict) -> bool:
                     # The photograph fulfilment prices the order against, and
                     # the store's product id so the last price paid for the
                     # same thing can be offered next time.
-                    "image_url": images.get(str(it.get("product_id") or "")),
+                    "image_url": img,
                     "product_ref": str(it.get("product_id") or "") or None,
                 }
-                for it in (payload.get("line_items") or [])
+                for it, img in zip(lines, images)
             ],
             "address": {
                 "line1": data.get("full_address") or None,
