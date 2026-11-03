@@ -450,6 +450,17 @@ async def poll_grq_os_once(bot: Bot) -> int:
                     await _also_mark_notion_processed(order)
                     # Discord #fulfillment too, during the move from Telegram. Its
                     # own failure is logged and never undoes the Telegram send.
+                    # Telegram's photos are the variant bought; Discord and GRQ OS
+                    # take the same ones (2026-11-03) instead of GRQ OS's stored
+                    # photo, which could be the product's featured colour.
+                    photos = grq.match_line_photos(raw.get("items") or [], order.get("line_items") or [])
+                    if photos:
+                        fixed = await asyncio.to_thread(grq.correct_photos, order_id, raw.get("items") or [], photos)
+                        if fixed:
+                            log.info("  %s: %d item photo(s) corrected from Telegram's", order_id, fixed)
+                        for it in raw.get("items") or []:
+                            if str(it.get("id")) in photos:
+                                it["image_url"] = photos[str(it["id"])]
                     if discord.enabled():
                         try:
                             await asyncio.to_thread(discord.post_order, raw, list(order.get("image_urls") or []))

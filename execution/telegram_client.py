@@ -127,13 +127,16 @@ def _build_images_and_line_items(edges: list) -> tuple[list[str], list[dict]]:
             qty = max(1, int(qty_raw)) if qty_raw is not None else 1
         except (TypeError, ValueError):
             qty = 1
+        img = node.get("image") or {}
+        url = img.get("url")
         line_items.append({
             "title": node.get("title", ""),
             "variant": node.get("variantTitle", ""),
             "quantity": qty,
+            # The variant's own photo, as Shopify resolved it for this order -
+            # what Discord and GRQ OS now use too (2026-11-03).
+            "image": url or None,
         })
-        img = node.get("image") or {}
-        url = img.get("url")
         if url:
             image_urls.extend([_compress_image_url(url)] * qty)
     return image_urls, line_items

@@ -172,6 +172,59 @@ def adopt_photos(order_code: str, images: list[str]) -> list[str]:
     return body.get("urls") or []
 
 
+def _norm(s) -> str:
+    return " ".join(str(s or "").lower().split())
+
+
+def match_line_photos(items: list[dict], line_items: list[dict]) -> dict[str, str]:
+    """
+    GRQ OS item id -> the photo Telegram used for that item (2026-11-03).
+
+    Telegram reads each line's photo off the Shopify order itself, which is the
+    variant actually bought; GRQ OS's stored photo could be the product's
+    featured one (another colour). Matched on title + variant, then title,
+    then position when both lists are the same length. Pure.
+    """
+    pool = [li for li in (line_items or []) if li.get("image")]
+    out: dict[str, str] = {}
+    left = [it for it in (items or []) if it.get("id")]
+
+    def take(pred):
+        for it in list(left):
+            for k, li in enumerate(pool):
+                if pred(it, li):
+                    out[str(it["id"])] = li["image"]
+                    left.remove(it)
+                    pool.pop(k)
+                    break
+
+    take(lambda it, li: _norm(it.get("product_title")) == _norm(li.get("title"))
+         and _norm(it.get("variant")) == _norm(li.get("variant")))
+    take(lambda it, li: _norm(it.get("product_title")) == _norm(li.get("title")))
+    if left and len(left) == len(pool):
+        for it, li in zip(left, pool):
+            out[str(it["id"])] = li["image"]
+    return out
+
+
+def correct_photos(order_code: str, items: list[dict], photos: dict[str, str]) -> int:
+    """
+    Put Telegram's photos on GRQ OS's items where they differ, so the order,
+    costing, Discord and /images all show the variant bought. Best effort: a
+    failure is logged and never holds up the send. Returns how many changed.
+    """
+    changed = [{"item_id": i, "image_url": u} for i, u in photos.items()
+               if u and u != next((it.get("image_url") for it in items if str(it.get("id")) == i), None)]
+    if not changed or not db.enabled():
+        return 0
+    try:
+        db.rpc("set_item_photos", {"p_order_code": order_code, "p_photos": changed})
+        return len(changed)
+    except db.Failed as e:
+        log.warning("  %s: photos not corrected in GRQ OS - %s", order_code, e)
+        return 0
+
+
 def albums_sent(order_id: str, sent: int, message_id: int | None = None) -> bool:
     return _post({"action": "albums", "order_id": order_id, "sent": sent, "message_id": message_id}) is not None
 
