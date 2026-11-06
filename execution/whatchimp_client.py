@@ -83,6 +83,18 @@ BRAND_CONFIG = {
         "sender_phone":      "966570280888",
         "confirm_first":     True,
     },
+    # Jewara shares Amara's Watches' WhatsApp number (2026-11-06). Listed BEFORE
+    # AW so the reverse lookups (button id / sender phone -> prefix) keep naming
+    # AW; a reply on this number is resolved to its order across both brands
+    # by phone_number_id, as for the other shared numbers.
+    "JW": {  # Jewara
+        "phone_number_id":   "1199932539879999",
+        "template_id":       "442127",
+        "confirm_button_qr": "6aa7f585b884a",
+        "brand_display":     "Jewara",
+        "sender_phone":      "966570935924",
+        "confirm_first":     True,
+    },
     "AW": {  # Amara's Watches (new store)
         "phone_number_id":   "1199932539879999",
         "template_id":       "442127",
@@ -177,6 +189,7 @@ OFD_CONFIG = {
     # the legacy templates, so build_ofd_payload needs no change.
     "AM": {"phone_number_id": "1253320094539905", "ofd_template_id": "442131", "brand_display": "Amara's Room"},
     "AW": {"phone_number_id": "1199932539879999", "ofd_template_id": "442131", "brand_display": "Amara's Watches"},
+    "JW": {"phone_number_id": "1199932539879999", "ofd_template_id": "442131", "brand_display": "Jewara"},
     "R":  {"phone_number_id": "1397321910124444", "ofd_template_id": "442131", "brand_display": "Rimal UAE"},
     "O":  {"phone_number_id": "1327104710486442", "ofd_template_id": "442131", "brand_display": "Orlento UAE"},
     "SQ": {"phone_number_id": "1268960389639645", "ofd_template_id": "442131", "brand_display": "SAQR UAE"},
