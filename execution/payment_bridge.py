@@ -44,6 +44,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 import notion_client as notion
 import cutover
 import grq_os_ingest
+import grq_os_db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -112,6 +113,25 @@ def _order_id_from_session(obj: dict) -> str:
     return (md.get("order_id") or obj.get("client_reference_id") or "").strip()
 
 
+def _mark_crm_link_paid(obj: dict, event_id: str) -> bool:
+    """True when the session's payment link was made on the CRM page and is now marked paid."""
+    link = obj.get("payment_link")
+    amount = obj.get("amount_total")
+    try:
+        mine = grq_os_db.rpc("mark_payment_link_paid", {
+            "p_link": link,
+            "p_session": obj.get("id") or event_id,
+            "p_amount": (amount / 100) if isinstance(amount, (int, float)) else None,
+            "p_email": ((obj.get("customer_details") or {}).get("email")),
+        })
+    except Exception as e:  # noqa: BLE001 - say so; the order flow below still runs
+        log.error(f"payment link {link}: could not mark paid in GRQ OS: {e}")
+        return False
+    if mine:
+        log.info(f"payment link {link} paid (CRM Payment links page), amount {amount}")
+    return bool(mine)
+
+
 def handle_event(event: dict) -> None:
     """Process one verified Stripe event."""
     etype = event.get("type", "")
@@ -127,6 +147,12 @@ def handle_event(event: dict) -> None:
     # Guard: only act on actually-paid sessions.
     if obj.get("payment_status") not in (None, "paid"):
         log.info(f"{etype} session not paid (payment_status={obj.get('payment_status')}) - skipping")
+        return
+
+    # A link made on the CRM's Payment links page (GRQ OS 0204): mark it paid
+    # there and stop - it belongs to no order. A payment_link the CRM does not
+    # know falls through to the order flow as before.
+    if obj.get("payment_link") and _mark_crm_link_paid(obj, event_id):
         return
 
     order_id = _order_id_from_session(obj)
