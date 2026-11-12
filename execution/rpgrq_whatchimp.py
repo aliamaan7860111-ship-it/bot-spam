@@ -52,6 +52,8 @@ BRAND_BY_PHONE_ID = {
     # which is keyed on these ids.
     "1381222078405551": "Amara",                # +966 57 258 5689, campaign
     "1307625215775108": "Lune",                 # +966 57 144 2240, campaign
+    # 2026-11-12: Layali's own number (WhatChimp "UAE Shopping"), mainly ads.
+    "1219755847895209": "Layali",               # +966 57 113 6064, campaign
     # --- legacy numbers (kept: customers may still be on them) ----------------
     # A SHARED number cannot identify the store, so these must keep the grouped
     # label. Do not "upgrade" them to a per-brand label.
@@ -83,6 +85,9 @@ BRAND_ALIASES = {
     "viresta": "Viresta", "viresta uae": "Viresta",
     "amaras watches": "Amara's Watches", "amara's watches": "Amara's Watches",
     "saqr": "Saqr", "saqr uae": "Saqr",
+    # Layali (2026-11-12). Its WhatChimp bot is named "UAE Shopping"; its bot_id
+    # goes in WHATCHIMP_BOT_ID_TO_BRAND once the first inbound reports it.
+    "layali": "Layali", "layali uae": "Layali", "uae shopping": "Layali",
     "wrist gallery": "Wrist Gallery", "wrist gallery uae": "Wrist Gallery",
     # The live bot is misspelled "Wirst Gallery Dubai" — matched here so the label
     # stays correct even if that bot's id changes. Fix the name in WhatChimp too.
@@ -138,7 +143,7 @@ WHATCHIMP_BOT_ID_TO_BRAND = {
 CANONICAL_SOURCES = {
     # Per-brand (own number since the 2026-09 Saudi portfolio migration)
     "Amara", "Amara's Watches", "Rimal", "Orlento", "Saqr",
-    "Lune", "Velix", "Wrist Gallery", "Viresta", "Dialo",
+    "Lune", "Velix", "Wrist Gallery", "Viresta", "Dialo", "Layali",
     # Still grouped: Elara / Diwan / Pelvini share one number, and legacy shared
     # numbers can't be resolved to a single store.
     "Customer Care", "Shopping Assistance",
