@@ -194,6 +194,7 @@ OFD_CONFIG = {
     "O":  {"phone_number_id": "1327104710486442", "ofd_template_id": "442131", "brand_display": "Orlento UAE"},
     "SQ": {"phone_number_id": "1268960389639645", "ofd_template_id": "442131", "brand_display": "SAQR UAE"},
     "LU": {"phone_number_id": "1234704216403689", "ofd_template_id": "442131", "brand_display": "Lune Collection"},
+    "LN": {"phone_number_id": "1234704216403689", "ofd_template_id": "442131", "brand_display": "Lune Collection"},  # new Lune store
     "VL": {"phone_number_id": "1306342719226934", "ofd_template_id": "442131", "brand_display": "Velix UAE"},
     "WG": {"phone_number_id": "1354836361042768", "ofd_template_id": "442131", "brand_display": "Wrist Gallery UAE"},
     "VS": {"phone_number_id": "1260047933866516", "ofd_template_id": "442131", "brand_display": "Viresta UAE"},
@@ -662,8 +663,13 @@ PAY_LINK_CONFIG = {
     prefix: {"template_id": _PAY_LINK_TEMPLATE_ALL}
     # The nine on template 442127 — i.e. the live portfolio. Note VS is Viresta;
     # VX is Virex, which is retired, and must not be here.
-    for prefix in ("AM", "AW", "SQ", "WG", "LU", "O", "VL", "VS", "R")
+    for prefix in ("AM", "AW", "SQ", "WG", "LU", "LN", "O", "VL", "VS", "R")
 }
+
+
+# New Lune Collection store (2026-11-20) names its orders LN; same Lune number and
+# templates as LU, so confirmations and pay-links route exactly as before (OFD: see OFD_CONFIG).
+BRAND_CONFIG["LN"] = BRAND_CONFIG["LU"]
 
 
 def paylink_phone_or_none(phone_number: str) -> str | None:

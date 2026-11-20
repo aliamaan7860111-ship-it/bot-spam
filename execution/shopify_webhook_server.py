@@ -173,7 +173,9 @@ DOMAIN_TO_PREFIX = {
     "jagi40-rc": "SQ",        # SAQR
     "9wmkfq-00": "AW",        # Amara's Watches
     "cthip4-0m": "WG",        # Wrist Gallery
-    "zft5jj-0u": "JW"         # Jewara
+    "zft5jj-0u": "JW",        # Jewara
+    "kygazx-ra": "LN",        # Lune Collection NEW store (2026-11-20; old xe6vwe-4q stays LU)
+    "c5uwpy-u7": "AD"         # Al Dana
 }
 
 def get_store_prefix(path: str, headers: dict) -> str:
@@ -278,6 +280,16 @@ BRAND_FORMATTING = {
         "strip_prefixes": ["JW"],
         "strip_suffixes": ["8"],
         "crm_prefix": "JW"
+    },
+    "LN": {  # Lune Collection new store: "#LN7100176" -> strip "LN7" + trailing "76" -> "LN1001"
+        "strip_prefixes": ["LN7"],
+        "strip_suffixes": ["76"],
+        "crm_prefix": "LN"
+    },
+    "AD": {  # Al Dana: "#D181001" -> strip "D18" -> "AD1001"
+        "strip_prefixes": ["D18"],
+        "strip_suffixes": [],
+        "crm_prefix": "AD"
     }
 }
 
@@ -469,7 +481,9 @@ STORE_ENV_SUFFIX = {
     # errors — 2,262 of them, all alerting through the error-logging bot for a
     # store that cannot return data. Re-add only if the store is reactivated.
     # "Di": "DIALO",
-    "LU": "LUNE",
+    # LU RETIRED from the backfill 2026-11-20: SHOPIFY_*_LUNE now point at the NEW Lune
+    # store, whose orders are LN. Keeping LU here too would import every new order twice.
+    "LN": "LUNE",
     "VX": "VIREX",
     "R": "RIMAL",
     "O": "ORLENTO",
@@ -479,7 +493,8 @@ STORE_ENV_SUFFIX = {
     "SQ": "SAQR",
     "AW": "AMARAWATCHES",
     "WG": "WRISTGALLERY",
-    "JW": "JEWARA"
+    "JW": "JEWARA",
+    "AD": "ALDANA"
 }
 
 # A product's photograph, remembered for the life of the process.

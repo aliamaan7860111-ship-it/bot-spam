@@ -128,6 +128,8 @@ BRAND_MAP = {
     "VX": "Virex UAE",
     "Di": "Dialo UAE",
     "LU": "Lune Collection",
+    "LN": "Lune Collection",   # new Lune store (2026-11-20)
+    "AD": "Al Dana",
     "R": "Rimal UAE",
     "O": "Orlento",
     "VL": "Velix",
