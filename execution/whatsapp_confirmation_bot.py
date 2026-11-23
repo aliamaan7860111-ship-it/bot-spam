@@ -302,6 +302,12 @@ async def poll_whatsapp_once() -> int:
     return await _send_all(new_orders)
 
 
+def no_whatsapp_reason(order: dict) -> str:
+    """What the Confirmation Blocked queue says for a store without a WhatsApp number."""
+    store = order.get("brand_name") or wc.brand_config_for(order.get("order_id", ""))[0]
+    return f"{store} has no WhatsApp number set up yet - confirm this order by hand"
+
+
 async def _send_all(new_orders: list[dict]) -> int:
     """Send the confirmation for each order. Shared by both work lists."""
     if not new_orders:
@@ -341,7 +347,21 @@ async def _send_all(new_orders: list[dict]) -> int:
 
         # "Pay By Link" orders (pilot: PAY_LINK_BRANDS) get a Stripe payment
         # link instead of the COD confirmation template.
-        if _is_pay_by_link(order.get("payment")) and prefix in PAY_LINK_BRANDS:
+        pay_link = _is_pay_by_link(order.get("payment")) and prefix in PAY_LINK_BRANDS
+
+        # A store with no WhatsApp number yet (Al Dana, AD, since 2026-11-20)
+        # can never be sent a confirmation. Retrying it every poll raised an
+        # error alert each time; instead it goes to Confirmation Blocked once,
+        # saying why, and the team confirms it by hand. A warning, not an
+        # error: it is the plan for that store, not a fault.
+        if not pay_link and wc.brand_config_for(order_id)[1] is None:
+            reason = no_whatsapp_reason(order)
+            log.warning("confirm: %s not sent - %s", order_id, reason)
+            if grq_id:
+                grq.block_confirmation(grq_id, reason)
+            continue
+
+        if pay_link:
             success = _send_pay_link(order)
         else:
             success = wc.send_template_message(

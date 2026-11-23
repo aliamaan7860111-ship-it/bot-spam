@@ -460,6 +460,22 @@ def is_sender_fault(message: str) -> bool:
     return any(p in m for p in SENDER_FAULTS)
 
 
+def brand_config_for(order_id: str) -> tuple[str, dict | None]:
+    """
+    The order's brand prefix and its BRAND_CONFIG, or (prefix, None) when the
+    store has no WhatsApp number set up.
+
+    Two letters first, then one (Rimal is "R"). An unknown order keeps its two
+    letters, so AD1005 reads as "AD" in a log line, not "A" - the old lookup
+    fell back to one letter even when nothing matched.
+    """
+    src = order_id or ""
+    for prefix in (src[:2], src[:1]):
+        if prefix and prefix in BRAND_CONFIG:
+            return prefix, BRAND_CONFIG[prefix]
+    return src[:2], None
+
+
 def send_template_message(
     phone_number: str,
     customer_name: str,
@@ -492,10 +508,7 @@ def send_template_message(
         return False
 
     # Pick brand from explicit prefix arg, else infer from order_id.
-    # Try 2-char prefix first, then 1-char (e.g. Rimal "R").
-    src = brand_prefix or order_id or ""
-    prefix = src[:2] if src[:2] in BRAND_CONFIG else src[:1]
-    cfg = BRAND_CONFIG.get(prefix)
+    prefix, cfg = brand_config_for(brand_prefix or order_id or "")
     if not cfg:
         log.error(f"No BRAND_CONFIG entry for prefix '{prefix}' (order_id={order_id}) — skipping")
         return False
