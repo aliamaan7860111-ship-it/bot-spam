@@ -80,21 +80,63 @@ NOTE_PATTERN = re.compile(r"#note\s+(.+?)\s+(.+)", re.IGNORECASE)
 # Image downloading
 # ---------------------------------------------------------------------------
 
-def download_image(url: str) -> bytes | None:
-    """Download an image from URL, return bytes or None on failure."""
-    try:
-        with httpx.Client(timeout=30, follow_redirects=True) as client:
-            resp = client.get(url)
-            resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "")
-            if "image" in content_type or url.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
-                return resp.content
-            else:
-                log.warning(f"URL does not appear to be an image: {url} (content-type: {content_type})")
-                return resp.content  # Try anyway
-    except Exception as e:
-        log.warning(f"Failed to download image from {url}: {e}")
-        return None
+# A failed photo is retried before it is skipped (2026-11-27): Shopify's CDN
+# answered 502 for five of JW1045's six pictures for about a second, and one
+# try each sent the packers a one-photo album. Waits between tries, in seconds.
+IMAGE_RETRY_WAITS = (1.0, 3.0)
+
+
+def _fetch_image_once(client: httpx.Client, url: str) -> bytes:
+    resp = client.get(url)
+    resp.raise_for_status()
+    content_type = resp.headers.get("content-type", "")
+    if not ("image" in content_type or url.lower().split("?")[0].endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))):
+        log.warning(f"URL does not appear to be an image: {url} (content-type: {content_type})")
+    return resp.content  # Try anyway
+
+
+def _original_image_url(url: str) -> str | None:
+    """The full-size Shopify picture behind a resized one (`_800x`), or None if it is not resized."""
+    full = re.sub(r'_\d+x\d*(?=\.[A-Za-z]+(\?|$))', '', url)
+    return full if full != url else None
+
+
+def download_image(url: str, waits: tuple[float, ...] = IMAGE_RETRY_WAITS) -> bytes | None:
+    """
+    Download an image, return bytes or None.
+
+    A server error, a rate limit or a dropped connection is retried after each
+    wait in `waits`; a 404 is not (it will not come back). When the resized
+    copy still fails, the full-size original is tried once, because a CDN
+    hiccup on the resize is the common case.
+    """
+    import time
+
+    with httpx.Client(timeout=30, follow_redirects=True) as client:
+        last: Exception | None = None
+        for attempt in range(len(waits) + 1):
+            try:
+                return _fetch_image_once(client, url)
+            except httpx.HTTPStatusError as e:
+                last = e
+                code = e.response.status_code
+                if code < 500 and code != 429:
+                    break
+            except httpx.TransportError as e:
+                last = e
+            if attempt < len(waits):
+                time.sleep(waits[attempt])
+
+        full = _original_image_url(url)
+        if full:
+            try:
+                img = _fetch_image_once(client, full)
+                log.info(f"  Resized image failed ({last}); used the original: {full}")
+                return img
+            except Exception as e:  # noqa: BLE001
+                last = e
+    log.warning(f"Failed to download image from {url}: {last}")
+    return None
 
 
 def _compress_image_url(url: str) -> str:
